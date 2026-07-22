@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="
+        default-src 'self';
+        script-src 'self';
+        style-src 'self';
+        img-src 'self' data:;
+        connect-src 'none';
+        font-src 'self';
+        object-src 'none';
+        base-uri 'none';
+        form-action 'none';
+      "
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>쇼핑몰 상품 수집기</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+
+  <body>
+    <main class="app-shell">
+      <header class="page-header">
+        <div>
+          <p class="eyebrow">LOCAL DESKTOP CRAWLER</p>
+          <h1>쇼핑몰 상품 수집기</h1>
+          <p class="description">
+            모든 수집 작업과 파일 저장은 현재 PC에서 실행됩니다.
+            화면 입력이 비어 있을 때만 공통 <code>.env</code> 설정을 사용합니다.
+          </p>
+        </div>
+
+        <span id="appBadge" class="app-badge">앱 정보 확인 중</span>
+      </header>
+
+      <section class="panel">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">COLLECTION SETTINGS</p>
+            <h2>수집 설정</h2>
+          </div>
+
+          <div class="header-actions">
+            <p id="envHint" class="env-hint">
+              환경설정을 불러오는 중입니다.
+            </p>
+
+            <button
+              id="openSettingsButton"
+              type="button"
+              class="text-button"
+            >
+              설정 폴더 열기
+            </button>
+          </div>
+        </div>
+
+        <form id="collectorForm" class="collector-form">
+          <div class="form-grid">
+            <label class="field">
+              <span>쇼핑몰 사이트</span>
+              <select id="mall" name="mall">
+                <option value="">.env 설정 사용</option>
+              </select>
+              <small id="mallHelp">지원 쇼핑몰을 선택합니다.</small>
+            </label>
+
+            <label class="field">
+              <span>카테고리</span>
+              <input
+                id="category"
+                name="category"
+                type="text"
+                autocomplete="off"
+                placeholder="비우면 전체 카테고리 사용"
+              />
+              <small id="categoryHelp">
+                카테고리 코드 또는 상품 목록 URL을 입력할 수 있습니다.
+              </small>
+            </label>
+
+            <label class="field">
+              <span>계정 ID</span>
+              <input
+                id="accountId"
+                name="accountId"
+                type="text"
+                autocomplete="username"
+                placeholder="비우면 ACCOUNT_ID 사용"
+              />
+              <small>계정 정보는 결과 파일에 저장하지 않습니다.</small>
+            </label>
+
+            <label class="field">
+              <span>계정 비밀번호</span>
+              <input
+                id="accountPw"
+                name="accountPw"
+                type="password"
+                autocomplete="current-password"
+                placeholder="비우면 ACCOUNT_PW 사용"
+              />
+              <small>수집 시작 직후 화면 입력값을 비웁니다.</small>
+            </label>
+
+            <label class="field">
+              <span>수집 브라우저 표시</span>
+              <select id="browserMode" name="browserMode">
+                <option value="">.env 설정 사용</option>
+                <option value="show">표시</option>
+                <option value="hide">숨김</option>
+              </select>
+              <small>표시를 선택하면 현재 PC에 Playwright 창이 열립니다.</small>
+            </label>
+
+            <div class="field">
+              <span>결과 기본 폴더</span>
+
+              <div class="directory-control">
+                <input
+                  id="outputDirectory"
+                  type="text"
+                  readonly
+                  aria-label="결과 기본 폴더"
+                />
+
+                <button
+                  id="chooseOutputButton"
+                  type="button"
+                  class="secondary-button compact"
+                >
+                  폴더 선택
+                </button>
+              </div>
+
+              <small>
+                실행별 하위 폴더에 CSV와 JSON을 저장합니다.
+              </small>
+            </div>
+          </div>
+
+          <details class="advanced-settings">
+            <summary>페이지 범위 및 고급 공통 설정</summary>
+
+            <div class="form-grid advanced-grid">
+              <label class="field">
+                <span>시작 페이지</span>
+                <input
+                  id="pageStart"
+                  name="pageStart"
+                  type="number"
+                  min="1"
+                  placeholder="1"
+                />
+              </label>
+
+              <label class="field">
+                <span>종료 페이지</span>
+                <input
+                  id="pageEnd"
+                  name="pageEnd"
+                  type="number"
+                  min="0"
+                  placeholder="0"
+                />
+                <small>
+                  <strong>0</strong>이면 마지막 페이지를 자동 감지합니다.
+                </small>
+              </label>
+
+              <label class="field">
+                <span>페이지당 상품 수</span>
+                <input
+                  id="pageSize"
+                  name="pageSize"
+                  type="number"
+                  min="1"
+                  placeholder="쇼핑몰 기본값"
+                />
+              </label>
+            </div>
+          </details>
+
+          <div class="form-actions">
+            <button
+              id="runButton"
+              type="submit"
+              class="primary-button"
+            >
+              수집 시작
+            </button>
+
+            <button
+              id="cancelButton"
+              type="button"
+              class="danger-button"
+              disabled
+            >
+              수집 취소
+            </button>
+
+            <p class="form-note">
+              동시에 한 개의 수집 작업만 실행됩니다.
+            </p>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel status-panel" aria-live="polite">
+        <div class="status-header">
+          <div>
+            <p class="section-kicker">RUN STATUS</p>
+            <h2>실행 상태</h2>
+          </div>
+
+          <span id="statusBadge" class="status-badge idle">대기</span>
+        </div>
+
+        <progress
+          id="progressBar"
+          class="progress-bar"
+          max="100"
+          value="0"
+          aria-label="수집 진행률"
+        ></progress>
+
+        <p id="statusMessage" class="status-message">
+          수집 설정을 입력한 뒤 시작하세요.
+        </p>
+
+        <p id="errorMessage" class="error-message" hidden></p>
+        <p id="successMessage" class="success-message" hidden></p>
+
+        <div class="metrics-grid">
+          <article class="metric-card">
+            <span>수집 페이지</span>
+            <strong id="metricPages">-</strong>
+          </article>
+
+          <article class="metric-card">
+            <span>전체 상품 감지 수</span>
+            <strong id="metricDetected">-</strong>
+          </article>
+
+          <article class="metric-card">
+            <span>수집 전체 상품 수</span>
+            <strong id="metricCollected">-</strong>
+          </article>
+
+          <article class="metric-card">
+            <span>대상 상품 수</span>
+            <strong id="metricTargets">-</strong>
+          </article>
+
+          <article class="metric-card">
+            <span>상품 요약 수</span>
+            <strong id="metricSummaries">-</strong>
+          </article>
+
+          <article class="metric-card">
+            <span>품절 상품 수</span>
+            <strong id="metricSoldOut">-</strong>
+          </article>
+
+          <article class="metric-card">
+            <span>소요 시간</span>
+            <strong id="metricElapsed">0ms</strong>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel download-panel">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">OUTPUT FILES</p>
+            <h2>결과 파일</h2>
+          </div>
+
+          <div class="result-header-actions">
+            <p>수집 완료 후 원하는 위치로 복사하거나 원본 폴더를 열 수 있습니다.</p>
+
+            <button
+              id="openResultDirectoryButton"
+              type="button"
+              class="secondary-button"
+              disabled
+            >
+              결과 폴더 열기
+            </button>
+          </div>
+        </div>
+
+        <div class="download-grid">
+          <button
+            id="saveInventoryButton"
+            type="button"
+            class="download-button disabled"
+            disabled
+          >
+            재고 CSV 저장
+            <small>옵션별 재고 또는 판매 가능 상태</small>
+          </button>
+
+          <button
+            id="saveSummaryButton"
+            type="button"
+            class="download-button disabled"
+            disabled
+          >
+            요약 CSV 저장
+            <small>상품 단위 재고·옵션 요약</small>
+          </button>
+
+          <button
+            id="saveProductsButton"
+            type="button"
+            class="download-button disabled"
+            disabled
+          >
+            상품 CSV 저장
+            <small>수집한 전체 상품 목록</small>
+          </button>
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>

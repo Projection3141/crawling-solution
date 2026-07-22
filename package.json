@@ -1,0 +1,41 @@
+{
+  "name": "mall-collector-desktop",
+  "productName": "Mall Collector",
+  "version": "1.0.0",
+  "description": "천유닷컴과 과자생각 상품·재고를 로컬에서 수집하는 Electron 데스크톱 앱",
+  "main": "electron/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "check": "node scripts/check-syntax.js",
+    "cheonyu": "node src/cli.js cheonyu",
+    "ccdome": "node src/cli.js ccdome",
+    "postinstall": "node scripts/install-playwright.js",
+    "clean": "node -e \"require('node:fs').rmSync('out', { recursive: true, force: true })\""
+  },
+  "keywords": [
+    "electron",
+    "playwright",
+    "crawler",
+    "cheerio"
+  ],
+  "author": "Your Name",
+  "license": "ISC",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "dotenv": "^17.4.2",
+    "electron-squirrel-startup": "^1.0.1",
+    "playwright": "^1.60.0"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.11.2",
+    "@electron-forge/maker-squirrel": "^7.11.2",
+    "electron": "^43.2.0"
+  }
+}
