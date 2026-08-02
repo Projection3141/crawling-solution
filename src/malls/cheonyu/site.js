@@ -846,6 +846,178 @@ async function parseAndPreparePopupOptions(
   );
 }
 
+/** 현재 화면에 표시된 천유 옵션 팝업 상태를 수집한다. */
+async function readCheonyuOptionPopupState(page) {
+  return page.evaluate(() => {
+    const isVisible = (element) => {
+      if (!element) return false;
+
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+
+      return (
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        Number(style.opacity || "1") > 0 &&
+        rect.width > 0 &&
+        rect.height > 0
+      );
+    };
+
+    const wrappers = Array.from(
+      document.querySelectorAll(".many_add_wrap, .many_add"),
+    ).filter(isVisible);
+
+    const tables = wrappers.flatMap((wrapper) =>
+      Array.from(wrapper.querySelectorAll("table#opSelectedList")),
+    );
+
+    const rows = tables.flatMap((table) =>
+      Array.from(table.querySelectorAll("tr#inOptionTR")),
+    );
+
+    const completeRows = rows.filter((row) => {
+      const checkbox = row.querySelector("input#optionCHKPOP");
+      const optionId = row.querySelector("input#inOPidx");
+      const maxStock = row.querySelector("input#inOPMaxStock");
+      const countInput = row.querySelector("input#inOPcount");
+
+      return (
+        Boolean(checkbox) &&
+        Boolean(optionId) &&
+        optionId.value !== "" &&
+        Boolean(maxStock) &&
+        maxStock.value !== "" &&
+        Boolean(countInput)
+      );
+    });
+
+    const selectableRows = completeRows.filter((row) => {
+      const checkbox = row.querySelector("input#optionCHKPOP");
+      const maxStock = Number(
+        row.querySelector("input#inOPMaxStock")?.value || 0,
+      );
+
+      return Boolean(checkbox) && !checkbox.disabled && maxStock > 0;
+    });
+
+    return {
+      visibleWrapperCount: wrappers.length,
+      optionTableCount: tables.length,
+      optionRowCount: rows.length,
+      completeRowCount: completeRows.length,
+      selectableRowCount: selectableRows.length,
+      groupIds: tables
+        .map((table) => table.querySelector("input#inIDXPOP")?.value || "")
+        .filter(Boolean),
+    };
+  });
+}
+
+/** 이전 옵션 팝업이 남아 있으면 안전하게 닫는다. */
+async function closeCheonyuOptionPopup(page) {
+  await page
+    .evaluate(() => {
+      if (typeof window.closeCartIn === "function") {
+        window.closeCartIn();
+        return;
+      }
+
+      const cancelButton = document.querySelector(
+        ".many_add_cancle, .many_add_cancel",
+      );
+
+      if (cancelButton instanceof HTMLElement) {
+        cancelButton.click();
+      }
+    })
+    .catch(() => null);
+
+  await page.waitForTimeout(500);
+}
+
+/**
+ * 옵션 팝업 wrapper가 아니라 실제 옵션 row와 재고값이 준비될 때까지 기다린다.
+ *
+ * 기존 코드는 window.setOption 또는 wrapper 존재만 확인했기 때문에
+ * AJAX 옵션 데이터가 들어오기 전에 파싱하는 race condition이 발생할 수 있었다.
+ */
+async function waitForReadyCheonyuOptionPopup(page, config) {
+  const timeout = Math.max(
+    30000,
+    Math.min(Number(config.navigationTimeoutMs) || 60000, 90000),
+  );
+
+  await page.waitForFunction(
+    () => {
+      const isVisible = (element) => {
+        if (!element) return false;
+
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity || "1") > 0 &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+
+      const wrappers = Array.from(
+        document.querySelectorAll(".many_add_wrap, .many_add"),
+      ).filter(isVisible);
+
+      if (wrappers.length < 1) return false;
+
+      const tables = wrappers.flatMap((wrapper) =>
+        Array.from(wrapper.querySelectorAll("table#opSelectedList")),
+      );
+
+      if (tables.length < 1) return false;
+
+      const rows = tables.flatMap((table) =>
+        Array.from(table.querySelectorAll("tr#inOptionTR")),
+      );
+
+      if (rows.length < 1) return false;
+
+      const allRowsComplete = rows.every((row) => {
+        const checkbox = row.querySelector("input#optionCHKPOP");
+        const optionId = row.querySelector("input#inOPidx");
+        const maxStock = row.querySelector("input#inOPMaxStock");
+        const countInput = row.querySelector("input#inOPcount");
+
+        return (
+          Boolean(checkbox) &&
+          Boolean(optionId) &&
+          optionId.value !== "" &&
+          Boolean(maxStock) &&
+          maxStock.value !== "" &&
+          Boolean(countInput)
+        );
+      });
+
+      if (!allRowsComplete) return false;
+
+      return rows.some((row) => {
+        const checkbox = row.querySelector("input#optionCHKPOP");
+        const maxStock = Number(
+          row.querySelector("input#inOPMaxStock")?.value || 0,
+        );
+
+        return Boolean(checkbox) && !checkbox.disabled && maxStock > 0;
+      });
+    },
+    null,
+    { timeout },
+  );
+
+  /** DOM이 생성된 직후 계산 스크립트가 끝날 짧은 안정화 시간을 둔다. */
+  await page.waitForTimeout(700);
+}
+
 /** 일괄담기 버튼을 누르고 요청된 옵션만 장바구니에 담는다. */
 async function clickBulkCartAndConfirm(
   page,
@@ -854,34 +1026,63 @@ async function clickBulkCartAndConfirm(
   requestedProducts = [],
 ) {
   const selectors = CHEONYU_SITE.selectors.list;
-  const bulkButton = page.locator(selectors.bulkButton).first();
+  const maxAttempts = 3;
+  let lastPopupState = null;
+  let lastError = null;
 
-  if ((await bulkButton.count()) < 1) {
-    throw new Error(`${selectors.bulkButton} 버튼을 찾지 못했습니다.`);
-  }
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const bulkButton = page.locator(selectors.bulkButton).first();
 
-  console.log(`[BULK ${pageNo}] 장바구니 일괄담기`);
-  await bulkButton.click();
+    if ((await bulkButton.count()) < 1) {
+      throw new Error(`${selectors.bulkButton} 버튼을 찾지 못했습니다.`);
+    }
 
-  await Promise.race([
-    page.waitForFunction(() => typeof window.setOption === "function", null, {
-      timeout: 30000,
-    }),
-    page.waitForSelector(selectors.manyAddWrap, { timeout: 30000 }),
-    page.waitForTimeout(30000),
-  ]).catch(() => null);
+    if (attempt > 1) {
+      console.warn(
+        `[BULK ${pageNo}] 옵션 팝업 재시도 ${attempt}/${maxAttempts}`,
+      );
 
-  const hasSetOption = await page.evaluate(
-    () => typeof window.setOption === "function",
-  );
-  const popupState = {
-    hasSetOption,
-    ...parsePopupHtml(await page.content()),
-  };
-  let popupOptionRows = [];
+      await closeCheonyuOptionPopup(page);
+      await sleep(1000 * attempt);
+    }
 
-  if (hasSetOption) {
-    popupOptionRows = await parseAndPreparePopupOptions(
+    console.log(
+      `[BULK ${pageNo}] 장바구니 일괄담기` +
+        (attempt > 1 ? ` (${attempt}차 시도)` : ""),
+    );
+
+    await bulkButton.click();
+
+    try {
+      await waitForReadyCheonyuOptionPopup(page, config);
+    } catch (error) {
+      lastError = error;
+      lastPopupState = await readCheonyuOptionPopupState(page).catch(() => null);
+
+      console.warn(
+        `[BULK ${pageNo}] 옵션 팝업 준비 실패`,
+        lastPopupState,
+      );
+
+      continue;
+    }
+
+    const hasSetOption = await page.evaluate(
+      () => typeof window.setOption === "function",
+    );
+
+    lastPopupState = {
+      hasSetOption,
+      ...(await readCheonyuOptionPopupState(page)),
+      ...parsePopupHtml(await page.content()),
+    };
+
+    if (!hasSetOption) {
+      lastError = new Error("천유 옵션 확정 함수 setOption을 찾지 못했습니다.");
+      continue;
+    }
+
+    const popupOptionRows = await parseAndPreparePopupOptions(
       page,
       pageNo,
       config,
@@ -935,43 +1136,73 @@ async function clickBulkCartAndConfirm(
     ).length;
 
     if (selectedCount < 1) {
-      throw new Error("장바구니에 담을 천유 옵션이 선택되지 않았습니다.");
+      lastError = new Error(
+        "옵션 row는 생성됐지만 선택 가능한 천유 옵션이 없습니다.",
+      );
+
+      lastPopupState = {
+        ...lastPopupState,
+        parsedRowCount: popupOptionRows.length,
+        selectedCount,
+      };
+
+      console.warn(
+        `[BULK ${pageNo}] 선택 가능한 옵션 없음`,
+        lastPopupState,
+      );
+
+      continue;
     }
 
     await page.evaluate(() => window.setOption());
-    await sleep(4000);
+
+    /** 옵션 팝업이 닫히거나 숨겨져 실제 장바구니 반영이 시작됐는지 확인한다. */
+    await page
+      .waitForFunction(
+        () => {
+          const wrappers = Array.from(
+            document.querySelectorAll(".many_add_wrap, .many_add"),
+          );
+
+          return wrappers.every((element) => {
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+
+            return (
+              style.display === "none" ||
+              style.visibility === "hidden" ||
+              Number(style.opacity || "1") === 0 ||
+              rect.width === 0 ||
+              rect.height === 0
+            );
+          });
+        },
+        null,
+        { timeout: 30000 },
+      )
+      .catch(() => null);
+
+    await sleep(1500);
 
     return {
       page: pageNo,
       mode: "popup-setOption",
-      popupState,
+      popupState: lastPopupState,
       popupOptionRows,
       selectedCount,
+      attempt,
     };
   }
 
-  /** 팝업이 없는 직접 담기 상품은 단일상품 요청만 허용한다. */
-  for (const product of requestedProducts) {
-    for (const request of product.cartRequests || []) {
-      const optionId = String(request.optionId ?? "0");
+  const diagnostic = lastPopupState
+    ? ` 상태=${JSON.stringify(lastPopupState)}`
+    : "";
 
-      if (optionId !== "0" && optionId !== String(product.productId)) {
-        throw new Error(
-          `천유 상품 ${product.productId}의 옵션 팝업을 찾지 못했습니다.`,
-        );
-      }
-    }
-  }
-
-  await sleep(3000);
-
-  return {
-    page: pageNo,
-    mode: "direct",
-    popupState,
-    popupOptionRows,
-    selectedCount: requestedProducts.length,
-  };
+  throw new Error(
+    `천유 ${pageNo}페이지 옵션 팝업 준비에 ${maxAttempts}회 실패했습니다.` +
+      `${lastError ? ` 원인: ${lastError.message}` : ""}` +
+      diagnostic,
+  );
 }
 
 /** 계산된 범위를 순회하며 대상 상품을 장바구니에 담는다. */
