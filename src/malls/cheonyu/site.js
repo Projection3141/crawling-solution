@@ -231,28 +231,32 @@ async function addProductsFromListPagesToCart(
     });
 
     const { candidates } = await collectListCandidates(page, pageNo, config);
-
-    const targetIdSet = new Set(
-      pageProducts.map((item) => String(item.productId)),
+    const requestMap = new Map(
+      pageProducts.map((item) => [String(item.productId), item]),
     );
+    const targets = candidates
+      .filter((candidate) => requestMap.has(String(candidate.productId)))
+      .map((candidate) => ({
+        ...candidate,
+        ...requestMap.get(String(candidate.productId)),
+      }));
 
-    const targets = candidates.filter((item) =>
-      targetIdSet.has(String(item.productId)),
-    );
+    if (targets.length !== pageProducts.length) {
+      const foundIds = new Set(targets.map((item) => String(item.productId)));
+      const missingIds = pageProducts
+        .filter((item) => !foundIds.has(String(item.productId)))
+        .map((item) => item.productId);
 
-    if (targets.length < 1) {
-      pageResults.push({
-        page: pageNo,
-        targetCount: 0,
-        skipped: true,
-      });
-
-      continue;
+      throw new Error(`천유 목록에서 상품을 찾지 못했습니다: ${missingIds.join(", ")}`);
     }
 
     await markProductsForBulkCart(page, targets, config);
-
-    const bulkResult = await clickBulkCartAndConfirm(page, pageNo, config);
+    const bulkResult = await clickBulkCartAndConfirm(
+      page,
+      pageNo,
+      config,
+      targets,
+    );
 
     allTargets.push(...targets);
     pageResults.push({
@@ -535,21 +539,126 @@ async function collectListCandidates(page, pageNo, config, cachedHtml = null) {
   };
 }
 
+/** 여러 상품번호를 천유 전체 목록에서 한 번의 순회로 찾는다. */
+async function findCheonyuProductsByIds(
+  page,
+  productIds,
+  config,
+  onProgress = () => {},
+  signal,
+) {
+  throwIfAborted(signal);
+
+  const pendingIds = new Set(
+    productIds.map((value) => String(value || "").trim()).filter(Boolean),
+  );
+
+  if (pendingIds.size < 1) {
+    return [];
+  }
+
+  const searchConfig = {
+    ...config,
+    category: "-1",
+    pageStart: 1,
+    pageEnd: 0,
+  };
+  const { pageRange, firstPageHtml } = await resolvePageRange(page, searchConfig);
+  const foundMap = new Map();
+
+  for (
+    let pageNo = pageRange.pageStart;
+    pageNo <= pageRange.pageEnd && pendingIds.size > 0;
+    pageNo += 1
+  ) {
+    throwIfAborted(signal);
+
+    onProgress({
+      stage: "cart-product-search",
+      message: `천유 장바구니 상품 검색 ${pageNo}/${pageRange.pageEnd}페이지`,
+      currentPage: pageNo,
+      pageRange,
+      remainingProductCount: pendingIds.size,
+    });
+
+    const { candidates } = await collectListCandidates(
+      page,
+      pageNo,
+      searchConfig,
+      pageNo === 1 ? firstPageHtml : null,
+    );
+
+    for (const candidate of candidates) {
+      const productId = String(candidate.productId);
+
+      if (!pendingIds.has(productId)) continue;
+
+      foundMap.set(productId, {
+        ...candidate,
+        page: pageNo,
+      });
+      pendingIds.delete(productId);
+    }
+
+    if (
+      searchConfig.requestDelayMs > 0 &&
+      pageNo < pageRange.pageEnd &&
+      pendingIds.size > 0
+    ) {
+      await sleep(searchConfig.requestDelayMs);
+    }
+  }
+
+  if (pendingIds.size > 0) {
+    throw new Error(
+      `천유 상품 목록에서 찾지 못한 상품번호: ${Array.from(pendingIds).join(", ")}`,
+    );
+  }
+
+  return Array.from(foundMap.values());
+}
+
 /** 현재 목록 페이지에서 대상 상품의 수량과 체크 상태를 지정한다. */
 async function markProductsForBulkCart(page, targets, config) {
-  const targetIds = targets.map((item) => String(item.productId));
   const selectors = CHEONYU_SITE.selectors.list;
+  const requests = targets.map((item) => {
+    const cartRequests = Array.isArray(item.cartRequests)
+      ? item.cartRequests
+      : [];
+    const directRequest = cartRequests.find((request) => {
+      const optionId = String(request.optionId ?? "0");
+      return optionId === "0" || optionId === String(item.productId);
+    });
+
+    return {
+      productId: String(item.productId),
+      quantity: Math.max(
+        1,
+        Math.trunc(
+          Number(
+            directRequest?.quantity ||
+              item.quantity ||
+              config.cartQty ||
+              1,
+          ),
+        ),
+      ),
+    };
+  });
 
   const result = await page.evaluate(
-    ({ ids, qty, productCheck, countInput }) => {
-      const idSet = new Set(ids.map(String));
+    ({ requests, productCheck, countInput }) => {
+      const requestMap = new Map(
+        requests.map((request) => [String(request.productId), request]),
+      );
       const selected = [];
 
       for (const check of document.querySelectorAll(productCheck)) {
         const productId = String(check.value || "");
+        const request = requestMap.get(productId);
         const item = check.closest("li");
 
-        if (!idSet.has(productId)) {
+        if (!request) {
           check.checked = false;
           continue;
         }
@@ -561,9 +670,11 @@ async function markProductsForBulkCart(page, targets, config) {
           continue;
         }
 
-        input.value = String(qty);
+        input.value = String(request.quantity);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
         check.checked = true;
-        selected.push(productId);
+        selected.push({ productId, quantity: request.quantity });
       }
 
       return {
@@ -572,8 +683,7 @@ async function markProductsForBulkCart(page, targets, config) {
       };
     },
     {
-      ids: targetIds,
-      qty: config.cartQty,
+      requests,
       productCheck: selectors.productCheck,
       countInput: selectors.countInput,
     },
@@ -600,12 +710,30 @@ function parsePopupHtml(html) {
 
 
 /** 옵션 팝업에서 disabled/품절 옵션을 제외하고 선택 가능한 옵션만 체크한다. */
-async function parseAndPreparePopupOptions(page, pageNo, config) {
-  return page.evaluate(
-    ({ pageNo, optionQty, lowStockThreshold }) => {
-      const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
-      const toNumber = (value) => Number(String(value || "").replace(/[^\d-]/g, "")) || 0;
+async function parseAndPreparePopupOptions(
+  page,
+  pageNo,
+  config,
+  requestedProducts = [],
+) {
+  const requests = requestedProducts.map((item) => ({
+    productId: String(item.productId || ""),
+    productName: String(item.productName || "").replace(/\s+/g, " ").trim(),
+    cartRequests: Array.isArray(item.cartRequests)
+      ? item.cartRequests.map((request) => ({
+          productId: String(item.productId || ""),
+          optionId: String(request.optionId ?? "0"),
+          quantity: Math.max(1, Math.trunc(Number(request.quantity) || 1)),
+        }))
+      : [],
+  }));
 
+  return page.evaluate(
+    ({ pageNo, requests, defaultOptionQty, lowStockThreshold }) => {
+      const normalize = (value) =>
+        String(value || "").replace(/\s+/g, " ").trim();
+      const toNumber = (value) =>
+        Number(String(value || "").replace(/[^\d-]/g, "")) || 0;
       const rows = [];
       const blocks = Array.from(document.querySelectorAll(".many_add"));
 
@@ -615,12 +743,20 @@ async function parseAndPreparePopupOptions(page, pageNo, config) {
 
         if (!table) continue;
 
-        const cartGroupId = table.querySelector("input#inIDXPOP")?.value || "";
         const subjectText = normalize(block.querySelector(".subject p")?.innerText || "");
+        const requestProduct =
+          requests.find(
+            (request) =>
+              request.productName &&
+              (subjectText.includes(request.productName) ||
+                request.productName.includes(subjectText)),
+          ) ||
+          requests[productIndex] ||
+          null;
+        const cartGroupId = table.querySelector("input#inIDXPOP")?.value || "";
         const brandText = normalize(block.querySelector(".coc_brd_name")?.innerText || "")
           .replace(/^\[/, "")
           .replace(/\]$/, "");
-
         const iconText = normalize(block.querySelector(".icon")?.innerText || "");
         const outerBoxQty = toNumber(iconText.match(/(\d+)\s*개/)?.[1] || "");
         const optionRows = Array.from(table.querySelectorAll("tr#inOptionTR"));
@@ -630,17 +766,30 @@ async function parseAndPreparePopupOptions(page, pageNo, config) {
           const checkbox = tr.querySelector("input#optionCHKPOP");
           const countInput = tr.querySelector("input#inOPcount");
           const optionText = normalize(tr.querySelector("td#tdOption")?.innerText || "옵션없음");
-          const optionId = tr.querySelector("input#inOPidx")?.value || "";
+          const optionId = String(tr.querySelector("input#inOPidx")?.value || "0");
           const maxStock = toNumber(tr.querySelector("input#inOPMaxStock")?.value);
           const disabled = Boolean(checkbox?.disabled);
           const selectable = Boolean(checkbox) && !disabled && maxStock > 0;
+          const matchedRequest = requestProduct?.cartRequests.find((request) => {
+            const requestedOptionId = String(request.optionId ?? "0");
+            return (
+              requestedOptionId === optionId ||
+              (requestedOptionId === request.productId && optionId === "0")
+            );
+          });
+          const selectedForCart = requestProduct
+            ? selectable && Boolean(matchedRequest)
+            : selectable;
+          const quantity = matchedRequest?.quantity || defaultOptionQty;
 
           if (checkbox) {
-            checkbox.checked = selectable;
+            checkbox.checked = selectedForCart;
           }
 
-          if (countInput && selectable) {
-            countInput.value = String(optionQty);
+          if (countInput && selectedForCart) {
+            countInput.value = String(quantity);
+            countInput.dispatchEvent(new Event("input", { bubbles: true }));
+            countInput.dispatchEvent(new Event("change", { bubbles: true }));
           }
 
           let stockStatus = "IN_STOCK";
@@ -655,6 +804,7 @@ async function parseAndPreparePopupOptions(page, pageNo, config) {
             page: pageNo,
             productIndex,
             optionIndex,
+            productId: requestProduct?.productId || "",
             cartGroupId,
             subjectText,
             brandText,
@@ -663,9 +813,9 @@ async function parseAndPreparePopupOptions(page, pageNo, config) {
             maxStock,
             disabled,
             selectable,
-            selectedForCart: selectable,
+            selectedForCart,
+            requestedQty: selectedForCart ? quantity : 0,
             stockStatus,
-            optionQty: selectable ? optionQty : 0,
             outerBoxQty,
             addPrice: toNumber(tr.querySelector("input#inOPaddPrice")?.value),
             boxCountOpt: toNumber(tr.querySelector("input#boxCountOpt")?.value),
@@ -689,14 +839,20 @@ async function parseAndPreparePopupOptions(page, pageNo, config) {
     },
     {
       pageNo,
-      optionQty: config.optionCartQty || config.cartQty || 999,
+      requests,
+      defaultOptionQty: config.optionCartQty || config.cartQty || 1,
       lowStockThreshold: config.lowStockThreshold,
     },
   );
 }
 
-/** 일괄담기 버튼을 누르고 옵션 팝업의 선택 가능 옵션만 장바구니에 담는다. */
-async function clickBulkCartAndConfirm(page, pageNo, config) {
+/** 일괄담기 버튼을 누르고 요청된 옵션만 장바구니에 담는다. */
+async function clickBulkCartAndConfirm(
+  page,
+  pageNo,
+  config,
+  requestedProducts = [],
+) {
   const selectors = CHEONYU_SITE.selectors.list;
   const bulkButton = page.locator(selectors.bulkButton).first();
 
@@ -725,14 +881,62 @@ async function clickBulkCartAndConfirm(page, pageNo, config) {
   let popupOptionRows = [];
 
   if (hasSetOption) {
-    popupOptionRows = await parseAndPreparePopupOptions(page, pageNo, config);
-
-    const selectableCount = popupOptionRows.filter((item) => item.selectable).length;
-    const excludedCount = popupOptionRows.length - selectableCount;
-
-    console.log(
-      `[BULK ${pageNo}] 옵션 ${popupOptionRows.length}개 | 선택 ${selectableCount}개 | 제외 ${excludedCount}개`,
+    popupOptionRows = await parseAndPreparePopupOptions(
+      page,
+      pageNo,
+      config,
+      requestedProducts,
     );
+
+    if (requestedProducts.length > 0) {
+      for (const product of requestedProducts) {
+        for (const request of product.cartRequests || []) {
+          const requestedOptionId = String(request.optionId ?? "0");
+          const matchedRow = popupOptionRows.find((row) => {
+            if (String(row.productId) !== String(product.productId)) return false;
+
+            return (
+              String(row.optionId) === requestedOptionId ||
+              (requestedOptionId === String(product.productId) &&
+                String(row.optionId) === "0")
+            );
+          });
+
+          if (!matchedRow) {
+            throw new Error(
+              `천유 상품 ${product.productId}에서 옵션 ${requestedOptionId}를 찾지 못했습니다.`,
+            );
+          }
+
+          if (!matchedRow.selectable) {
+            throw new Error(
+              `천유 상품 ${product.productId}의 옵션 ${requestedOptionId}는 구매할 수 없습니다.`,
+            );
+          }
+
+          if (matchedRow.maxStock > 0 && request.quantity > matchedRow.maxStock) {
+            throw new Error(
+              `천유 상품 ${product.productId} 옵션 ${requestedOptionId}: ` +
+                `요청 ${request.quantity}개, 구매 가능 ${matchedRow.maxStock}개`,
+            );
+          }
+
+          if (!matchedRow.selectedForCart) {
+            throw new Error(
+              `천유 상품 ${product.productId}의 옵션 ${requestedOptionId} 선택에 실패했습니다.`,
+            );
+          }
+        }
+      }
+    }
+
+    const selectedCount = popupOptionRows.filter(
+      (item) => item.selectedForCart,
+    ).length;
+
+    if (selectedCount < 1) {
+      throw new Error("장바구니에 담을 천유 옵션이 선택되지 않았습니다.");
+    }
 
     await page.evaluate(() => window.setOption());
     await sleep(4000);
@@ -742,16 +946,31 @@ async function clickBulkCartAndConfirm(page, pageNo, config) {
       mode: "popup-setOption",
       popupState,
       popupOptionRows,
+      selectedCount,
     };
+  }
+
+  /** 팝업이 없는 직접 담기 상품은 단일상품 요청만 허용한다. */
+  for (const product of requestedProducts) {
+    for (const request of product.cartRequests || []) {
+      const optionId = String(request.optionId ?? "0");
+
+      if (optionId !== "0" && optionId !== String(product.productId)) {
+        throw new Error(
+          `천유 상품 ${product.productId}의 옵션 팝업을 찾지 못했습니다.`,
+        );
+      }
+    }
   }
 
   await sleep(3000);
 
   return {
     page: pageNo,
-    mode: "direct-or-unknown",
+    mode: "direct",
     popupState,
     popupOptionRows,
+    selectedCount: requestedProducts.length,
   };
 }
 
@@ -879,7 +1098,9 @@ module.exports = {
   CHEONYU_SITE,
   buildListUrl,
   bulkAddPages,
+  collectListCandidates,
   detectCatalog,
+  findCheonyuProductsByIds,
   loginCheonyu,
   parseCatalogInfo,
   parseListHtml,

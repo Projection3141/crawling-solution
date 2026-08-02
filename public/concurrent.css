@@ -1,0 +1,54 @@
+.run-list {
+  display: grid;
+  gap: 18px;
+  margin-top: 20px;
+}
+
+.run-card {
+  padding: 20px;
+  border: 1px solid #d9dee8;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(32, 44, 70, 0.06);
+}
+
+.run-card .status-header {
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.run-card h3 {
+  margin: 4px 0 0;
+  font-size: 1.05rem;
+  line-height: 1.45;
+}
+
+.run-card .section-kicker {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-card .metrics-grid {
+  margin-top: 16px;
+}
+
+.run-card .form-actions {
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+
+.run-card .form-note {
+  width: 100%;
+}
+
+@media (max-width: 720px) {
+  .run-card {
+    padding: 16px;
+  }
+
+  .run-card .status-header {
+    flex-direction: column;
+  }
+}

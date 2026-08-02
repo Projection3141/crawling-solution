@@ -33,9 +33,10 @@ async function runCcdome(
   let browser = null;
   let context = null;
   let releaseAbort = () => { };
+  const ensureNotAborted = () => throwIfAborted(signal);
 
   try {
-    throwIfAborted(signal);
+    ensureNotAborted();
     onProgress({
       stage: "starting",
       message: "과자생각 브라우저를 준비하고 있습니다.",
@@ -45,7 +46,7 @@ async function runCcdome(
       headless: config.headless,
     });
     releaseAbort = bindAbortToBrowser(signal, browser);
-    throwIfAborted(signal);
+    ensureNotAborted();
 
     context = await browser.newContext({
       viewport: config.viewport,
@@ -65,7 +66,7 @@ async function runCcdome(
       message: "과자생각에 로그인하고 있습니다.",
     });
     await loginCcdome(page, config);
-    throwIfAborted(signal);
+    ensureNotAborted();
 
     const result = await collectCcdomeProducts(
       page,
@@ -79,7 +80,7 @@ async function runCcdome(
       signal,
     );
 
-    throwIfAborted(signal);
+    ensureNotAborted();
 
     const detailLimit = Number(config.detailMaxProducts) || 0;
 
@@ -123,7 +124,7 @@ async function runCcdome(
         signal,
       );
 
-      throwIfAborted(signal);
+      ensureNotAborted();
     }
 
     onProgress({

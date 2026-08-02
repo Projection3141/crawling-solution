@@ -28,12 +28,17 @@ const {
     resolveOutputDir,
     resolveRunConfig,
 } = require("../src/config");
+const {
+  runCartUpload,
+} = require("../src/cart-uploader");
 const { runCollection } = require("../src/crawler");
 const { loadEnvironment } = require("./environment");
 
 const APP_SCHEME = "mall-collector";
 const APP_ORIGIN = `${APP_SCHEME}://app`;
 const APP_URL = `${APP_ORIGIN}/index.html`;
+const CART_UPLOAD_API_URL =
+    "https://www.web3.io.kr/joahstore/crawling/uploader";
 const RENDERER_DIR = path.resolve(__dirname, "..", "public");
 
 const CHANNELS = Object.freeze({
@@ -41,6 +46,8 @@ const CHANNELS = Object.freeze({
     getState: "collector:get-state",
     start: "collector:start",
     cancel: "collector:cancel",
+    uploadCartItems:
+        "collector:upload-cart-items",
     chooseOutputDirectory: "collector:choose-output-directory",
     saveResultFile: "collector:save-result-file",
     openResultDirectory: "collector:open-result-directory",
@@ -83,34 +90,28 @@ protocol.registerSchemesAsPrivileged([
 let mainWindow = null;
 let environmentInfo = null;
 let selectedOutputRoot = "";
-let activeRun = null;
-let lastResultFiles = null;
-let lastResultDirectory = "";
 let closePromptOpen = false;
 let quitAfterRun = false;
 let allowImmediateQuit = false;
 
-let appState = createIdleState();
+/**
+ * 여러 수집 작업을 동시에 실행하기 위한 상태 저장소.
+ *
+ * activeRuns: 현재 실행 중인 작업
+ * runStates: Renderer에 표시할 전체 실행 이력
+ * runResults: 실행별 결과 파일 경로
+ */
+const activeRuns = new Map();
+const runStates = new Map();
+const runResults = new Map();
 
-/** Renderer에 전달 가능한 초기 상태를 생성한다. */
-function createIdleState() {
-    return {
-        id: null,
-        status: "idle",
-        startedAtMs: null,
-        finishedAtMs: null,
-        progress: {
-            stage: "idle",
-            message: "수집 설정을 입력한 뒤 시작하세요.",
-            elapsedMs: 0,
-            elapsedText: "0ms",
-        },
-        summary: null,
-        outputDirectory: "",
-        files: createPublicFileState(),
-        error: "",
-    };
-}
+/**
+ * 장바구니 작업 중인 계정만 수집 시작을 제한한다.
+ * key 형식: site:localCredentialId 또는 site:accountId
+ */
+const cartAccountLocks = new Set();
+let activeCartUpload = null;
+let latestCompletedRunId = "";
 
 /** 결과 파일의 공개 가능 상태만 생성한다. */
 function createPublicFileState(files = null) {
@@ -132,40 +133,100 @@ function cloneForRenderer(value) {
     return JSON.parse(JSON.stringify(value));
 }
 
-/** 현재 상태를 Renderer에 전송한다. */
+/** 전체 실행 상태를 Renderer 전용 객체로 변환한다. */
+function createPublicApplicationState() {
+    const runs = Array.from(runStates.values()).sort(
+        (a, b) => Number(b.startedAtMs || 0) - Number(a.startedAtMs || 0),
+    );
+
+    return {
+        runs,
+        activeRunCount: activeRuns.size,
+        latestCompletedRunId,
+        outputDirectory: selectedOutputRoot,
+        cart: {
+            running: Boolean(activeCartUpload),
+            startedAtMs: activeCartUpload?.startedAtMs || null,
+            lockedAccountCount: cartAccountLocks.size,
+        },
+    };
+}
+
+/** 현재 전체 상태를 Renderer에 전송한다. */
 function emitState() {
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
     mainWindow.webContents.send(
         CHANNELS.stateChanged,
-        cloneForRenderer(appState),
+        cloneForRenderer(createPublicApplicationState()),
     );
 }
 
-/** 상태 일부를 갱신하고 즉시 Renderer에 전달한다. */
-function updateState(patch) {
-    appState = {
-        ...appState,
+/** 특정 실행 상태 일부를 갱신하고 Renderer에 전달한다. */
+function updateRunState(runId, patch) {
+    const current = runStates.get(runId);
+
+    if (!current) return;
+
+    runStates.set(runId, {
+        ...current,
         ...patch,
-    };
+    });
 
     emitState();
 }
 
-/** 실행 시간을 보완해 진행 상태를 갱신한다. */
-function updateProgress(progress) {
+/** 특정 실행의 진행 상태를 갱신한다. */
+function updateRunProgress(runId, progress) {
+    const current = runStates.get(runId);
+
+    if (!current) return;
+
     const elapsedMs =
         Number(progress?.elapsedMs) ||
-        (appState.startedAtMs ? Date.now() - appState.startedAtMs : 0);
+        (current.startedAtMs ? Date.now() - current.startedAtMs : 0);
 
-    updateState({
+    updateRunState(runId, {
         progress: {
-            ...appState.progress,
+            ...current.progress,
             ...progress,
             elapsedMs,
             elapsedText: progress?.elapsedText || formatMs(elapsedMs),
         },
     });
+}
+
+/** 사이트와 계정으로 동시 실행 충돌 검사에 사용할 key를 만든다. */
+function createAccountLockKey(site, localCredentialId, accountId) {
+    const normalizedSite = String(site || "").trim();
+    const credentialId = String(localCredentialId || "").trim();
+    const loginId = String(accountId || "").trim();
+
+    if (!normalizedSite) return "";
+    if (credentialId) return `${normalizedSite}:credential:${credentialId}`;
+    if (loginId) return `${normalizedSite}:login:${loginId}`;
+
+    return `${normalizedSite}:env`;
+}
+
+/** 같은 계정을 사용 중인 수집 작업을 찾는다. */
+function findActiveRunByAccountKey(accountKey) {
+    if (!accountKey) return null;
+
+    return (
+        Array.from(activeRuns.values()).find(
+            (run) => run.accountKey === accountKey,
+        ) || null
+    );
+}
+
+/** 종료 대기 중이며 모든 작업이 끝났으면 앱을 종료한다. */
+function maybeQuitAfterWork() {
+    if (!quitAfterRun) return;
+    if (activeRuns.size > 0 || activeCartUpload) return;
+
+    allowImmediateQuit = true;
+    app.quit();
 }
 
 /** IPC 요청이 로컬 Renderer 창에서 발생했는지 확인한다. */
@@ -237,7 +298,7 @@ function normalizeRunInput(input) {
 
         "detailMaxProducts",
         "detailRequestDelayMs",
-        
+
         "cartQty",
         "clearCartBefore",
         "clearCartAfter",
@@ -253,6 +314,328 @@ function normalizeRunInput(input) {
     );
 }
 
+
+/** 수집 설정에서 장바구니 계정 잠금용 key를 만든다. */
+function createCollectionAccountKey(config, safeInput) {
+    return createAccountLockKey(
+        config.mall,
+        safeInput.localCredentialId,
+        config.accountId,
+    );
+}
+
+/** Renderer에 노출할 실행 요청 요약을 만든다. */
+function createPublicRunRequest(config, safeInput) {
+    return {
+        mall: config.mall,
+        collectionMode:
+            safeInput.collectionMode === "detail" ? "detail" : "general",
+        accountName:
+            String(safeInput.accountName || "").trim() ||
+            (safeInput.localCredentialId ? "등록 계정" : ".env 계정"),
+        localCredentialId: String(safeInput.localCredentialId || ""),
+        executionOptions: safeInput.executionOptions || {
+            runMode: "once",
+        },
+    };
+}
+
+const SUPPORTED_CART_SITES = new Set(["cheonyu", "ccdome"]);
+
+/** 일괄 요청에 포함된 상품 한 건을 검증한다. */
+function normalizeCartItem(item, index = 0) {
+    const source = item && typeof item === "object" ? item : {};
+    const site = String(source.site || "").trim();
+    const productId = String(source.productId || "").trim();
+    const optionId = String(source.optionId ?? "").trim();
+    const quantity = Math.trunc(Number(source.quantity));
+
+    if (!SUPPORTED_CART_SITES.has(site)) {
+        throw new Error(`${index + 1}번째 상품의 site가 올바르지 않습니다.`);
+    }
+
+    if (!/^\d+$/.test(productId)) {
+        throw new Error(`${index + 1}번째 상품 ID가 올바르지 않습니다.`);
+    }
+
+    if (site === "cheonyu" && !/^\d+$/.test(optionId)) {
+        throw new Error(`${index + 1}번째 천유 옵션 ID가 올바르지 않습니다.`);
+    }
+
+    if (site === "ccdome" && optionId) {
+        throw new Error(`${index + 1}번째 과자생각 상품의 optionId는 비워야 합니다.`);
+    }
+
+    if (!Number.isInteger(quantity) || quantity < 1) {
+        throw new Error(`${index + 1}번째 수량은 1 이상의 정수여야 합니다.`);
+    }
+
+    return {
+        productId,
+        optionId,
+        quantity,
+        site,
+    };
+}
+
+/** 같은 사이트·상품·옵션 요청이 중복되면 수량을 합친다. */
+function mergeDuplicateCartItems(items) {
+    const map = new Map();
+
+    for (const item of items) {
+        const key = `${item.site}:${item.productId}:${item.optionId}`;
+        const previous = map.get(key);
+
+        if (previous) {
+            previous.quantity += item.quantity;
+        } else {
+            map.set(key, { ...item });
+        }
+    }
+
+    return Array.from(map.values());
+}
+
+/** 상품 목록을 사이트별 배열로 분리한다. */
+function splitCartItemsBySite(items) {
+    const result = {
+        cheonyu: [],
+        ccdome: [],
+    };
+
+    for (const item of items) {
+        result[item.site].push(item);
+    }
+
+    return result;
+}
+
+/** 사이트별 로컬 로그인 계정을 검증한다. */
+function getCartAccount(accounts, site) {
+    const source = accounts?.[site];
+    const accountId = String(source?.accountId || "").trim();
+    const accountPw = String(source?.accountPw || "");
+
+    if (!accountId || !accountPw) {
+        throw new Error(`${site} 장바구니 계정이 선택되지 않았습니다.`);
+    }
+
+    return {
+        accountId,
+        accountPw,
+        accountName: String(source?.accountName || ""),
+        localCredentialId: String(source?.localCredentialId || ""),
+    };
+}
+
+/** uploader 응답에서 상품 배열을 추출하고 각 항목을 검증한다. */
+function extractUploaderCartItems(responseData) {
+    const candidate = Array.isArray(responseData)
+        ? responseData
+        : Array.isArray(responseData?.data)
+          ? responseData.data
+          : Array.isArray(responseData?.items)
+            ? responseData.items
+            : Array.isArray(responseData?.data?.items)
+              ? responseData.data.items
+              : null;
+
+    if (!candidate) {
+        throw new Error("Uploader 응답이 상품 배열 형식이 아닙니다.");
+    }
+
+    if (candidate.length < 1) {
+        throw new Error("Uploader에서 받은 장바구니 상품이 없습니다.");
+    }
+
+    return candidate.map((item, index) => normalizeCartItem(item, index));
+}
+
+/** uploader API를 한 번 호출해 전체 장바구니 상품 배열을 가져온다. */
+async function fetchUploaderCartItems(signal) {
+    const url = new URL(CART_UPLOAD_API_URL);
+
+    console.log("[CART UPLOADER GET]", url.toString());
+
+    const controller = new AbortController();
+    const abortFromParent = () => controller.abort();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+    signal?.addEventListener("abort", abortFromParent, {
+        once: true,
+    });
+
+    try {
+        const response = await net.fetch(url.toString(), {
+            method: "GET",
+            headers: {
+                Accept: "application/json, text/plain, */*",
+            },
+            redirect: "follow",
+            signal: controller.signal,
+        });
+        const responseText = await response.text();
+        let responseData = responseText;
+
+        try {
+            responseData = responseText ? JSON.parse(responseText) : null;
+        } catch {
+            throw new Error("Uploader 응답이 올바른 JSON 형식이 아닙니다.");
+        }
+
+        if (!response.ok) {
+            const serverMessage =
+                responseData && typeof responseData === "object"
+                    ? responseData?.message || responseData?.error
+                    : responseData;
+
+            throw new Error(
+                serverMessage || `Uploader 요청 실패: HTTP ${response.status}`,
+            );
+        }
+
+        const items = extractUploaderCartItems(responseData);
+
+        console.log("[CART UPLOADER RESPONSE]", items);
+
+        return {
+            items,
+            status: response.status,
+            response: responseData,
+        };
+    } catch (error) {
+        if (error?.name === "AbortError") {
+            throw new Error("Uploader 요청이 취소되었거나 시간이 초과되었습니다.");
+        }
+
+        throw error;
+    } finally {
+        clearTimeout(timeoutId);
+        signal?.removeEventListener("abort", abortFromParent);
+    }
+}
+
+/** GET 응답 배열을 사이트별로 분리해 실제 장바구니에 담는다. */
+async function uploadCartItems(input) {
+    if (activeCartUpload) {
+        throw new Error("이미 장바구니 작업이 실행 중입니다.");
+    }
+
+    const controller = new AbortController();
+    const lockedAccountKeys = new Set();
+
+    /**
+     * GET 응답을 받기 전에는 어느 사이트 계정이 실제로 필요한지 알 수 없다.
+     * 따라서 이 시점에는 두 번째 장바구니 실행만 막고 계정 잠금은 하지 않는다.
+     */
+    activeCartUpload = {
+        controller,
+        startedAtMs: Date.now(),
+        accountKeys: lockedAccountKeys,
+    };
+    emitState();
+
+    try {
+        const fetched = await fetchUploaderCartItems(controller.signal);
+        const normalizedItems = fetched.items;
+        const grouped = splitCartItemsBySite(normalizedItems);
+        const accounts = {};
+
+        /**
+         * 응답에 실제로 포함된 사이트의 계정만 검증하고 잠근다.
+         * 같은 계정으로 이미 수집 중이면 장바구니 작업을 시작하지 않는다.
+         */
+        for (const site of ["cheonyu", "ccdome"]) {
+            if (grouped[site].length < 1) continue;
+
+            const account = getCartAccount(input?.accounts, site);
+            const accountKey = createAccountLockKey(
+                site,
+                account.localCredentialId,
+                account.accountId,
+            );
+            const conflictingRun = findActiveRunByAccountKey(accountKey);
+
+            if (conflictingRun) {
+                const runState = runStates.get(conflictingRun.id);
+
+                throw new Error(
+                    `${site} 장바구니 계정은 현재 ` +
+                    `${runState?.request?.collectionMode === "detail" ? "상세" : "일반"} ` +
+                    `수집에서 사용 중입니다.`,
+                );
+            }
+
+            accounts[site] = account;
+            lockedAccountKeys.add(accountKey);
+        }
+
+        for (const key of lockedAccountKeys) {
+            cartAccountLocks.add(key);
+        }
+        emitState();
+
+        const results = {};
+
+        for (const site of ["cheonyu", "ccdome"]) {
+            const siteItems = grouped[site];
+
+            if (siteItems.length < 1) continue;
+
+            const account = accounts[site];
+            const config = resolveRunConfig(
+                {
+                    mall: site,
+                    category: site === "cheonyu" ? "-1" : "017",
+                    accountId: account.accountId,
+                    accountPw: account.accountPw,
+                    accountName: account.accountName,
+                    localCredentialId: account.localCredentialId,
+                    showBrowser: input?.showBrowser === true,
+                    pageStart: 1,
+                    pageEnd: 0,
+                    clearCartBefore: false,
+                    clearCartAfter: false,
+                    outDir: selectedOutputRoot,
+                },
+                process.env,
+                getDefaultOutputRoot(),
+            );
+
+            const cartItems = mergeDuplicateCartItems(siteItems);
+            const cartResult = await runCartUpload(config, cartItems, {
+                signal: controller.signal,
+                onProgress: (progress) => {
+                    console.log(`[CART ${site}]`, progress.message);
+                },
+            });
+
+            results[site] = {
+                ...cartResult,
+                requestCount: siteItems.length,
+            };
+        }
+
+        return {
+            success: true,
+            requestCount: normalizedItems.length,
+            items: normalizedItems,
+            uploader: {
+                status: fetched.status,
+            },
+            results,
+        };
+    } finally {
+        for (const key of lockedAccountKeys) {
+            cartAccountLocks.delete(key);
+        }
+
+        activeCartUpload = null;
+        emitState();
+        maybeQuitAfterWork();
+    }
+}
+
 /** Playwright 수집을 백그라운드 Promise로 실행한다. */
 async function executeCollection(run, config) {
     try {
@@ -260,25 +643,31 @@ async function executeCollection(run, config) {
             runId: run.id,
             signal: run.controller.signal,
             onProgress: (progress) => {
-                if (activeRun?.id !== run.id) return;
-                updateProgress(progress);
+                if (!activeRuns.has(run.id)) return;
+                updateRunProgress(run.id, progress);
             },
         });
 
-        lastResultFiles = result.files;
-        lastResultDirectory = path.dirname(result.files.inventory);
-
+        const resultDirectory = path.dirname(result.files.inventory);
         const finishedAtMs = Date.now();
 
-        updateState({
+        runResults.set(run.id, {
+            files: result.files,
+            directory: resultDirectory,
+        });
+        latestCompletedRunId = run.id;
+
+        const current = runStates.get(run.id);
+
+        updateRunState(run.id, {
             status: "completed",
             finishedAtMs,
             summary: result.payload.summary,
-            outputDirectory: lastResultDirectory,
+            outputDirectory: resultDirectory,
             files: createPublicFileState(result.files),
             error: "",
             progress: {
-                ...appState.progress,
+                ...current?.progress,
                 stage: "completed",
                 message: "수집과 파일 저장이 완료되었습니다.",
                 elapsedMs: finishedAtMs - run.startedAtMs,
@@ -289,10 +678,10 @@ async function executeCollection(run, config) {
         const canceled =
             run.controller.signal.aborted ||
             isAbortError(error);
-
         const finishedAtMs = Date.now();
+        const current = runStates.get(run.id);
 
-        updateState({
+        updateRunState(run.id, {
             status: canceled ? "canceled" : "failed",
             finishedAtMs,
             summary: null,
@@ -300,7 +689,7 @@ async function executeCollection(run, config) {
             outputDirectory: "",
             error: canceled ? "" : getErrorMessage(error),
             progress: {
-                ...appState.progress,
+                ...current?.progress,
                 stage: canceled ? "canceled" : "failed",
                 message: canceled
                     ? "사용자 요청으로 수집을 취소했습니다."
@@ -310,23 +699,14 @@ async function executeCollection(run, config) {
             },
         });
     } finally {
-        if (activeRun?.id === run.id) {
-            activeRun = null;
-        }
-
-        if (quitAfterRun) {
-            allowImmediateQuit = true;
-            app.quit();
-        }
+        activeRuns.delete(run.id);
+        emitState();
+        maybeQuitAfterWork();
     }
 }
 
-/** 새 수집 작업을 시작하고 즉시 초기 상태를 반환한다. */
+/** 새 수집 작업을 시작하고 즉시 해당 실행 상태를 반환한다. */
 function startCollection(input) {
-    if (activeRun) {
-        throw new Error("이미 수집 작업이 실행 중입니다.");
-    }
-
     const safeInput = normalizeRunInput(input);
     const config = resolveRunConfig(
         {
@@ -336,25 +716,29 @@ function startCollection(input) {
         process.env,
         getDefaultOutputRoot(),
     );
+    const accountKey = createCollectionAccountKey(config, safeInput);
+
+    if (cartAccountLocks.has(accountKey)) {
+        throw new Error(
+            "선택한 계정은 현재 장바구니 담기 작업에서 사용 중입니다. 다른 계정을 선택하세요.",
+        );
+    }
 
     const id = createRunId();
     const controller = new AbortController();
     const startedAtMs = Date.now();
-
-    activeRun = {
+    const run = {
         id,
         controller,
         startedAtMs,
+        accountKey,
     };
-
-    lastResultFiles = null;
-    lastResultDirectory = "";
-
-    appState = {
+    const runState = {
         id,
         status: "running",
         startedAtMs,
         finishedAtMs: null,
+        request: createPublicRunRequest(config, safeInput),
         progress: {
             stage: "queued",
             message: "수집 작업을 준비하고 있습니다.",
@@ -367,31 +751,44 @@ function startCollection(input) {
         error: "",
     };
 
+    activeRuns.set(id, run);
+    runStates.set(id, runState);
     emitState();
 
-    void executeCollection(activeRun, config);
+    void executeCollection(run, config);
 
-    return cloneForRenderer(appState);
+    return cloneForRenderer(runState);
 }
 
-/** 실행 중인 작업에 취소 신호를 보낸다. */
-function cancelCollection() {
-    if (!activeRun) {
-        return cloneForRenderer(appState);
+/** 실행 ID에 해당하는 수집 작업만 취소한다. */
+function cancelCollection(payload) {
+    const requestedRunId = String(
+        typeof payload === "string" ? payload : payload?.runId || "",
+    ).trim();
+    const fallbackRun =
+        Array.from(activeRuns.values()).sort(
+            (a, b) => b.startedAtMs - a.startedAtMs,
+        )[0] || null;
+    const run = activeRuns.get(requestedRunId) || fallbackRun;
+
+    if (!run) {
+        return cloneForRenderer(createPublicApplicationState());
     }
 
-    updateState({
+    const current = runStates.get(run.id);
+
+    updateRunState(run.id, {
         status: "canceling",
         progress: {
-            ...appState.progress,
+            ...current?.progress,
             stage: "canceling",
             message: "브라우저를 종료하고 수집을 취소하고 있습니다.",
         },
     });
 
-    activeRun.controller.abort();
+    run.controller.abort();
 
-    return cloneForRenderer(appState);
+    return cloneForRenderer(createPublicApplicationState());
 }
 
 /**
@@ -460,27 +857,35 @@ function getDefaultDownloadRoot() {
     ]);
 }
 
-/** 결과 파일 유형을 검증하고 실제 경로를 반환한다. */
-function getResultFile(fileType) {
+/** 실행별 결과 파일 유형을 검증하고 실제 경로를 반환한다. */
+function getResultFile(fileType, runId = "") {
     if (!RESULT_FILE_TYPES[fileType]) {
         throw new Error(`지원하지 않는 결과 파일입니다: ${fileType}`);
     }
 
-    const filePath = lastResultFiles?.[fileType];
+    const targetRunId =
+        String(runId || "").trim() ||
+        latestCompletedRunId;
+    const resultInfo = runResults.get(targetRunId);
+    const filePath = resultInfo?.files?.[fileType];
 
     if (!filePath || !isFile(filePath)) {
-        throw new Error("저장할 결과 파일이 없습니다.");
+        throw new Error("해당 실행에서 저장할 결과 파일이 없습니다.");
     }
 
     return {
+        runId: targetRunId,
         filePath,
         metadata: RESULT_FILE_TYPES[fileType],
     };
 }
 
-/** 결과 CSV를 사용자가 선택한 경로로 복사한다. */
+/** 실행별 결과 CSV를 사용자가 선택한 경로로 복사한다. */
 async function saveResultFile(payload) {
-    const { filePath, metadata } = getResultFile(payload?.fileType);
+    const { filePath, metadata } = getResultFile(
+        payload?.fileType,
+        payload?.runId,
+    );
 
     const result = await dialog.showSaveDialog(mainWindow, {
         title: `${metadata.label} 저장`,
@@ -558,24 +963,26 @@ function registerIpcHandlers() {
     }));
 
     registerIpcHandler(CHANNELS.getState, () =>
-        cloneForRenderer(appState),
+        cloneForRenderer(createPublicApplicationState()),
     );
 
     registerIpcHandler(CHANNELS.start, (input) =>
         startCollection(input),
     );
 
-    registerIpcHandler(CHANNELS.cancel, () =>
-        cancelCollection(),
+    registerIpcHandler(CHANNELS.cancel, (payload) =>
+        cancelCollection(payload),
     );
+
+    registerIpcHandler(
+        CHANNELS.uploadCartItems,
+        uploadCartItems,
+    );
+
 
     registerIpcHandler(
         CHANNELS.chooseOutputDirectory,
         async () => {
-            if (activeRun) {
-                throw new Error("수집 중에는 출력 폴더를 변경할 수 없습니다.");
-            }
-
             const result = await dialog.showOpenDialog(mainWindow, {
                 title: "수집 결과 저장 폴더 선택",
                 defaultPath: selectedOutputRoot,
@@ -608,14 +1015,17 @@ function registerIpcHandlers() {
 
     registerIpcHandler(
         CHANNELS.openResultDirectory,
-        async () => {
-            if (!lastResultDirectory) {
+        async (payload) => {
+            const runId =
+                String(payload?.runId || "").trim() ||
+                latestCompletedRunId;
+            const directory = runResults.get(runId)?.directory;
+
+            if (!directory) {
                 throw new Error("열 수 있는 결과 폴더가 없습니다.");
             }
 
-            const error = await shell.openPath(
-                lastResultDirectory,
-            );
+            const error = await shell.openPath(directory);
 
             if (error) {
                 throw new Error(error);
@@ -623,6 +1033,7 @@ function registerIpcHandlers() {
 
             return {
                 opened: true,
+                runId,
             };
         },
     );
@@ -632,6 +1043,7 @@ function registerIpcHandlers() {
         (payload) => {
             const { filePath } = getResultFile(
                 payload?.fileType,
+                payload?.runId,
             );
 
             shell.showItemInFolder(filePath);
@@ -731,7 +1143,10 @@ function createMainWindow() {
     });
 
     mainWindow.on("close", (event) => {
-        if (!activeRun || allowImmediateQuit) {
+        if (
+            (activeRuns.size === 0 && !activeCartUpload) ||
+            allowImmediateQuit
+        ) {
             return;
         }
 
@@ -762,7 +1177,13 @@ function createMainWindow() {
             .then(({ response }) => {
                 if (response === 0) {
                     quitAfterRun = true;
-                    cancelCollection();
+
+                    for (const run of activeRuns.values()) {
+                        run.controller.abort();
+                    }
+
+                    activeCartUpload?.controller?.abort();
+                    maybeQuitAfterWork();
                 }
             })
             .finally(() => {

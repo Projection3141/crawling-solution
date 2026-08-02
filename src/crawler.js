@@ -15,6 +15,10 @@ const ADAPTERS = {
   ccdome: require("./malls/ccdome"),
 };
 
+const RESULT_UPLOAD_URL =
+  "https://www.web3.io.kr/joahstore/crawling/uploader";
+const RESULT_UPLOAD_TIMEOUT_MS = 30000;
+
 const CSV_HEADERS = {
   inventory: [
     "sourceMall",
@@ -509,6 +513,139 @@ function createDetailResultObject(
   return result;
 }
 
+/**
+ * POST 전송 데이터에서 productUrl 키만 재귀적으로 제거한다.
+ * 원본 result/detailResult 객체는 변경하지 않는다.
+ */
+function removeProductUrlDeep(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => removeProductUrlDeep(item));
+  }
+
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const result = {};
+
+  for (const [key, childValue] of Object.entries(value)) {
+    if (key === "productUrl") continue;
+
+    result[key] = removeProductUrlDeep(childValue);
+  }
+
+  return result;
+}
+
+/** 응답 본문을 JSON 우선으로 변환하고, 실패하면 문자열로 반환한다. */
+function parseUploadResponseText(text) {
+  if (!text) return null;
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * 메모리에 완성된 결과 JSON을 uploader 서버에 한 번에 POST한다.
+ *
+ * body:
+ * {
+ *   type: "재고" | "디테일",
+ *   data: productUrl이 제거된 JSON 객체
+ * }
+ */
+async function postResultJson(type, data, { signal } = {}) {
+  throwIfAborted(signal);
+
+  if (typeof fetch !== "function") {
+    throw new Error(
+      "현재 Node.js 환경에서 fetch를 사용할 수 없습니다. Node.js 18 이상이 필요합니다.",
+    );
+  }
+
+  const controller = new AbortController();
+  let timedOut = false;
+
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, RESULT_UPLOAD_TIMEOUT_MS);
+
+  const abortFromParent = () => {
+    controller.abort();
+  };
+
+  signal?.addEventListener("abort", abortFromParent, {
+    once: true,
+  });
+
+  const body = {
+    type,
+    data: removeProductUrlDeep(data),
+  };
+
+  try {
+    console.log(`[RESULT POST] ${type} 전송 시작`, {
+      url: RESULT_UPLOAD_URL,
+      type,
+    });
+
+    const response = await fetch(RESULT_UPLOAD_URL, {
+      method: "POST",
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/json; charset=UTF-8",
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    const responseText = await response.text();
+    const responseData = parseUploadResponseText(responseText);
+
+    console.log(`[RESULT POST] ${type} 응답`, {
+      status: response.status,
+      ok: response.ok,
+      data: responseData,
+    });
+
+    if (!response.ok) {
+      const message =
+        responseData && typeof responseData === "object"
+          ? responseData.message || responseData.error
+          : responseData;
+
+      throw new Error(
+        message || `${type} 결과 POST 실패: HTTP ${response.status}`,
+      );
+    }
+
+    return {
+      type,
+      status: response.status,
+      response: responseData,
+    };
+  } catch (error) {
+    if (signal?.aborted) {
+      throwIfAborted(signal);
+    }
+
+    if (timedOut || error?.name === "AbortError") {
+      throw new Error(
+        `${type} 결과 POST 요청 시간이 ${RESULT_UPLOAD_TIMEOUT_MS}ms를 초과했습니다.`,
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    signal?.removeEventListener("abort", abortFromParent);
+  }
+}
+
 /** 선택한 쇼핑몰 adapter를 실행하고 공통 CSV/JSON 파일을 저장한다. */
 async function runCollection(config, { runId, onProgress = () => { }, signal }) {
   throwIfAborted(signal);
@@ -567,6 +704,8 @@ async function runCollection(config, { runId, onProgress = () => { }, signal }) 
   saveCsv(files.summaryCsv, CSV_HEADERS.summary, result.productSummaries);
   saveCsv(files.productsCsv, CSV_HEADERS.products, result.products);
 
+  
+
   if (result.detailItems?.length) {
     saveCsv(files.detailsCsv, CSV_HEADERS.details, result.detailItems);
   }
@@ -582,6 +721,8 @@ async function runCollection(config, { runId, onProgress = () => { }, signal }) 
   /** 상세페이지까지 실제로 수집된 상품만 별도 JSON으로 저장 */
   const detailResult = createDetailResultObject(
     result.detailItems || [],
+    result.inventoryItems || [],
+    result.productSummaries || [],
   );
 
   const hasDetailResult =
@@ -593,8 +734,41 @@ async function runCollection(config, { runId, onProgress = () => { }, signal }) 
       detailResult,
     );
   }
+
+  /**
+   * 파일을 다시 읽지 않고 메모리에 완성된 JSON 객체를 그대로 POST한다.
+   * 전송용 복사본에서만 productUrl 키를 재귀적으로 제거한다.
+   */
+  onProgress({
+    stage: "uploading",
+    message: hasDetailResult
+      ? "재고 및 디테일 결과 JSON을 서버에 전송하고 있습니다."
+      : "재고 결과 JSON을 서버에 전송하고 있습니다.",
+    pageRange: result.summary.pageRange,
+    detectedTotalProductCount: result.summary.detectedTotalProductCount,
+    collectedProductCount: result.summary.collectedProductCount,
+    targetProductCount: result.summary.targetProductCount,
+    productSummaryCount: result.summary.productSummaryCount,
+    soldOutProductCount: result.summary.soldOutProductCount,
+    elapsedMs: result.summary.elapsedMs,
+  });
+
+  throwIfAborted(signal);
+
+  const uploads = {
+    inventory: await postResultJson("재고", payload, { signal }),
+    detail: null,
+  };
+
+  if (hasDetailResult) {
+    uploads.detail = await postResultJson("디테일", detailResult, {
+      signal,
+    });
+  }
+
   return {
     payload,
+    uploads,
     files: {
       inventory: files.inventoryCsv,
       summary: files.summaryCsv,

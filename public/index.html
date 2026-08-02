@@ -17,6 +17,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>쇼핑몰 상품 수집기</title>
   <link rel="stylesheet" href="./style.css" />
+  <link rel="stylesheet" href="./concurrent.css" />
 </head>
 
 <body>
@@ -172,8 +173,8 @@
           <article id="detailGuide" class="guide-card">
             <strong>상세 수집 추가 데이터</strong>
             <p>
-              일반 수집 결과에 더해 상세페이지의 카테고리, 상품번호, 대표 바코드,
-              외부 박스 수량, 소비자가, 상품상세정보, 마이3PL 비용, 상품 소개 이미지 URL을 수집합니다.
+              상세페이지의 카테고리, 상품번호, 대표 바코드, 외부 박스 수량, 소비자가, 
+              상품상세정보, 상품 소개 이미지 URL을 수집합니다.
             </p>
           </article>
         </div>
@@ -212,79 +213,75 @@
 
         <div class="form-actions">
           <button id="runButton" type="submit" class="primary-button">
-            수집 시작
-          </button>
-
-          <button id="cancelButton" type="button" class="danger-button" disabled>
-            수집 취소
+            수집 실행 추가
           </button>
 
           <p class="form-note">
-            동시에 한 개의 수집 작업만 실행됩니다.
+            실행 중에도 설정을 변경해 일반 수집이나 상세 수집을 추가할 수 있습니다.
+            장바구니 작업에서 사용 중인 동일 사이트·동일 계정만 시작이 제한됩니다.
           </p>
         </div>
       </form>
+    </section>
+
+    <section class="panel cart-upload-panel">
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">CART REQUEST</p>
+          <h2>장바구니 일괄 담기</h2>
+        </div>
+
+        <p class="env-hint">
+          사이트별 계정을 선택하면 uploader GET 응답을 기준으로 자동 처리합니다.
+        </p>
+      </div>
+
+      <div class="form-grid">
+        <label class="field">
+          <span>천유닷컴 계정</span>
+          <select id="cartCheonyuAccountSelect">
+            <option value="">천유닷컴 계정 선택</option>
+          </select>
+          <small>GET 응답에 천유 상품이 있을 때 사용할 로그인 계정입니다.</small>
+        </label>
+
+        <label class="field">
+          <span>과자생각 계정</span>
+          <select id="cartCcdomeAccountSelect">
+            <option value="">과자생각 계정 선택</option>
+          </select>
+          <small>GET 응답에 과자생각 상품이 있을 때 사용할 로그인 계정입니다.</small>
+        </label>
+      </div>
+
+      <div class="form-actions">
+        <button id="cartUploadButton" type="button" class="primary-button">
+          장바구니 담기
+        </button>
+
+        <p id="cartUploadMessage" class="form-note" aria-live="polite">
+          사이트별 계정을 선택한 뒤 장바구니 담기 버튼을 누르세요.
+        </p>
+      </div>
     </section>
 
     <section class="panel status-panel" aria-live="polite">
       <div class="status-header">
         <div>
           <p class="section-kicker">RUN STATUS</p>
-          <h2>실행 상태</h2>
+          <h2>실행 목록</h2>
         </div>
 
-        <span id="statusBadge" class="status-badge idle">대기</span>
+        <span id="activeRunCount" class="status-badge idle">
+          실행 중 0건 · 전체 0건
+        </span>
       </div>
-
-      <progress id="progressBar" class="progress-bar" max="100" value="0" aria-label="수집 진행률"></progress>
-
-      <p id="statusMessage" class="status-message">
-        수집 설정을 입력한 뒤 시작하세요.
-      </p>
 
       <p id="errorMessage" class="error-message" hidden></p>
       <p id="successMessage" class="success-message" hidden></p>
 
-      <div class="metrics-grid">
-        <article class="metric-card">
-          <span>수집 페이지</span>
-          <strong id="metricPages">-</strong>
-        </article>
-
-        <article class="metric-card">
-          <span>전체 상품 감지 수</span>
-          <strong id="metricDetected">-</strong>
-        </article>
-
-        <article class="metric-card">
-          <span>수집 전체 상품 수</span>
-          <strong id="metricCollected">-</strong>
-        </article>
-
-        <article class="metric-card">
-          <span>일반 수집 대상 수</span>
-          <strong id="metricTargets">-</strong>
-        </article>
-
-        <article class="metric-card">
-          <span>상세 수집 상품 수</span>
-          <strong id="metricDetails">-</strong>
-        </article>
-
-        <article class="metric-card">
-          <span>상품 요약 수</span>
-          <strong id="metricSummaries">-</strong>
-        </article>
-
-        <article class="metric-card">
-          <span>품절 상품 수</span>
-          <strong id="metricSoldOut">-</strong>
-        </article>
-
-        <article class="metric-card">
-          <span>소요 시간</span>
-          <strong id="metricElapsed">0ms</strong>
-        </article>
+      <div id="runList" class="run-list">
+        <p class="empty-list">아직 실행한 수집 작업이 없습니다.</p>
       </div>
     </section>
 
@@ -292,11 +289,11 @@
       <div class="section-heading">
         <div>
           <p class="section-kicker">OUTPUT FILES</p>
-          <h2>결과 파일</h2>
+          <h2>최근 완료 결과 파일</h2>
         </div>
 
         <div class="result-header-actions">
-          <p>수집 완료 후 원하는 위치로 복사하거나 원본 폴더를 열 수 있습니다.</p>
+          <p>각 실행 카드에서도 해당 실행의 결과 파일을 개별 저장할 수 있습니다.</p>
 
           <button id="openResultDirectoryButton" type="button" class="secondary-button" disabled>
             결과 폴더 열기

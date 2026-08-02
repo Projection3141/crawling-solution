@@ -32,17 +32,23 @@ const CCDOME_DETAIL = {
       ".item_info_box .item_detail_list dl, " +
       ".item_detail_list dl",
 
+    /**
+     * 상품 대표 원본 이미지.
+     *
+     * .item_photo_slide는 썸네일 영역이므로 포함하지 않는다.
+     */
     mainImages:
-      ".item_photo_big img, " +
-      ".item_photo_view img, " +
-      ".item_photo_box img, " +
-      ".slider_goods_nav img",
+      ".item_photo_view .item_photo_big img, " +
+      ".item_photo_big span.img_photo_big img, " +
+      ".item_photo_big img",
 
+    /**
+     * 상품상세 탭의 실제 상세설명 이미지.
+     */
     detailImages:
-      "#detail .detail_cont img, " +
-      "#detail .detail_explain_box img, " +
-      "#detail .txt-manual img, " +
-      "#detail img",
+      "#detail .detail_cont .detail_explain_box .txt-manual img, " +
+      "#detail .detail_cont .detail_explain_box .image-manual img, " +
+      "#detail .detail_cont .detail_explain_box img",
 
     detailTextScope:
       "#detail .detail_cont, " +
@@ -298,8 +304,8 @@ function parseCcdomeDetailHtml(html, product, config) {
     config,
   ).filter((url) => !/\/thumb\//i.test(url));
 
-  const detailImageUrl =
-    detailImageUrls[0] || "";
+  const detailImageUrl = detailImageUrls[0] || "";
+  const introImageUrls = detailImageUrls;
 
   const expiryDate = pickByIncludes(itemInfo, ["소비기한", "유통기한"]);
   const salePriceText = pickByIncludes(itemInfo, ["판매가"]);
@@ -358,12 +364,11 @@ function parseCcdomeDetailHtml(html, product, config) {
     packageText: packageInfo.packageText,
 
     mainImageUrls,
-    mainImageUrls,
+    thumbnailImageUrls: mainImageUrls,
+    detailImageUrls,
     detailImageUrl,
+    introImageUrls,
 
-    mainImageUrlsText: mainImageUrls.join(" | "),
-    thumbnailImageUrlsText: mainImageUrls.join(" | "),
-    introImageUrlsText: detailImageUrl,
     mainImageUrlsText: mainImageUrls.join(" | "),
     thumbnailImageUrlsText: mainImageUrls.join(" | "),
     introImageUrlsText: introImageUrls.join(" | "),

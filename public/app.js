@@ -3,6 +3,11 @@
 const ACCOUNT_STORAGE_KEY = "mall-collector-accounts-v1";
 const SELECTED_ACCOUNT_STORAGE_KEY = "mall-collector-selected-account-id";
 
+const CART_ACCOUNT_STORAGE_KEYS = Object.freeze({
+  cheonyu: "mall-collector-cart-account-cheonyu",
+  ccdome: "mall-collector-cart-account-ccdome",
+});
+
 const elements = {
   form: document.querySelector("#collectorForm"),
   mall: document.querySelector("#mall"),
@@ -36,50 +41,54 @@ const elements = {
   detailMaxProducts: document.querySelector("#detailMaxProducts"),
   detailRequestDelayMs: document.querySelector("#detailRequestDelayMs"),
   runButton: document.querySelector("#runButton"),
-  cancelButton: document.querySelector("#cancelButton"),
   mallHelp: document.querySelector("#mallHelp"),
   categoryHelp: document.querySelector("#categoryHelp"),
   envHint: document.querySelector("#envHint"),
   appBadge: document.querySelector("#appBadge"),
-  statusBadge: document.querySelector("#statusBadge"),
-  statusMessage: document.querySelector("#statusMessage"),
+
+  activeRunCount: document.querySelector("#activeRunCount"),
+  runList: document.querySelector("#runList"),
   errorMessage: document.querySelector("#errorMessage"),
   successMessage: document.querySelector("#successMessage"),
-  progressBar: document.querySelector("#progressBar"),
-  metricPages: document.querySelector("#metricPages"),
-  metricDetails: document.querySelector("#metricDetails"),
-  metricDetected: document.querySelector("#metricDetected"),
-  metricCollected: document.querySelector("#metricCollected"),
-  metricTargets: document.querySelector("#metricTargets"),
-  metricSummaries: document.querySelector("#metricSummaries"),
-  metricSoldOut: document.querySelector("#metricSoldOut"),
-  metricElapsed: document.querySelector("#metricElapsed"),
+
   saveInventoryButton: document.querySelector("#saveInventoryButton"),
   saveSummaryButton: document.querySelector("#saveSummaryButton"),
   saveProductsButton: document.querySelector("#saveProductsButton"),
   saveDetailsButton: document.querySelector("#saveDetailsButton"),
   openResultDirectoryButton: document.querySelector("#openResultDirectoryButton"),
+
+  cartCheonyuAccountSelect:
+    document.querySelector("#cartCheonyuAccountSelect"),
+  cartCcdomeAccountSelect:
+    document.querySelector("#cartCcdomeAccountSelect"),
+  cartUploadButton:
+    document.querySelector("#cartUploadButton"),
+  cartUploadMessage:
+    document.querySelector("#cartUploadMessage"),
 };
 
 const state = {
   defaults: null,
-  current: null,
   accounts: [],
-  elapsedTimer: null,
-  unsubscribe: null,
-  repeat: {
-    active: false,
-    timerId: null,
-    basePayload: null,
-    lastScheduledJobKey: "",
-    nextRunAt: null,
+  applicationState: {
+    runs: [],
+    activeRunCount: 0,
+    latestCompletedRunId: "",
+    cart: {
+      running: false,
+      lockedAccountKeys: [],
+    },
   },
+  unsubscribe: null,
+  elapsedTimer: null,
+  latestResultRunId: "",
+  repeatPlans: new Map(),
+  repeatTimers: new Map(),
 };
 
 const RUNNING_STATUSES = new Set([
   "queued",
   "running",
-  "waiting",
   "canceling",
 ]);
 
@@ -136,10 +145,54 @@ function maskPassword(password) {
   return `${text.slice(0, 1)}${"*".repeat(Math.max(text.length - 2, 4))}${text.slice(-1)}`;
 }
 
+/** 사이트별 장바구니 계정 선택 목록을 갱신한다. */
+function renderCartAccountSelects() {
+  const targets = [
+    {
+      site: "cheonyu",
+      label: "천유닷컴",
+      select: elements.cartCheonyuAccountSelect,
+    },
+    {
+      site: "ccdome",
+      label: "과자생각",
+      select: elements.cartCcdomeAccountSelect,
+    },
+  ];
+
+  for (const target of targets) {
+    if (!target.select) continue;
+
+    const previousValue =
+      target.select.value ||
+      localStorage.getItem(CART_ACCOUNT_STORAGE_KEYS[target.site]) ||
+      "";
+
+    target.select.replaceChildren();
+
+    const emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.textContent = `${target.label} 계정 선택`;
+    target.select.append(emptyOption);
+
+    for (const account of state.accounts) {
+      const option = document.createElement("option");
+      option.value = account.id;
+      option.textContent = `${account.name} (${account.loginId})`;
+      target.select.append(option);
+    }
+
+    if (state.accounts.some((account) => account.id === previousValue)) {
+      target.select.value = previousValue;
+    }
+  }
+}
+
 function loadAccounts() {
   state.accounts = readStoredAccounts();
   renderAccountSelect();
   renderAccountList();
+  renderCartAccountSelects();
   updateEnvHint();
 }
 
@@ -288,6 +341,7 @@ function registerAccount() {
   elements.accountSelect.value = account.id;
   updateAccountHelp();
   renderAccountList();
+  renderCartAccountSelects();
   showSuccess(`"${account.name}" 계정을 등록했습니다.`);
 }
 
@@ -322,6 +376,7 @@ function renameAccount(accountId) {
   elements.accountSelect.value = accountId;
   updateAccountHelp();
   renderAccountList();
+  renderCartAccountSelects();
   showSuccess("계정 이름을 변경했습니다.");
 }
 
@@ -346,6 +401,7 @@ function deleteAccount(accountId) {
 
   renderAccountSelect();
   renderAccountList();
+  renderCartAccountSelects();
   updateAccountHelp();
   showSuccess("계정을 삭제했습니다.");
 }
@@ -496,45 +552,27 @@ function updateEnvHint() {
     localAccountText;
 }
 
-/** 실행 중에는 수집 설정을 잠그고 취소 버튼만 활성화한다. */
-function setRunning(locked) {
-  elements.runButton.disabled = locked;
-
-  const currentStatus = state.current?.status;
-  const repeatWaiting = state.repeat.active && !RUNNING_STATUSES.has(currentStatus);
-
-  elements.runButton.textContent = repeatWaiting
-    ? "반복 예약 중..."
-    : locked
-      ? "수집 중..."
-      : "수집 시작";
-
-  elements.cancelButton.disabled = !locked;
-  elements.cancelButton.textContent = state.repeat.active ? "반복 중지" : "수집 취소";
-  elements.chooseOutputButton.disabled = locked;
-  elements.openAccountManagerButton.disabled = locked;
-
-  for (const control of elements.form.querySelectorAll("input:not([readonly]), select")) {
-    control.disabled = locked;
-  }
+/** 수집 시작 IPC를 요청하는 짧은 동안만 시작 버튼을 잠근다. */
+function setSubmitting(submitting) {
+  elements.runButton.disabled = submitting;
+  elements.runButton.textContent = submitting
+    ? "실행 추가 중..."
+    : "수집 실행 추가";
 }
 
-/** 상태 badge를 갱신한다. */
-function setStatus(status) {
+/** 실행 상태명을 사용자용 문자열로 변환한다. */
+function getStatusLabel(status) {
   const labels = {
     idle: "대기",
     queued: "대기 중",
     running: "실행 중",
-    waiting: "반복 대기",
     canceling: "취소 중",
     canceled: "취소됨",
-    stopped: "중지됨",
     completed: "완료",
     failed: "실패",
   };
 
-  elements.statusBadge.className = `status-badge ${status || "idle"}`;
-  elements.statusBadge.textContent = labels[status] || status || "대기";
+  return labels[status] || status || "대기";
 }
 
 /** 값이 없으면 하이픈을 표시한다. */
@@ -570,17 +608,28 @@ function formatPageRange(progress, summary) {
   return current ? `${start} ~ ${current} / ${end}` : `${start} ~ ${end}`;
 }
 
-/** 페이지 진행률을 계산한다. */
-function getProgressPercent(currentState) {
-  const status = currentState?.status;
+/** 실행 카드의 진행률을 계산한다. */
+function getProgressPercent(run) {
+  const status = run?.status;
 
   if (status === "completed") return 100;
-  if (["canceled", "stopped", "failed"].includes(status)) return 0;
+  if (["canceled", "failed"].includes(status)) return 0;
 
-  const progress = currentState?.progress;
-  const summary = currentState?.summary;
-  const range = progress?.pageRange || summary?.pageRange;
-  const current = progress?.currentPage || range?.collectedLastPage;
+  const progress = run?.progress || {};
+  const summary = run?.summary || {};
+
+  if (
+    progress.stage === "detail" &&
+    progress.detailTargetCount
+  ) {
+    const current = Number(progress.currentDetailIndex || 0);
+    const total = Number(progress.detailTargetCount || 1);
+
+    return Math.min(99, Math.max(5, (current / total) * 100));
+  }
+
+  const range = progress.pageRange || summary.pageRange;
+  const current = progress.currentPage || range?.collectedLastPage;
 
   if (!range || !current || !range.pageEnd) {
     return RUNNING_STATUSES.has(status) ? 8 : 0;
@@ -589,24 +638,11 @@ function getProgressPercent(currentState) {
   const total = Math.max(1, range.pageEnd - range.pageStart + 1);
   const done = Math.max(0, current - range.pageStart + 1);
 
-  if (
-    currentState?.progress?.stage === "detail" &&
-    currentState.progress.detailTargetCount
-  ) {
-    const current = Number(currentState.progress.currentDetailIndex || 0);
-    const total = Number(currentState.progress.detailTargetCount || 1);
-
-    return Math.min(
-      99,
-      Math.max(5, (current / total) * 100),
-    );
-  }
-
   return Math.min(98, Math.max(5, (done / total) * 100));
 }
 
-/** 완료된 결과 파일에 따라 저장 버튼을 활성화한다. */
-function updateResultFiles(files) {
+/** 최근 완료 실행의 결과 파일 버튼을 갱신한다. */
+function updateResultFiles(files, runId = "") {
   let anyAvailable = false;
 
   for (const [fileType, button] of Object.entries(FILE_BUTTONS)) {
@@ -617,6 +653,7 @@ function updateResultFiles(files) {
     anyAvailable ||= available;
   }
 
+  state.latestResultRunId = anyAvailable ? runId : "";
   elements.openResultDirectoryButton.disabled = !anyAvailable;
 }
 
@@ -646,169 +683,353 @@ function clearSuccess() {
   elements.successMessage.textContent = "";
 }
 
-function clearRepeatTimer() {
-  if (!state.repeat.timerId) return;
+/** 특정 실행의 반복 타이머와 계획을 제거한다. */
+function clearRepeatPlan(runId) {
+  const timerId = state.repeatTimers.get(runId);
 
-  window.clearTimeout(state.repeat.timerId);
-  state.repeat.timerId = null;
-  state.repeat.nextRunAt = null;
+  if (timerId) {
+    window.clearTimeout(timerId);
+    state.repeatTimers.delete(runId);
+  }
+
+  state.repeatPlans.delete(runId);
 }
 
-function stopRepeatScheduler() {
-  clearRepeatTimer();
-  state.repeat.active = false;
-  state.repeat.basePayload = null;
-  state.repeat.lastScheduledJobKey = "";
-  state.repeat.nextRunAt = null;
+/** 모든 반복 타이머를 정리한다. */
+function clearAllRepeatPlans() {
+  for (const timerId of state.repeatTimers.values()) {
+    window.clearTimeout(timerId);
+  }
+
+  state.repeatTimers.clear();
+  state.repeatPlans.clear();
 }
 
-function getCurrentJobKey(currentState) {
-  return String(
-    currentState?.id ||
-    currentState?.jobId ||
-    currentState?.runId ||
-    currentState?.summary?.finishedAt ||
-    currentState?.summary?.startedAt ||
-    "",
+/** 완료된 반복 실행별로 다음 실행을 예약한다. */
+function scheduleRepeatRuns(applicationState) {
+  const runs = Array.isArray(applicationState?.runs)
+    ? applicationState.runs
+    : [];
+
+  for (const run of runs) {
+    const plan = state.repeatPlans.get(run.id);
+
+    if (!plan || run.status !== "completed") continue;
+    if (state.repeatTimers.has(run.id)) continue;
+
+    const executionOptions =
+      plan.basePayload.executionOptions || {
+        repeatValue: 1,
+        repeatUnit: "hour",
+      };
+    const intervalMs = getRepeatIntervalMs(executionOptions);
+    const nextRunAt = new Date(Date.now() + intervalMs);
+
+    plan.nextRunAt = nextRunAt.toISOString();
+
+    const timerId = window.setTimeout(async () => {
+      state.repeatTimers.delete(run.id);
+      state.repeatPlans.delete(run.id);
+
+      try {
+        const nextRun = await window.collectorApp.start({
+          ...plan.basePayload,
+        });
+
+        state.repeatPlans.set(nextRun.id, {
+          basePayload: {
+            ...plan.basePayload,
+          },
+          nextRunAt: null,
+        });
+
+        handleStateChanged(await window.collectorApp.getState());
+      } catch (error) {
+        showError(`반복 수집 실행 실패: ${error.message}`);
+      }
+    }, intervalMs);
+
+    state.repeatTimers.set(run.id, timerId);
+  }
+}
+
+/** 실행 카드에 표시할 소요 시간을 계산한다. */
+function getRunElapsedText(run) {
+  if (
+    RUNNING_STATUSES.has(run?.status) &&
+    run?.startedAtMs
+  ) {
+    return formatElapsed(Date.now() - run.startedAtMs);
+  }
+
+  return (
+    run?.progress?.elapsedText ||
+    run?.summary?.elapsedText ||
+    formatElapsed(run?.progress?.elapsedMs)
   );
 }
 
-function maybeScheduleRepeat(currentState) {
-  if (!state.repeat.active || !state.repeat.basePayload) return;
-  if (currentState?.status !== "completed") return;
-  if (state.repeat.timerId) return;
+/** 지표 카드 DOM을 생성한다. */
+function createMetricCard(label, value) {
+  const article = document.createElement("article");
+  article.className = "metric-card";
 
-  const jobKey = getCurrentJobKey(currentState);
+  const title = document.createElement("span");
+  title.textContent = label;
 
-  if (jobKey && state.repeat.lastScheduledJobKey === jobKey) {
-    return;
-  }
+  const strong = document.createElement("strong");
+  strong.textContent = value;
 
-  state.repeat.lastScheduledJobKey = jobKey;
-
-  const executionOptions = state.repeat.basePayload.executionOptions || getExecutionOptions();
-  const intervalMs = getRepeatIntervalMs(executionOptions);
-  const nextRunAt = new Date(Date.now() + intervalMs);
-
-  state.repeat.nextRunAt = nextRunAt.toISOString();
-  setStatus("waiting");
-  setRunning(true);
-  elements.statusMessage.textContent =
-    `다음 반복 실행 대기 중: ${nextRunAt.toLocaleString("ko-KR")} ` +
-    `(${executionOptions.repeatValue}${formatRepeatUnit(executionOptions.repeatUnit)} 후)`;
-
-  state.repeat.timerId = window.setTimeout(async () => {
-    state.repeat.timerId = null;
-
-    if (!state.repeat.active || !state.repeat.basePayload) return;
-
-    try {
-      clearError();
-      clearSuccess();
-      setStatus("running");
-      setRunning(true);
-      elements.statusMessage.textContent = "반복 수집 작업을 준비하고 있습니다.";
-      elements.progressBar.value = 3;
-
-      const nextState = await window.collectorApp.start({
-        ...state.repeat.basePayload,
-      });
-
-      handleStateChanged(nextState);
-    } catch (error) {
-      stopRepeatScheduler();
-      setRunning(false);
-      setStatus("failed");
-      showError(error.message);
-    }
-  }, intervalMs);
+  article.append(title, strong);
+  return article;
 }
 
-/** 실행 중에는 화면의 소요 시간을 계속 증가시킨다. */
-function syncElapsedTicker(currentState) {
-  if (state.elapsedTimer) {
-    window.clearInterval(state.elapsedTimer);
-    state.elapsedTimer = null;
+/** 실행 한 건을 독립적인 상태 카드로 렌더링한다. */
+function createRunCard(run) {
+  const card = document.createElement("article");
+  card.className = "run-card";
+  card.dataset.runId = run.id;
+
+  const header = document.createElement("div");
+  header.className = "status-header";
+
+  const titleWrap = document.createElement("div");
+  const kicker = document.createElement("p");
+  kicker.className = "section-kicker";
+  kicker.textContent = run.id;
+
+  const title = document.createElement("h3");
+  const mallLabel =
+    run.request?.mall === "cheonyu"
+      ? "천유닷컴"
+      : run.request?.mall === "ccdome"
+        ? "과자생각"
+        : run.request?.mall || "쇼핑몰";
+  const modeLabel =
+    run.request?.collectionMode === "detail"
+      ? "상세 수집"
+      : "일반 수집";
+  title.textContent =
+    `${mallLabel} · ${modeLabel} · ` +
+    `${run.request?.accountName || ".env 계정"}`;
+
+  titleWrap.append(kicker, title);
+
+  const badge = document.createElement("span");
+  badge.className = `status-badge ${run.status || "idle"}`;
+  badge.textContent = getStatusLabel(run.status);
+
+  header.append(titleWrap, badge);
+
+  const progressBar = document.createElement("progress");
+  progressBar.className = "progress-bar";
+  progressBar.max = 100;
+  progressBar.value = getProgressPercent(run);
+  progressBar.setAttribute("aria-label", `${title.textContent} 진행률`);
+
+  const message = document.createElement("p");
+  message.className = "status-message";
+  message.textContent =
+    run.progress?.message ||
+    (run.status === "completed"
+      ? "수집이 완료되었습니다."
+      : "수집을 준비하고 있습니다.");
+
+  card.append(header, progressBar, message);
+
+  if (run.error) {
+    const error = document.createElement("p");
+    error.className = "error-message";
+    error.textContent = run.error;
+    card.append(error);
   }
 
-  if (!RUNNING_STATUSES.has(currentState?.status) || !currentState?.startedAtMs) {
-    return;
+  const metrics = document.createElement("div");
+  metrics.className = "metrics-grid";
+  const progress = run.progress || {};
+  const summary = run.summary || {};
+
+  metrics.append(
+    createMetricCard("수집 페이지", formatPageRange(progress, summary)),
+    createMetricCard(
+      "전체 상품 감지 수",
+      displayNumber(
+        summary.detectedTotalProductCount ??
+        progress.detectedTotalProductCount,
+      ),
+    ),
+    createMetricCard(
+      "수집 전체 상품 수",
+      displayNumber(
+        summary.collectedProductCount ??
+        progress.collectedProductCount,
+      ),
+    ),
+    createMetricCard(
+      "일반 수집 대상 수",
+      displayNumber(
+        summary.targetProductCount ??
+        progress.targetProductCount,
+      ),
+    ),
+    createMetricCard(
+      "상세 수집 상품 수",
+      formatDetailProgress(progress, summary),
+    ),
+    createMetricCard(
+      "상품 요약 수",
+      displayNumber(
+        summary.productSummaryCount ??
+        progress.productSummaryCount,
+      ),
+    ),
+    createMetricCard(
+      "품절 상품 수",
+      displayNumber(
+        summary.soldOutProductCount ??
+        progress.soldOutProductCount,
+      ),
+    ),
+    createMetricCard("소요 시간", getRunElapsedText(run)),
+  );
+
+  card.append(metrics);
+
+  const actions = document.createElement("div");
+  actions.className = "form-actions";
+
+  if (RUNNING_STATUSES.has(run.status)) {
+    const cancelButton = document.createElement("button");
+    cancelButton.type = "button";
+    cancelButton.className = "danger-button";
+    cancelButton.textContent = "이 실행 취소";
+    cancelButton.addEventListener("click", () => cancelRun(run.id));
+    actions.append(cancelButton);
+  }
+
+  const repeatPlan = state.repeatPlans.get(run.id);
+
+  if (repeatPlan && state.repeatTimers.has(run.id)) {
+    const stopRepeatButton = document.createElement("button");
+    stopRepeatButton.type = "button";
+    stopRepeatButton.className = "secondary-button";
+    stopRepeatButton.textContent = "반복 예약 중지";
+    stopRepeatButton.addEventListener("click", () => {
+      clearRepeatPlan(run.id);
+      renderRunList(state.applicationState);
+      showSuccess("해당 실행의 반복 예약을 중지했습니다.");
+    });
+
+    const repeatText = document.createElement("p");
+    repeatText.className = "form-note";
+    repeatText.textContent =
+      `다음 실행: ${new Date(repeatPlan.nextRunAt).toLocaleString("ko-KR")}`;
+
+    actions.append(stopRepeatButton, repeatText);
+  }
+
+  if (run.outputDirectory) {
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.className = "secondary-button";
+    openButton.textContent = "결과 폴더 열기";
+    openButton.addEventListener("click", () =>
+      openResultDirectory(run.id),
+    );
+    actions.append(openButton);
+  }
+
+  for (const [fileType, file] of Object.entries(run.files || {})) {
+    if (!file?.available) continue;
+
+    const saveButton = document.createElement("button");
+    saveButton.type = "button";
+    saveButton.className = "secondary-button";
+    saveButton.textContent = `${file.label} 저장`;
+    saveButton.addEventListener("click", () =>
+      saveResultFile(fileType, run.id),
+    );
+    actions.append(saveButton);
+  }
+
+  if (actions.childElementCount > 0) {
+    card.append(actions);
+  }
+
+  return card;
+}
+
+/** 전체 실행 목록을 렌더링한다. */
+function renderRunList(applicationState) {
+  const runs = Array.isArray(applicationState?.runs)
+    ? applicationState.runs
+    : [];
+  const activeCount = runs.filter((run) =>
+    RUNNING_STATUSES.has(run.status),
+  ).length;
+
+  elements.activeRunCount.textContent =
+    `실행 중 ${activeCount}건 · 전체 ${runs.length}건`;
+
+  elements.runList.replaceChildren();
+
+  if (runs.length < 1) {
+    const empty = document.createElement("p");
+    empty.className = "empty-list";
+    empty.textContent = "아직 실행한 수집 작업이 없습니다.";
+    elements.runList.append(empty);
+  } else {
+    for (const run of runs) {
+      elements.runList.append(createRunCard(run));
+    }
+  }
+
+  const latestCompletedRun =
+    runs.find(
+      (run) =>
+        run.id === applicationState?.latestCompletedRunId &&
+        run.status === "completed",
+    ) ||
+    runs.find((run) => run.status === "completed") ||
+    null;
+
+  updateResultFiles(
+    latestCompletedRun?.files,
+    latestCompletedRun?.id || "",
+  );
+
+  const cartRunning = Boolean(applicationState?.cart?.running);
+  elements.cartUploadButton.disabled = cartRunning;
+  elements.cartUploadButton.textContent = cartRunning
+    ? "장바구니 처리 중..."
+    : "장바구니 담기";
+}
+
+/** 실행 상태 이벤트를 처리한다. */
+function handleStateChanged(applicationState) {
+  state.applicationState = applicationState || {
+    runs: [],
+  };
+
+  renderRunList(state.applicationState);
+  scheduleRepeatRuns(state.applicationState);
+}
+
+/** 실행 중 카드의 시간을 계속 갱신한다. */
+function startElapsedTicker() {
+  if (state.elapsedTimer) {
+    window.clearInterval(state.elapsedTimer);
   }
 
   state.elapsedTimer = window.setInterval(() => {
-    elements.metricElapsed.textContent = formatElapsed(Date.now() - currentState.startedAtMs);
-  }, 500);
-}
-
-/** 수집 상태를 화면의 지표와 파일 버튼에 반영한다. */
-function renderState(currentState) {
-  state.current = currentState;
-
-  const progress = currentState?.progress || {};
-  const summary = currentState?.summary || {};
-  const status = currentState?.status || "idle";
-  const locked = RUNNING_STATUSES.has(status) || state.repeat.active;
-
-  setStatus(status);
-  setRunning(locked);
-
-  elements.statusMessage.textContent =
-    progress.message ||
-    (status === "completed"
-      ? "수집이 완료되었습니다."
-      : "수집 설정을 입력한 뒤 시작하세요.");
-
-  elements.metricPages.textContent = formatPageRange(progress, summary);
-
-  elements.metricDetected.textContent = displayNumber(
-    summary.detectedTotalProductCount ?? progress.detectedTotalProductCount,
-  );
-
-  elements.metricCollected.textContent = displayNumber(
-    summary.collectedProductCount ?? progress.collectedProductCount,
-  );
-
-  elements.metricTargets.textContent = displayNumber(
-    summary.targetProductCount ?? progress.targetProductCount,
-  );
-
-  elements.metricDetails.textContent =
-    formatDetailProgress(progress, summary);
-
-  elements.metricSummaries.textContent = displayNumber(
-    summary.productSummaryCount ?? progress.productSummaryCount,
-  );
-
-  elements.metricSoldOut.textContent = displayNumber(
-    summary.soldOutProductCount ?? progress.soldOutProductCount,
-  );
-
-  elements.metricElapsed.textContent =
-    progress.elapsedText || summary.elapsedText || formatElapsed(progress.elapsedMs);
-
-  elements.progressBar.value = getProgressPercent(currentState);
-
-  if (status === "failed") {
-    stopRepeatScheduler();
-    showError(currentState.error || progress.message || "수집 작업이 실패했습니다.");
-  } else if (status === "canceled" || status === "stopped") {
-    stopRepeatScheduler();
-    showSuccess("수집 작업을 중지했습니다.");
-  } else {
-    clearError();
-
-    if (status !== "completed") {
-      clearSuccess();
+    if (
+      state.applicationState?.runs?.some((run) =>
+        RUNNING_STATUSES.has(run.status),
+      )
+    ) {
+      renderRunList(state.applicationState);
     }
-  }
-
-  updateResultFiles(currentState.files);
-  syncElapsedTicker(currentState);
-}
-
-function handleStateChanged(currentState) {
-  renderState(currentState);
-  maybeScheduleRepeat(currentState);
+  }, 500);
 }
 
 /** Electron main process에서 기본값과 앱 정보를 불러온다. */
@@ -832,7 +1053,7 @@ async function loadDefaults() {
   updateAccountHelp();
 }
 
-/** 사용자가 결과 기본 폴더를 선택한다. */
+/** 이후 실행에 적용할 결과 기본 폴더를 변경한다. */
 async function chooseOutputDirectory() {
   clearError();
   clearSuccess();
@@ -842,75 +1063,163 @@ async function chooseOutputDirectory() {
     elements.outputDirectory.value = result.outputDirectory;
 
     if (!result.canceled) {
-      showSuccess("결과 기본 폴더를 변경했습니다.");
+      showSuccess(
+        "결과 기본 폴더를 변경했습니다. 이미 실행 중인 작업에는 기존 폴더가 유지됩니다.",
+      );
     }
   } catch (error) {
     showError(error.message);
   }
 }
 
-/** 새 수집 작업을 시작한다. */
+/** 현재 설정으로 새 수집 작업을 하나 추가한다. */
 async function handleSubmit(event) {
   event.preventDefault();
 
   clearError();
   clearSuccess();
-  updateResultFiles(null);
-  setRunning(true);
-  setStatus("running");
-
-  elements.statusMessage.textContent = "수집 작업을 준비하고 있습니다.";
-  elements.progressBar.value = 3;
+  setSubmitting(true);
 
   const payload = buildPayload();
 
-  state.repeat.active = payload.executionOptions.runMode === "repeat";
-  state.repeat.basePayload = state.repeat.active ? { ...payload } : null;
-  state.repeat.lastScheduledJobKey = "";
-  clearRepeatTimer();
+  try {
+    const run = await window.collectorApp.start(payload);
+
+    if (payload.executionOptions.runMode === "repeat") {
+      state.repeatPlans.set(run.id, {
+        basePayload: {
+          ...payload,
+        },
+        nextRunAt: null,
+      });
+    }
+
+    handleStateChanged(await window.collectorApp.getState());
+
+    showSuccess(
+      `${payload.collectionMode === "detail" ? "상세" : "일반"} 수집 실행을 추가했습니다.`,
+    );
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    setSubmitting(false);
+  }
+}
+
+/** 특정 실행만 취소한다. */
+async function cancelRun(runId) {
+  clearError();
+  clearSuccess();
+  clearRepeatPlan(runId);
 
   try {
-    const currentState = await window.collectorApp.start(payload);
-    handleStateChanged(currentState);
+    const applicationState = await window.collectorApp.cancel(runId);
+    handleStateChanged(applicationState);
   } catch (error) {
-    stopRepeatScheduler();
-    setRunning(false);
-    setStatus("failed");
     showError(error.message);
   }
 }
 
-/** 현재 수집 작업 또는 반복 예약을 정상 취소한다. */
-async function cancelCollection() {
+/** 로컬 계정 식별자로 등록 계정을 찾는다. */
+function getAccountByLocalId(accountId) {
+  return state.accounts.find((account) => account.id === accountId) || null;
+}
+
+/** 선택된 사이트별 로그인 계정으로 장바구니 요청 payload를 만든다. */
+function buildCartBatchPayload() {
+  const accounts = {};
+  const cheonyuAccount = getAccountByLocalId(
+    elements.cartCheonyuAccountSelect.value,
+  );
+  const ccdomeAccount = getAccountByLocalId(
+    elements.cartCcdomeAccountSelect.value,
+  );
+
+  if (cheonyuAccount) {
+    accounts.cheonyu = {
+      accountId: cheonyuAccount.loginId,
+      accountPw: cheonyuAccount.password,
+      accountName: cheonyuAccount.name,
+      localCredentialId: cheonyuAccount.id,
+    };
+  }
+
+  if (ccdomeAccount) {
+    accounts.ccdome = {
+      accountId: ccdomeAccount.loginId,
+      accountPw: ccdomeAccount.password,
+      accountName: ccdomeAccount.name,
+      localCredentialId: ccdomeAccount.id,
+    };
+  }
+
+  if (!accounts.cheonyu && !accounts.ccdome) {
+    throw new Error("천유닷컴 또는 과자생각 계정을 선택하세요.");
+  }
+
+  return {
+    accounts,
+    showBrowser: elements.browserMode.value === "show",
+  };
+}
+
+/** uploader GET 응답을 받아 사이트별 실제 장바구니 작업을 실행한다. */
+async function submitCartUpload() {
   clearError();
   clearSuccess();
 
-  const shouldCancelCurrentJob = RUNNING_STATUSES.has(state.current?.status);
-  stopRepeatScheduler();
+  let payload;
 
-  if (!shouldCancelCurrentJob) {
-    setRunning(false);
-    setStatus("stopped");
-    elements.statusMessage.textContent = "반복 실행 예약을 중지했습니다.";
-    showSuccess("반복 실행 예약을 중지했습니다.");
+  try {
+    payload = buildCartBatchPayload();
+  } catch (error) {
+    elements.cartUploadMessage.textContent = error.message;
+    showError(error.message);
     return;
   }
 
+  elements.cartUploadButton.disabled = true;
+  elements.cartUploadButton.textContent = "장바구니 처리 중...";
+  elements.cartUploadMessage.textContent =
+    "Uploader에서 장바구니 상품 목록을 불러오고 있습니다.";
+
   try {
-    const currentState = await window.collectorApp.cancel();
-    handleStateChanged(currentState);
+    const result = await window.collectorApp.uploadCartItems(payload);
+
+    /** 개발자 도구에서 uploader GET 응답 전체를 확인한다. */
+    console.log("[CART UPLOADER RESPONSE]", result?.items || []);
+
+    const cheonyuCount = result?.results?.cheonyu?.requestCount || 0;
+    const ccdomeCount = result?.results?.ccdome?.requestCount || 0;
+    const message =
+      `장바구니 처리가 완료되었습니다. ` +
+      `천유 ${cheonyuCount}건, 과자생각 ${ccdomeCount}건`;
+
+    elements.cartUploadMessage.textContent = message;
+    showSuccess(message);
   } catch (error) {
+    elements.cartUploadMessage.textContent =
+      `장바구니 처리 실패: ${error.message}`;
     showError(error.message);
+  } finally {
+    elements.cartUploadButton.disabled = false;
+    elements.cartUploadButton.textContent = "장바구니 담기";
   }
 }
 
 /** 결과 CSV 하나를 사용자 선택 경로로 복사한다. */
-async function saveResultFile(fileType) {
+async function saveResultFile(
+  fileType,
+  runId = state.latestResultRunId,
+) {
   clearError();
   clearSuccess();
 
   try {
-    const result = await window.collectorApp.saveResultFile(fileType);
+    const result = await window.collectorApp.saveResultFile(
+      fileType,
+      runId,
+    );
 
     if (!result.canceled) {
       showSuccess(`${result.fileName} 파일을 저장했습니다.`);
@@ -921,12 +1230,14 @@ async function saveResultFile(fileType) {
 }
 
 /** 원본 결과 폴더를 파일 탐색기로 연다. */
-async function openResultDirectory() {
+async function openResultDirectory(
+  runId = state.latestResultRunId,
+) {
   clearError();
   clearSuccess();
 
   try {
-    await window.collectorApp.openResultDirectory();
+    await window.collectorApp.openResultDirectory(runId);
   } catch (error) {
     showError(error.message);
   }
@@ -960,6 +1271,7 @@ async function initialize() {
 
   const currentState = await window.collectorApp.getState();
   handleStateChanged(currentState);
+  startElapsedTicker();
 }
 
 elements.form.addEventListener("submit", handleSubmit);
@@ -972,13 +1284,45 @@ elements.registerAccountButton.addEventListener("click", registerAccount);
 elements.collectionMode.addEventListener("change", updateCollectionModeGuide);
 elements.runMode.addEventListener("change", updateRunModeGuide);
 elements.chooseOutputButton.addEventListener("click", chooseOutputDirectory);
-elements.cancelButton.addEventListener("click", cancelCollection);
 elements.openSettingsButton.addEventListener("click", openSettingsDirectory);
-elements.openResultDirectoryButton.addEventListener("click", openResultDirectory);
-elements.saveInventoryButton.addEventListener("click", () => saveResultFile("inventory"));
-elements.saveSummaryButton.addEventListener("click", () => saveResultFile("summary"));
-elements.saveProductsButton.addEventListener("click", () => saveResultFile("products"));
-elements.saveDetailsButton.addEventListener("click", () => saveResultFile("details"));
+elements.openResultDirectoryButton.addEventListener(
+  "click",
+  () => openResultDirectory(state.latestResultRunId),
+);
+elements.saveInventoryButton.addEventListener(
+  "click",
+  () => saveResultFile("inventory", state.latestResultRunId),
+);
+elements.saveSummaryButton.addEventListener(
+  "click",
+  () => saveResultFile("summary", state.latestResultRunId),
+);
+elements.saveProductsButton.addEventListener(
+  "click",
+  () => saveResultFile("products", state.latestResultRunId),
+);
+elements.saveDetailsButton.addEventListener(
+  "click",
+  () => saveResultFile("details", state.latestResultRunId),
+);
+elements.cartUploadButton.addEventListener(
+  "click",
+  submitCartUpload,
+);
+
+elements.cartCheonyuAccountSelect.addEventListener("change", () => {
+  localStorage.setItem(
+    CART_ACCOUNT_STORAGE_KEYS.cheonyu,
+    elements.cartCheonyuAccountSelect.value,
+  );
+});
+
+elements.cartCcdomeAccountSelect.addEventListener("change", () => {
+  localStorage.setItem(
+    CART_ACCOUNT_STORAGE_KEYS.ccdome,
+    elements.cartCcdomeAccountSelect.value,
+  );
+});
 
 elements.accountManagerModal.addEventListener("click", (event) => {
   if (event.target === elements.accountManagerModal) {
@@ -988,7 +1332,7 @@ elements.accountManagerModal.addEventListener("click", (event) => {
 
 window.addEventListener("beforeunload", () => {
   state.unsubscribe?.();
-  clearRepeatTimer();
+  clearAllRepeatPlans();
 
   if (state.elapsedTimer) {
     window.clearInterval(state.elapsedTimer);
@@ -997,6 +1341,5 @@ window.addEventListener("beforeunload", () => {
 
 initialize().catch((error) => {
   elements.appBadge.textContent = "초기화 실패";
-  setStatus("failed");
   showError(error.message);
 });
