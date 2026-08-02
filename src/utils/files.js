@@ -50,6 +50,10 @@ function createRunFiles(baseOutDir, mall, runId) {
   return {
     runDir,
     resultJson: path.resolve(runDir, "result.json"),
+
+    /** 상세 수집 결과만 상품번호 객체로 저장 */
+    detailResultJson: path.resolve(runDir, "detailResult.json"),
+
     inventoryCsv: path.resolve(runDir, "inventory.csv"),
     summaryCsv: path.resolve(runDir, "summary.csv"),
     productsCsv: path.resolve(runDir, "products.csv"),

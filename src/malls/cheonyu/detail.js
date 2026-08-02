@@ -25,14 +25,17 @@ const CHEONYU_DETAIL = {
     infoNumber: ".pdt-top-info .info-number",
     outerBox: ".pdt-top-info .inbox",
     consumerPrice: ".pdt_code .pdt_code_last strong",
-    smallPhotoLinks: "#viewSmallPhoto a, .small_photo a",
-    smallPhotoImages: "#viewSmallPhoto img, .small_photo img",
-    introImages:
-      "#tab_01 #viewContent img, " +
-      "#viewContent img, " +
-      ".pic#viewContent img, " +
+    mainPhotoLinks:
+      "#viewSmallPhoto a[onmouseover*='changeImg'], " +
+      ".small_photo a[onmouseover*='changeImg']",
+    detailImages:
+      "#tab_01 #viewContent img[src*='image3.cheonyu.com'], " +
+      "#tab_01 #viewContent img[data-src*='image3.cheonyu.com'], " +
+      "#viewContent img[src*='image3.cheonyu.com'], " +
+      "#viewContent img[data-src*='image3.cheonyu.com'], " +
       "img[src*='image3.cheonyu.com'], " +
-      "img[data-src*='image3.cheonyu.com']",
+      "img[data-src*='image3.cheonyu.com'], " +
+      "img[data-original*='image3.cheonyu.com']",
     detailSpecTable: 'table.info[alt="제품상세정보"]',
   },
 };
@@ -50,16 +53,20 @@ function toAbsoluteUrl(value, baseUrl) {
   }
 }
 
+/** 수집 결과로 사용할 수 있는 원본 이미지 URL인지 확인한다. */
 function isUsefulImageUrl(url) {
   const value = String(url || "").trim();
 
   if (!value) return false;
   if (value === "tites") return false;
   if (value.startsWith("data:")) return false;
+  if (/\/thumb\//i.test(value)) return false;
   if (/blank|noimg|loading|spinner/i.test(value)) return false;
 
-  return /\.(jpg|jpeg|png|gif|webp)(\?|#|$)/i.test(value) ||
-    value.includes("image3.cheonyu.com");
+  return (
+    /\.(jpg|jpeg|png|gif|webp)(\?|#|$)/i.test(value) ||
+    value.includes("image3.cheonyu.com")
+  );
 }
 
 function getImageCandidateUrls($, image, baseUrl) {
@@ -239,36 +246,46 @@ function parseDetailHtml(html, product, config) {
   const outerBoxQty = toNumber(outerBoxText.match(/(\d+)\s*EA/i)?.[1] || "");
   const consumerPrice = toNumber($(selectors.consumerPrice).first().text());
 
-  const thumbnailImageUrls = unique(
-    $(selectors.smallPhotoLinks)
+  /**
+ * 썸네일 img의 /thumb/ 주소는 읽지 않는다.
+ * onmouseover="changeImg('/_DATA/product/...jpg')"의 원본 경로만 읽는다.
+ */
+  const mainImageUrls = unique(
+    $(selectors.mainPhotoLinks)
       .map((_, element) =>
         toAbsoluteUrl(
-          extractChangeImgUrl($(element).attr("onmouseover")),
+          extractChangeImgUrl(
+            $(element).attr("onmouseover"),
+          ),
           config.baseUrl,
         ),
       )
       .get()
-      .concat(
-        $(selectors.smallPhotoImages)
-          .map((_, element) => getImageCandidateUrls($, element, config.baseUrl))
-          .get()
-          .flat(),
+      .filter(isUsefulImageUrl),
+  );
+
+  /**
+   * image3.cheonyu.com 상세 이미지 중 첫 번째 이미지만
+   * detail_img 문자열로 사용한다.
+   */
+  const detailImageUrls = unique(
+    $(selectors.detailImages)
+      .map((_, element) =>
+        getImageCandidateUrls(
+          $,
+          element,
+          config.baseUrl,
+        ),
+      )
+      .get()
+      .flat()
+      .filter((url) =>
+        url.includes("image3.cheonyu.com"),
       ),
   );
 
-  const introImageUrls = unique(
-    [
-      ...$(selectors.introImages)
-        .map((_, element) => getImageCandidateUrls($, element, config.baseUrl))
-        .get()
-        .flat(),
-
-      ...$("img[src*='image3.cheonyu.com'], img[data-src*='image3.cheonyu.com']")
-        .map((_, element) => getImageCandidateUrls($, element, config.baseUrl))
-        .get()
-        .flat(),
-    ],
-  );
+  const detailImageUrl =
+    detailImageUrls[0] || "";
 
   const detailSpecRaw = parseKeyValueTable($, $(selectors.detailSpecTable).first());
   const packageInfo = parsePackageInfo(productName);
@@ -303,10 +320,11 @@ function parseDetailHtml(html, product, config) {
     packageUnit: packageInfo.packageUnit,
     packageText: packageInfo.packageText,
     detailOptions: JSON.stringify(parseDetailOptions($)),
-    thumbnailImageUrls,
-    introImageUrls,
-    thumbnailImageUrlsText: thumbnailImageUrls.join(" | "),
-    introImageUrlsText: introImageUrls.join(" | "),
+    mainImageUrls,
+    detailImageUrl,
+    mainImageUrlsText: mainImageUrls.join(" | "),
+    thumbnailImageUrlsText: mainImageUrls.join(" | "),
+    introImageUrlsText: detailImageUrl,
     rawDetailSpec: detailSpecRaw,
   };
 }

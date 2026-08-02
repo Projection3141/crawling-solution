@@ -33,26 +33,16 @@ const CCDOME_DETAIL = {
       ".item_detail_list dl",
 
     mainImages:
-      ".item_photo_slide img, " +
       ".item_photo_big img, " +
       ".item_photo_view img, " +
       ".item_photo_box img, " +
-      ".slider_goods_nav img, " +
-      "img[src*='godomall-storage.cdn-nhncommerce.com/goods/']",
+      ".slider_goods_nav img",
 
     detailImages:
-      "#detail img, " +
-      ".detail_cont img, " +
-      ".detail_explain_box img, " +
-      ".txt-manual img, " +
-      ".item_goods_sec img[src*='gi.esmplus.com'], " +
-      ".item_goods_sec img[src*='godomall-storage.cdn-nhncommerce.com'], " +
-      "img[src*='gi.esmplus.com'], " +
-      "img[data-src*='gi.esmplus.com'], " +
-      "img[data-original*='gi.esmplus.com'], " +
-      "img[src*='godomall-storage.cdn-nhncommerce.com'], " +
-      "img[data-src*='godomall-storage.cdn-nhncommerce.com'], " +
-      "img[data-original*='godomall-storage.cdn-nhncommerce.com']",
+      "#detail .detail_cont img, " +
+      "#detail .detail_explain_box img, " +
+      "#detail .txt-manual img, " +
+      "#detail img",
 
     detailTextScope:
       "#detail .detail_cont, " +
@@ -89,6 +79,7 @@ function isUsefulImageUrl(url) {
   if (!value) return false;
   if (value === "tites") return false;
   if (value.startsWith("data:")) return false;
+  if (/\/thumb\//i.test(value)) return false;
   if (/blank|noimg|loading|spinner|icon|btn_|arrow/i.test(value)) return false;
 
   return (
@@ -256,11 +247,11 @@ function parseDetailImages($, config) {
    */
   $(
     "img[src*='gi.esmplus.com'], " +
-      "img[data-src*='gi.esmplus.com'], " +
-      "img[data-original*='gi.esmplus.com'], " +
-      "img[src*='godomall-storage.cdn-nhncommerce.com'], " +
-      "img[data-src*='godomall-storage.cdn-nhncommerce.com'], " +
-      "img[data-original*='godomall-storage.cdn-nhncommerce.com']",
+    "img[data-src*='gi.esmplus.com'], " +
+    "img[data-original*='gi.esmplus.com'], " +
+    "img[src*='godomall-storage.cdn-nhncommerce.com'], " +
+    "img[data-src*='godomall-storage.cdn-nhncommerce.com'], " +
+    "img[data-original*='godomall-storage.cdn-nhncommerce.com']",
   ).each((_, img) => {
     urls.push(...getImageCandidateUrls($, img, config.baseUrl));
   });
@@ -297,8 +288,18 @@ function parseCcdomeDetailHtml(html, product, config) {
     normalizeProductName(product.productName);
 
   const packageInfo = parsePackageInfo(productName);
-  const mainImageUrls = parseMainImages($, config);
-  const introImageUrls = parseDetailImages($, config);
+  const mainImageUrls = parseMainImages(
+    $,
+    config,
+  ).filter((url) => !/\/thumb\//i.test(url));
+
+  const detailImageUrls = parseDetailImages(
+    $,
+    config,
+  ).filter((url) => !/\/thumb\//i.test(url));
+
+  const detailImageUrl =
+    detailImageUrls[0] || "";
 
   const expiryDate = pickByIncludes(itemInfo, ["소비기한", "유통기한"]);
   const salePriceText = pickByIncludes(itemInfo, ["판매가"]);
@@ -357,8 +358,12 @@ function parseCcdomeDetailHtml(html, product, config) {
     packageText: packageInfo.packageText,
 
     mainImageUrls,
-    thumbnailImageUrls: mainImageUrls,
-    introImageUrls,
+    mainImageUrls,
+    detailImageUrl,
+
+    mainImageUrlsText: mainImageUrls.join(" | "),
+    thumbnailImageUrlsText: mainImageUrls.join(" | "),
+    introImageUrlsText: detailImageUrl,
     mainImageUrlsText: mainImageUrls.join(" | "),
     thumbnailImageUrlsText: mainImageUrls.join(" | "),
     introImageUrlsText: introImageUrls.join(" | "),
@@ -372,7 +377,7 @@ async function collectCcdomeDetails(
   page,
   products,
   config,
-  onProgress = () => {},
+  onProgress = () => { },
   signal,
 ) {
   const targets = Array.from(
