@@ -1,3 +1,5 @@
+//src/malls/cheonyu/site.js
+
 const cheerio = require("cheerio");
 const { performance } = require("node:perf_hooks");
 const { fillFirstAvailable } = require("../../utils/browser");
@@ -181,6 +183,89 @@ function extractPageNumber(value, baseUrl) {
   );
 
   return Number(match?.[1] || match?.[2] || match?.[3]) || 0;
+}
+
+/** 이미 확보한 상품 목록을 페이지별로 묶는다. */
+function groupProductsByPage(products) {
+  const groups = new Map();
+
+  for (const product of products) {
+    const pageNo = Number(product.page || 0);
+
+    if (!pageNo) continue;
+
+    if (!groups.has(pageNo)) {
+      groups.set(pageNo, []);
+    }
+
+    groups.get(pageNo).push(product);
+  }
+
+  return Array.from(groups.entries()).sort((a, b) => a[0] - b[0]);
+}
+
+/**
+ * 일반 수집으로 확보한 상품 목록을 이용해
+ * 지정 상품만 목록 페이지에서 체크 후 장바구니에 담는다.
+ */
+async function addProductsFromListPagesToCart(
+  page,
+  products,
+  config,
+  onProgress = () => {},
+  signal,
+) {
+  throwIfAborted(signal);
+
+  const groups = groupProductsByPage(products);
+  const pageResults = [];
+  const allTargets = [];
+
+  for (const [pageNo, pageProducts] of groups) {
+    throwIfAborted(signal);
+
+    onProgress({
+      stage: "cart",
+      message: `천유 ${pageNo}페이지 상품 ${pageProducts.length}개 장바구니 담기`,
+      currentPage: pageNo,
+    });
+
+    const { candidates } = await collectListCandidates(page, pageNo, config);
+
+    const targetIdSet = new Set(
+      pageProducts.map((item) => String(item.productId)),
+    );
+
+    const targets = candidates.filter((item) =>
+      targetIdSet.has(String(item.productId)),
+    );
+
+    if (targets.length < 1) {
+      pageResults.push({
+        page: pageNo,
+        targetCount: 0,
+        skipped: true,
+      });
+
+      continue;
+    }
+
+    await markProductsForBulkCart(page, targets, config);
+
+    const bulkResult = await clickBulkCartAndConfirm(page, pageNo, config);
+
+    allTargets.push(...targets);
+    pageResults.push({
+      page: pageNo,
+      targetCount: targets.length,
+      bulkResult,
+    });
+  }
+
+  return {
+    allTargets,
+    pageResults,
+  };
 }
 
 /** 명시적인 마지막 페이지 이동 링크를 찾는다. */
@@ -513,8 +598,105 @@ function parsePopupHtml(html) {
   };
 }
 
-/** 일괄담기 버튼을 누르고 옵션 팝업의 setOption을 자동 실행한다. */
-async function clickBulkCartAndConfirm(page, pageNo) {
+
+/** 옵션 팝업에서 disabled/품절 옵션을 제외하고 선택 가능한 옵션만 체크한다. */
+async function parseAndPreparePopupOptions(page, pageNo, config) {
+  return page.evaluate(
+    ({ pageNo, optionQty, lowStockThreshold }) => {
+      const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
+      const toNumber = (value) => Number(String(value || "").replace(/[^\d-]/g, "")) || 0;
+
+      const rows = [];
+      const blocks = Array.from(document.querySelectorAll(".many_add"));
+
+      for (let productIndex = 0; productIndex < blocks.length; productIndex += 1) {
+        const block = blocks[productIndex];
+        const table = block.querySelector("table#opSelectedList");
+
+        if (!table) continue;
+
+        const cartGroupId = table.querySelector("input#inIDXPOP")?.value || "";
+        const subjectText = normalize(block.querySelector(".subject p")?.innerText || "");
+        const brandText = normalize(block.querySelector(".coc_brd_name")?.innerText || "")
+          .replace(/^\[/, "")
+          .replace(/\]$/, "");
+
+        const iconText = normalize(block.querySelector(".icon")?.innerText || "");
+        const outerBoxQty = toNumber(iconText.match(/(\d+)\s*개/)?.[1] || "");
+        const optionRows = Array.from(table.querySelectorAll("tr#inOptionTR"));
+
+        for (let optionIndex = 0; optionIndex < optionRows.length; optionIndex += 1) {
+          const tr = optionRows[optionIndex];
+          const checkbox = tr.querySelector("input#optionCHKPOP");
+          const countInput = tr.querySelector("input#inOPcount");
+          const optionText = normalize(tr.querySelector("td#tdOption")?.innerText || "옵션없음");
+          const optionId = tr.querySelector("input#inOPidx")?.value || "";
+          const maxStock = toNumber(tr.querySelector("input#inOPMaxStock")?.value);
+          const disabled = Boolean(checkbox?.disabled);
+          const selectable = Boolean(checkbox) && !disabled && maxStock > 0;
+
+          if (checkbox) {
+            checkbox.checked = selectable;
+          }
+
+          if (countInput && selectable) {
+            countInput.value = String(optionQty);
+          }
+
+          let stockStatus = "IN_STOCK";
+
+          if (disabled) stockStatus = "DISABLED";
+          else if (maxStock <= 0) stockStatus = "OUT_OF_STOCK";
+          else if (maxStock <= lowStockThreshold) stockStatus = "LOW_STOCK";
+
+          rows.push({
+            sourceMall: "cheonyu",
+            rowSource: "popup",
+            page: pageNo,
+            productIndex,
+            optionIndex,
+            cartGroupId,
+            subjectText,
+            brandText,
+            optionText,
+            optionId,
+            maxStock,
+            disabled,
+            selectable,
+            selectedForCart: selectable,
+            stockStatus,
+            optionQty: selectable ? optionQty : 0,
+            outerBoxQty,
+            addPrice: toNumber(tr.querySelector("input#inOPaddPrice")?.value),
+            boxCountOpt: toNumber(tr.querySelector("input#boxCountOpt")?.value),
+            boxCountOpt2: toNumber(tr.querySelector("input#boxCountOpt2")?.value),
+            inoPer: toNumber(tr.querySelector("input#inoPer")?.value),
+            indcPer: toNumber(tr.querySelector("input#indcPer")?.value),
+            indcPer2: toNumber(tr.querySelector("input#indcPer2")?.value),
+            inoPrice: toNumber(tr.querySelector("input#inoPrice")?.value),
+            indcPrice: toNumber(tr.querySelector("input#indcPrice")?.value),
+            indcPrice2: toNumber(tr.querySelector("input#indcPrice2")?.value),
+            porderMinus: tr.querySelector("input#inPorderMinus")?.value || "",
+          });
+        }
+      }
+
+      if (typeof window.fnSumTotalPrice === "function") {
+        window.fnSumTotalPrice();
+      }
+
+      return rows;
+    },
+    {
+      pageNo,
+      optionQty: config.optionCartQty || config.cartQty || 999,
+      lowStockThreshold: config.lowStockThreshold,
+    },
+  );
+}
+
+/** 일괄담기 버튼을 누르고 옵션 팝업의 선택 가능 옵션만 장바구니에 담는다. */
+async function clickBulkCartAndConfirm(page, pageNo, config) {
   const selectors = CHEONYU_SITE.selectors.list;
   const bulkButton = page.locator(selectors.bulkButton).first();
 
@@ -540,8 +722,18 @@ async function clickBulkCartAndConfirm(page, pageNo) {
     hasSetOption,
     ...parsePopupHtml(await page.content()),
   };
+  let popupOptionRows = [];
 
   if (hasSetOption) {
+    popupOptionRows = await parseAndPreparePopupOptions(page, pageNo, config);
+
+    const selectableCount = popupOptionRows.filter((item) => item.selectable).length;
+    const excludedCount = popupOptionRows.length - selectableCount;
+
+    console.log(
+      `[BULK ${pageNo}] 옵션 ${popupOptionRows.length}개 | 선택 ${selectableCount}개 | 제외 ${excludedCount}개`,
+    );
+
     await page.evaluate(() => window.setOption());
     await sleep(4000);
 
@@ -549,6 +741,7 @@ async function clickBulkCartAndConfirm(page, pageNo) {
       page: pageNo,
       mode: "popup-setOption",
       popupState,
+      popupOptionRows,
     };
   }
 
@@ -558,6 +751,7 @@ async function clickBulkCartAndConfirm(page, pageNo) {
     page: pageNo,
     mode: "direct-or-unknown",
     popupState,
+    popupOptionRows,
   };
 }
 
@@ -573,6 +767,7 @@ async function bulkAddPages(
   const { pageRange, firstPageHtml } = await resolvePageRange(page, config);
   throwIfAborted(signal);
   const allTargets = [];
+  const allPopupOptionRows = [];
   const allProductsMap = new Map();
   const pageResults = [];
   let previousSignature = "";
@@ -624,10 +819,11 @@ async function bulkAddPages(
 
     if (targets.length > 0) {
       await markProductsForBulkCart(page, targets, config);
-      const bulkResult = await clickBulkCartAndConfirm(page, pageNo);
+      const bulkResult = await clickBulkCartAndConfirm(page, pageNo, config);
       throwIfAborted(signal);
 
       allTargets.push(...targets);
+      allPopupOptionRows.push(...(bulkResult.popupOptionRows || []));
       pageResults.push({
         page: pageNo,
         candidateCount: candidates.length,
@@ -672,6 +868,7 @@ async function bulkAddPages(
 
   return {
     allTargets,
+    allPopupOptionRows,
     allProducts: Array.from(allProductsMap.values()),
     pageResults,
     pageRange,
@@ -687,6 +884,8 @@ module.exports = {
   parseCatalogInfo,
   parseListHtml,
   parseLoginState,
+  parseAndPreparePopupOptions,
   parseTotalProductCount,
   resolvePageRange,
+  addProductsFromListPagesToCart,
 };

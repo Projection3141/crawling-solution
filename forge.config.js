@@ -15,7 +15,11 @@ module.exports = {
   packagerConfig: {
     asar: false,
     executableName: "MallCollector",
-    icon: fs.existsSync(windowsIcon) ? iconBase : undefined,
+    icon: path.resolve(
+      __dirname,
+      "assets",
+      "icon.ico",
+    ),
     ignore: [
       /[\\/]\.env$/,
       /[\\/]\.git([\\/]|$)/,
@@ -46,7 +50,11 @@ module.exports = {
           "천유닷컴과 과자생각 상품·재고를 로컬에서 수집하는 데스크톱 앱",
         setupExe: `MallCollectorSetup-${version}.exe`,
         noMsi: true,
-        setupIcon: fs.existsSync(windowsIcon) ? windowsIcon : undefined,
+        setupIcon: path.resolve(
+          __dirname,
+          "assets",
+          "icon.ico",
+        ),
       },
     },
   ],

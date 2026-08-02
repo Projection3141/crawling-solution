@@ -1,6 +1,12 @@
+// src/utils/inventory.js
+
 const { normalizeWhitespace } = require("./common");
 
 const KNOWN_BRANDS = [
+  "크라운볼펜",
+  "뷰티박스",
+  "스케이터",
+  "Brunch Brother",
   "산리오",
   "헬로키티",
   "시나모롤",
@@ -62,6 +68,10 @@ const CATEGORY_RULES = [
   {
     category: "패션잡화/파우치",
     keywords: ["파우치", "지갑", "가방", "키링", "가방고리", "조리개", "런치백"],
+  },
+  {
+    category: "수납/정리",
+    keywords: ["바스켓", "수납", "정리", "보관함", "박스", "케이스", "홀더"],
   },
   {
     category: "주방/도시락/식기",
@@ -205,21 +215,13 @@ function buildProductSummaries(optionItems) {
     group.totalStock += Number(item.maxStock) || 0;
     group.requestedQtyTotal += Number(item.requestedQty) || 0;
     group.minStock =
-      group.minStock == null
-        ? item.maxStock
-        : Math.min(group.minStock, item.maxStock);
+      group.minStock == null ? item.maxStock : Math.min(group.minStock, item.maxStock);
     group.maxStock =
-      group.maxStock == null
-        ? item.maxStock
-        : Math.max(group.maxStock, item.maxStock);
+      group.maxStock == null ? item.maxStock : Math.max(group.maxStock, item.maxStock);
     group.priceMin =
-      group.priceMin == null
-        ? item.effectivePrice
-        : Math.min(group.priceMin, item.effectivePrice);
+      group.priceMin == null ? item.effectivePrice : Math.min(group.priceMin, item.effectivePrice);
     group.priceMax =
-      group.priceMax == null
-        ? item.effectivePrice
-        : Math.max(group.priceMax, item.effectivePrice);
+      group.priceMax == null ? item.effectivePrice : Math.max(group.priceMax, item.effectivePrice);
 
     if (item.stockLimited) group.limitedRowCount += 1;
     if (item.stockStatus === "LOW_STOCK") group.lowStockRowCount += 1;
@@ -317,9 +319,7 @@ function compareItems(a, b) {
     String(a.brandHint || "").localeCompare(String(b.brandHint || ""), "ko") ||
     String(a.productName || "").localeCompare(String(b.productName || ""), "ko") ||
     String(a.optionText || "").localeCompare(String(b.optionText || ""), "ko") ||
-    String(a.productId || "").localeCompare(String(b.productId || ""), "ko", {
-      numeric: true,
-    })
+    String(a.productId || "").localeCompare(String(b.productId || ""), "ko", { numeric: true })
   );
 }
 

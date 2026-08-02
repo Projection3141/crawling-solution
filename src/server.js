@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+// src/server.js
 
 require("dotenv").config({ quiet: true });
 
@@ -116,6 +116,9 @@ function serializeJob(job) {
               inventory: `/api/jobs/${job.id}/files/inventory`,
               summary: `/api/jobs/${job.id}/files/summary`,
               products: `/api/jobs/${job.id}/files/products`,
+              details: job.files?.details
+                ? `/api/jobs/${job.id}/files/details`
+                : null,
             }
           : null,
     },
@@ -253,6 +256,7 @@ function serveJobFile(job, fileKey, response) {
     inventory: "inventory.csv",
     summary: "summary.csv",
     products: "products.csv",
+    details: "details.csv",
   };
   const filePath = job.files?.[fileKey];
 
@@ -330,7 +334,7 @@ async function requestHandler(request, response) {
   }
 
   const fileMatch = pathname.match(
-    /^\/api\/jobs\/([^/]+)\/files\/(inventory|summary|products)$/,
+    /^\/api\/jobs\/([^/]+)\/files\/(inventory|summary|products|details)$/,
   );
 
   if (request.method === "GET" && fileMatch) {

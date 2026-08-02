@@ -1,3 +1,5 @@
+//src/malls/cheonyu/config.js
+
 const path = require("node:path");
 const { readBoolean, readNumber } = require("../../utils/common");
 

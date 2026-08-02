@@ -1,3 +1,5 @@
+//src/utils/browser.js
+
 const DEFAULT_BLOCKED_URL_FRAGMENTS = [
   "googletagmanager.com",
   "google-analytics.com",

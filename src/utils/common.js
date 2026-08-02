@@ -1,3 +1,5 @@
+// src/utils/common.js
+
 /** 지정한 시간만큼 비동기 대기한다. */
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));

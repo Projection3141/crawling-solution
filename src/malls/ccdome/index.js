@@ -1,3 +1,5 @@
+// src/malls/ccdome/index.js
+
 const { performance } = require("node:perf_hooks");
 const { chromium } = require("playwright");
 const {
@@ -14,14 +16,15 @@ const {
   buildAvailabilityInventory,
   buildAvailabilitySummaries,
 } = require("../../utils/inventory");
+const { collectCcdomeDetails } = require("./detail");
 const { collectCcdomeProducts, loginCcdome } = require("./site");
 
-/** 과자생각 전체·판매중·품절 상품 수집을 실행한다. */
+/** 과자생각 전체·판매중·품절·상세 상품 수집을 실행한다. */
 async function runCcdome(
   config,
   {
     browserType = chromium,
-    onProgress = () => {},
+    onProgress = () => { },
     signal,
   } = {},
 ) {
@@ -29,7 +32,7 @@ async function runCcdome(
   const memoryStart = getMemoryMb();
   let browser = null;
   let context = null;
-  let releaseAbort = () => {};
+  let releaseAbort = () => { };
 
   try {
     throwIfAborted(signal);
@@ -78,12 +81,56 @@ async function runCcdome(
 
     throwIfAborted(signal);
 
+    const detailLimit = Number(config.detailMaxProducts) || 0;
+
+    const detailTargetCount =
+      config.collectionMode === "detail"
+        ? detailLimit > 0
+          ? Math.min(detailLimit, result.allProducts.length)
+          : result.allProducts.length
+        : 0;
+
+    const inventoryItems = buildAvailabilityInventory(result.allProducts);
+    const productSummaries = buildAvailabilitySummaries(result.allProducts);
+    let detailItems = [];
+
+    if (config.collectionMode === "detail") {
+      onProgress({
+        stage: "detail",
+        message: "과자생각 상품 상세페이지 정보를 수집하고 있습니다.",
+        pageRange: result.pageRange,
+        detectedTotalProductCount:
+          result.pageRange.detectedTotalProductCount,
+        collectedProductCount: result.allProducts.length,
+        targetProductCount: result.activeProducts.length,
+        productSummaryCount: productSummaries.length,
+        soldOutProductCount: result.soldOutProducts.length,
+        detailTargetCount,
+        currentDetailIndex: 0,
+        elapsedMs: performance.now() - startedAt,
+      });
+
+      detailItems = await collectCcdomeDetails(
+        page,
+        result.allProducts,
+        config,
+        (progress) => {
+          onProgress({
+            ...progress,
+            elapsedMs: performance.now() - startedAt,
+          });
+        },
+        signal,
+      );
+
+      throwIfAborted(signal);
+    }
+
     onProgress({
       stage: "summarizing",
       message: "재고 상태와 상품 요약을 생성하고 있습니다.",
       pageRange: result.pageRange,
-      detectedTotalProductCount:
-        result.pageRange.detectedTotalProductCount,
+      detectedTotalProductCount: result.pageRange.detectedTotalProductCount,
       collectedProductCount: result.allProducts.length,
       targetProductCount: result.activeProducts.length,
       productSummaryCount: result.allProducts.length,
@@ -91,20 +138,21 @@ async function runCcdome(
       elapsedMs: performance.now() - startedAt,
     });
 
-    const inventoryItems = buildAvailabilityInventory(result.allProducts);
-    const productSummaries = buildAvailabilitySummaries(result.allProducts);
     const elapsedMs = performance.now() - startedAt;
     const fullRangeCollected =
       result.pageRange.pageStart === 1 &&
       result.pageRange.collectedLastPage === result.pageRange.pageEnd &&
       result.pageRange.stopReason === "completed-range";
-    const detectedTotalProductCount =
-      result.pageRange.detectedTotalProductCount;
+    const detectedTotalProductCount = result.pageRange.detectedTotalProductCount;
 
     const summary = {
       mall: config.mall,
       mallLabel: config.mallLabel,
       category: config.category,
+      collectionMode: config.collectionMode,
+      detailMaxProducts: config.detailMaxProducts,
+      detailTargetCount,
+      detailItemCount: detailItems.length,
       startedAt: new Date(Date.now() - elapsedMs).toISOString(),
       finishedAt: new Date().toISOString(),
       elapsedMs: +elapsedMs.toFixed(2),
@@ -118,6 +166,11 @@ async function runCcdome(
       targetProductCount: result.activeProducts.length,
       productSummaryCount: productSummaries.length,
       inventoryRowCount: inventoryItems.length,
+      imageBackedProductCount: result.pageResults.reduce(
+        (sum, item) => sum + Number(item.imageBackedProductCount || 0),
+        0,
+      ),
+      detailItemCount: detailItems.length,
       soldOutProductCount: result.soldOutProducts.length,
       countMatched:
         detectedTotalProductCount != null && fullRangeCollected
@@ -145,6 +198,7 @@ async function runCcdome(
       products: result.allProducts,
       activeProducts: result.activeProducts,
       soldOutProducts: result.soldOutProducts,
+      detailItems,
       debugFiles: result.debugFiles,
     };
   } finally {

@@ -1,3 +1,5 @@
+// src/malls/cheonyu/index.js
+
 const { performance } = require("node:perf_hooks");
 const { chromium } = require("playwright");
 const {
@@ -14,20 +16,17 @@ const {
   buildProductSummaries,
   sortInventoryItems,
 } = require("../../utils/inventory");
-const {
-  clearCartAll,
-  clearCartByCartIds,
-  parseCartHtml,
-  readCartHtml,
-} = require("./cart");
+const { clearCartAll } = require("./cart");
+const { probeCheonyuCartStock } = require("./cart-stock");
+const { collectCheonyuDetails } = require("./detail");
 const { bulkAddPages, loginCheonyu } = require("./site");
 
-/** 천유닷컴 장바구니 기반 재고 수집을 실행한다. */
+/** 천유닷컴 장바구니 기반 재고/상세 수집을 실행한다. */
 async function runCheonyu(
   config,
   {
     browserType = chromium,
-    onProgress = () => {},
+    onProgress = () => { },
     signal,
   } = {},
 ) {
@@ -35,7 +34,7 @@ async function runCheonyu(
   const memoryStart = getMemoryMb();
   let browser = null;
   let context = null;
-  let releaseAbort = () => {};
+  let releaseAbort = () => { };
 
   try {
     throwIfAborted(signal);
@@ -81,7 +80,13 @@ async function runCheonyu(
       throwIfAborted(signal);
     }
 
-    const { allTargets, allProducts, pageResults, pageRange } = await bulkAddPages(
+    const {
+      allTargets,
+      allPopupOptionRows,
+      allProducts,
+      pageResults,
+      pageRange,
+    } = await bulkAddPages(
       page,
       config,
       (progress) => {
@@ -99,6 +104,10 @@ async function runCheonyu(
       new Map(allTargets.map((item) => [String(item.productId), item])).values(),
     );
 
+    console.log("[CHEONYU] collectionMode:", config.collectionMode);
+    console.log("[CHEONYU] allProducts:", allProducts.length);
+    console.log("[CHEONYU] targetProducts:", targetProducts.length);
+
     onProgress({
       stage: "inventory",
       message: "장바구니에서 옵션별 재고를 파싱하고 있습니다.",
@@ -109,26 +118,58 @@ async function runCheonyu(
       elapsedMs: performance.now() - startedAt,
     });
 
-    const cartHtml = await readCartHtml(page, config);
+    const {
+      cartHtml,
+      inventoryItems,
+      clearAfterResult,
+    } = await probeCheonyuCartStock(
+      page,
+      context,
+      config,
+      targetProducts,
+      {
+        probeQty: config.cartQty || 999,
+        clearAfter: config.clearCartAfter,
+        onProgress: (progress) => {
+          onProgress({
+            ...progress,
+            elapsedMs: performance.now() - startedAt,
+          });
+        },
+        signal,
+      },
+    );
+
     throwIfAborted(signal);
 
-    const allCartItems = parseCartHtml(cartHtml, config);
-    const targetIds = new Set(
-      targetProducts.map((item) => String(item.productId)),
-    );
-    const inventoryItems = sortInventoryItems(
-      allCartItems.filter((item) => targetIds.has(String(item.productId))),
-    );
     const productSummaries = buildProductSummaries(inventoryItems);
+    let detailItems = [];
 
-    let clearAfterResult = null;
+    if (config.collectionMode === "detail") {
+      onProgress({
+        stage: "detail",
+        message: "상품 상세페이지 정보를 수집하고 있습니다.",
+        pageRange,
+        detectedTotalProductCount: pageRange.detectedTotalProductCount,
+        collectedProductCount: allProducts.length,
+        targetProductCount: targetProducts.length,
+        productSummaryCount: productSummaries.length,
+        elapsedMs: performance.now() - startedAt,
+      });
 
-    if (config.clearCartAfter) {
-      const cartIds = inventoryItems
-        .map((item) => item.cartCheckId || item.inPIDX)
-        .filter(Boolean);
+      detailItems = await collectCheonyuDetails(
+        page,
+        allProducts,
+        config,
+        (progress) => {
+          onProgress({
+            ...progress,
+            elapsedMs: performance.now() - startedAt,
+          });
+        },
+        signal,
+      );
 
-      clearAfterResult = await clearCartByCartIds(context, cartIds, config);
       throwIfAborted(signal);
     }
 
@@ -147,10 +188,20 @@ async function runCheonyu(
 
     const soldOutProductCount = soldOutIds.size;
 
+    const detailTargetCount =
+      config.collectionMode === "detail"
+        ? config.detailMaxProducts > 0
+          ? Math.min(config.detailMaxProducts, allProducts.length)
+          : allProducts.length
+        : 0;
+
     const summary = {
       mall: config.mall,
       mallLabel: config.mallLabel,
       category: config.category,
+      collectionMode: config.collectionMode,
+      detailTargetCount,
+      detailItemCount: detailItems.length,
       startedAt: new Date(Date.now() - elapsedMs).toISOString(),
       finishedAt: new Date().toISOString(),
       elapsedMs: +elapsedMs.toFixed(2),
@@ -164,6 +215,7 @@ async function runCheonyu(
       targetProductCount: targetProducts.length,
       productSummaryCount: productSummaries.length,
       inventoryRowCount: inventoryItems.length,
+      popupOptionRowCount: allPopupOptionRows.length,
       soldOutProductCount,
       clearBeforeResult,
       clearAfterResult,
@@ -187,6 +239,8 @@ async function runCheonyu(
       inventoryItems,
       productSummaries,
       products: allProducts,
+      detailItems,
+      popupOptionItems: allPopupOptionRows,
       debugFiles: {
         "debug-cart.html": cartHtml,
       },

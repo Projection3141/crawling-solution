@@ -75,17 +75,95 @@ const CCDOME_SITE = {
 function parseLoginState(html) {
   const $ = cheerio.load(html);
   const bodyText = normalizeWhitespace($("body").text());
+  const bodyTextLower = bodyText.toLowerCase();
+
+  const hrefs = $("a")
+    .map((_, element) => String($(element).attr("href") || "").toLowerCase())
+    .get();
+
+  const logoutHrefSamples = hrefs.filter((href) =>
+    href.includes("logout") ||
+    href.includes("log_out") ||
+    href.includes("logoff"),
+  );
+
+  const logoutLinkFound =
+    $("a[href*='logout']").length > 0 ||
+    $("a[href*='logout.php']").length > 0 ||
+    $("a[href*='member/logout']").length > 0 ||
+    logoutHrefSamples.length > 0;
+
+  const loginFormFound =
+    $("input[name='loginId']").length > 0 ||
+    $("input[name='loginPwd']").length > 0 ||
+    $("input[type='password']").length > 0;
+
+  const loginErrorText =
+    [
+      "아이디, 비밀번호가 일치하지 않습니다",
+      "아이디 또는 비밀번호",
+      "로그인 정보를 확인",
+      "비밀번호가 일치",
+      "존재하지 않는 회원",
+    ].find((text) => bodyText.includes(text)) || "";
+
+  const memberTextFound =
+    bodyText.includes("로그아웃") ||
+    bodyText.includes("마이페이지") ||
+    bodyText.includes("회원정보") ||
+    bodyText.includes("정보수정") ||
+    bodyTextLower.includes("mypage");
 
   return {
-    loggedIn:
-      $("a[href*='logout']").length > 0 || bodyText.includes("로그아웃"),
-    errorText:
-      [
-        "아이디, 비밀번호가 일치하지 않습니다",
-        "아이디 또는 비밀번호",
-        "로그인 정보를 확인",
-      ].find((text) => bodyText.includes(text)) || "",
+    loggedIn: (logoutLinkFound || memberTextFound) && !loginErrorText,
+    logoutLinkFound,
+    logoutHrefSamples,
+    loginFormFound,
+    memberTextFound,
+    errorText: loginErrorText,
+    bodyText: bodyText.slice(0, 700),
   };
+}
+
+/** 과자생각 로그인 후 뜰 수 있는 공지/팝업/모달을 최대한 닫는다. */
+async function closeCcdomeOverlays(page) {
+  const closeSelectors = [
+    "button:has-text('닫기')",
+    "button:has-text('확인')",
+    "button:has-text('오늘 하루 보지 않기')",
+    "a:has-text('닫기')",
+    "a:has-text('오늘 하루 보지 않기')",
+    ".btn_close",
+    ".btn-layer-close",
+    ".layer_close",
+    ".popup_close",
+    ".close",
+    "[class*='close']",
+  ];
+
+  for (const selector of closeSelectors) {
+    const locator = page.locator(selector);
+
+    const count = await locator.count().catch(() => 0);
+
+    for (let index = 0; index < Math.min(count, 5); index += 1) {
+      await locator
+        .nth(index)
+        .click({
+          timeout: 800,
+          force: true,
+        })
+        .catch(() => null);
+
+      await sleep(150);
+    }
+  }
+
+  /**
+   * ESC로 닫히는 모달도 있어서 한 번 눌러준다.
+   */
+  await page.keyboard.press("Escape").catch(() => null);
+  await sleep(300);
 }
 
 /** 공통 계정 설정으로 과자생각에 로그인한다. */
@@ -135,34 +213,175 @@ async function loginCcdome(page, config) {
     ]);
   }
 
-  await sleep(1500);
-  await page.goto(buildListUrl(1, config), {
-    waitUntil: "domcontentloaded",
-    timeout: config.navigationTimeoutMs,
-  });
+  await sleep(2500);
 
-  const state = parseLoginState(await page.content());
+  /**
+   * 로그인 후 사이트 자체 리다이렉트가 끝날 시간을 준다.
+   * 여기서 goods_list.php로 강제 이동하지 않는다.
+   * 목록 이동은 detectCatalog()에서 따로 수행한다.
+   */
+  await page
+    .waitForLoadState("domcontentloaded", {
+      timeout: 10000,
+    })
+    .catch(() => null);
+
+  await page
+    .waitForLoadState("networkidle", {
+      timeout: 5000,
+    })
+    .catch(() => null);
+
+  /**
+   * 로그인 완료 신호를 현재 페이지 DOM에서 먼저 기다린다.
+   * href="../member/logout.php?returnUrl=" 같은 상대경로도 통과한다.
+   */
+  await Promise.race([
+    page.waitForSelector(
+      [
+        "a[href*='logout']",
+        "a[href*='logout.php']",
+        "a[href*='member/logout']",
+        ".top_member_box a[href*='logout']",
+      ].join(", "),
+      {
+        timeout: 15000,
+      },
+    ),
+    page.waitForFunction(
+      () => {
+        const text = document.body?.innerText || "";
+        return (
+          text.includes("로그아웃") ||
+          text.includes("마이페이지") ||
+          text.includes("회원정보")
+        );
+      },
+      null,
+      {
+        timeout: 15000,
+      },
+    ),
+  ]).catch(() => null);
+
+  const html = await page.content();
+  const state = parseLoginState(html);
+
+  console.log("[CCDOME LOGIN CHECK]", {
+    url: page.url(),
+    loggedIn: state.loggedIn,
+    logoutLinkFound: state.logoutLinkFound,
+    logoutHrefSamples: state.logoutHrefSamples,
+    loginFormFound: state.loginFormFound,
+    memberTextFound: state.memberTextFound,
+    errorText: state.errorText,
+    bodyText: state.bodyText,
+  });
 
   if (!state.loggedIn) {
     throw new Error(
-      `과자생각 로그인 성공 확인 실패: ${
-        state.errorText || "로그아웃 링크를 찾지 못했습니다."
+      `과자생각 로그인 성공 확인 실패: ${state.errorText || `로그인 판정 실패. 현재 URL: ${page.url()}`
       }`,
     );
   }
 
   console.log("[LOGIN] 과자생각 로그인 성공");
+  await closeCcdomeOverlays(page).catch(() => null);
 }
 
 /** 공통 카테고리·페이지 설정으로 과자생각 목록 URL을 생성한다. */
 function buildListUrl(pageNo, config) {
   const url = new URL(CCDOME_SITE.urls.list, config.baseUrl);
+  const pageSize = Number.isFinite(Number(config.pageSize)) && Number(config.pageSize) > 0
+    ? Number(config.pageSize)
+    : 40;
 
   url.searchParams.set("cateCd", String(config.category));
   url.searchParams.set("page", String(pageNo));
-  url.searchParams.set("pageNum", String(config.pageSize));
+  url.searchParams.set("pageNum", String(pageSize));
 
   return url.toString();
+}
+
+/** 목록 HTML에서 이미지가 있는 실제 상품 종류 수를 계산한다. */
+function parseImageBackedProductCount(html, config) {
+  const $ = cheerio.load(html);
+  const scope = findMainProductScope($);
+  const selectors = CCDOME_SITE.selectors.list;
+  const productIds = new Set();
+
+  scope.find(selectors.productImage).each((_, image) => {
+    const img = $(image);
+    const item = img.closest(selectors.item);
+    const link =
+      item.find(selectors.productLink).first().attr("href") ||
+      img.closest("a").attr("href") ||
+      "";
+
+    const productUrl = toAbsoluteUrl(link, config.baseUrl);
+
+    if (!productUrl) return;
+
+    try {
+      const productId = new URL(productUrl).searchParams.get("goodsNo") || "";
+
+      if (productId) {
+        productIds.add(productId);
+      }
+    } catch {
+      /** 잘못된 href는 무시한다. */
+    }
+  });
+
+  return productIds.size;
+}
+
+/** 사이트 자동 리다이렉트와 page.goto가 충돌할 때 재시도한다. */
+async function gotoWithNavigationRetry(page, url, config, label = "페이지") {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await page.goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: config.navigationTimeoutMs,
+      });
+
+      await page
+        .waitForLoadState("domcontentloaded", {
+          timeout: 5000,
+        })
+        .catch(() => null);
+
+      return response;
+    } catch (error) {
+      lastError = error;
+
+      const message = String(error?.message || "");
+      const retryable =
+        message.includes("interrupted by another navigation") ||
+        message.includes("Navigation failed because page was closed") ||
+        message.includes("net::ERR_ABORTED");
+
+      if (!retryable || attempt >= 3) {
+        throw error;
+      }
+
+      console.warn(
+        `[CCDOME] ${label} 이동 재시도 ${attempt}/3: ${message}`,
+      );
+
+      await page
+        .waitForLoadState("domcontentloaded", {
+          timeout: 5000,
+        })
+        .catch(() => null);
+
+      await sleep(800 * attempt);
+    }
+  }
+
+  throw lastError;
 }
 
 /** href 또는 onclick 문자열에서 페이지 번호를 추출한다. */
@@ -325,9 +544,9 @@ function parseProductList(html, pageNo, config) {
     const image = item.find(selectors.productImage).first();
     const productName = normalizeProductName(
       item.find(selectors.productName).first().text() ||
-        link.text() ||
-        image.attr("alt") ||
-        "",
+      link.text() ||
+      image.attr("alt") ||
+      "",
     );
     const priceText = normalizeWhitespace(
       item.find(selectors.productPrice).first().text(),
@@ -352,8 +571,8 @@ function parseProductList(html, pageNo, config) {
       productUrl,
       imageUrl: toAbsoluteUrl(
         image.attr("data-original") ||
-          image.attr("data-src") ||
-          image.attr("src"),
+        image.attr("data-src") ||
+        image.attr("src"),
         config.baseUrl,
       ),
       brandHint: inferBrand(productName),
@@ -423,10 +642,12 @@ async function detectCatalog(page, config) {
 
   console.log(`[PAGE DETECT] ${url}`);
 
-  const response = await page.goto(url, {
-    waitUntil: "domcontentloaded",
-    timeout: config.navigationTimeoutMs,
-  });
+  const response = await gotoWithNavigationRetry(
+    page,
+    url,
+    config,
+    "상품 목록 감지",
+  );
 
   if (response && !response.ok()) {
     throw new Error(`과자생각 상품 목록 요청 실패: HTTP ${response.status()}`);
@@ -503,10 +724,12 @@ async function collectListPage(page, pageNo, config, cachedHtml = null) {
   let html = cachedHtml;
 
   if (!html) {
-    const response = await page.goto(url, {
-      waitUntil: "domcontentloaded",
-      timeout: config.navigationTimeoutMs,
-    });
+    const response = await gotoWithNavigationRetry(
+      page,
+      url,
+      config,
+      `${pageNo}페이지 목록`,
+    );
 
     if (response && !response.ok()) {
       throw new Error(
@@ -525,12 +748,14 @@ async function collectListPage(page, pageNo, config, cachedHtml = null) {
 
   const products = parseProductList(html, pageNo, config);
   const soldOutCount = products.filter((item) => item.isSoldOut).length;
+  const imageBackedProductCount = parseImageBackedProductCount(html, config);
 
   return {
     html,
     products,
     soldOutCount,
     activeCount: products.length - soldOutCount,
+    imageBackedProductCount,
     elapsedMs: performance.now() - startedAt,
   };
 }
@@ -539,7 +764,7 @@ async function collectListPage(page, pageNo, config, cachedHtml = null) {
 async function collectCcdomeProducts(
   page,
   config,
-  onProgress = () => {},
+  onProgress = () => { },
   signal,
 ) {
   throwIfAborted(signal);
@@ -587,11 +812,18 @@ async function collectCcdomeProducts(
       pageRange.stopReason = "duplicate-page";
       break;
     }
-
+    
     let addedCount = 0;
+    const maxProducts = Number(config.maxProducts || 0);
 
     for (const product of result.products) {
       if (productMap.has(product.productId)) continue;
+
+      if (maxProducts > 0 && productMap.size >= maxProducts) {
+        pageRange.stopReason = "max-products-reached";
+        break;
+      }
+
       productMap.set(product.productId, product);
       addedCount += 1;
     }
@@ -601,6 +833,7 @@ async function collectCcdomeProducts(
       totalCount: result.products.length,
       activeCount: result.activeCount,
       soldOutCount: result.soldOutCount,
+      imageBackedProductCount: result.imageBackedProductCount,
       addedCount,
       elapsedMs: +result.elapsedMs.toFixed(2),
     });
@@ -663,6 +896,7 @@ module.exports = {
   buildListUrl,
   collectCcdomeProducts,
   detectCatalog,
+  gotoWithNavigationRetry,
   loginCcdome,
   parseCatalogInfo,
   parseProductList,

@@ -1,3 +1,5 @@
+// src/utils/files.js
+
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -32,9 +34,7 @@ function csvEscape(value) {
 function saveCsv(filePath, headers, rows) {
   const lines = [
     headers.join(","),
-    ...rows.map((row) =>
-      headers.map((key) => csvEscape(row[key])).join(","),
-    ),
+    ...rows.map((row) => headers.map((key) => csvEscape(row[key])).join(",")),
   ];
 
   /** Excel에서 한글 CSV를 바로 열 수 있도록 UTF-8 BOM을 추가한다. */
@@ -53,6 +53,7 @@ function createRunFiles(baseOutDir, mall, runId) {
     inventoryCsv: path.resolve(runDir, "inventory.csv"),
     summaryCsv: path.resolve(runDir, "summary.csv"),
     productsCsv: path.resolve(runDir, "products.csv"),
+    detailsCsv: path.resolve(runDir, "details.csv"),
   };
 }
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+//src/cli.js
 
 /** Playwright Chromium을 프로젝트 내부 번들 경로에서 찾도록 고정한다. */
 process.env.PLAYWRIGHT_BROWSERS_PATH ||= "0";

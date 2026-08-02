@@ -62,6 +62,10 @@ const RESULT_FILE_TYPES = Object.freeze({
         label: "전체 상품 CSV",
         defaultName: "products.csv",
     },
+    details: {
+        label: "상세 CSV",
+        defaultName: "details.csv",
+    },
 });
 
 protocol.registerSchemesAsPrivileged([
@@ -212,15 +216,34 @@ function createRunId() {
 /** 실행 입력에서 허용할 필드만 새 객체로 복사한다. */
 function normalizeRunInput(input) {
     const source = input && typeof input === "object" ? input : {};
+
     const allowedKeys = [
         "mall",
         "category",
+
         "accountId",
         "accountPw",
+        "accountName",
+        "localCredentialId",
+
         "showBrowser",
+
+        "collectionMode",
+        "executionOptions",
+
         "pageStart",
         "pageEnd",
-        "pageSize",
+        "maxPerPage",
+
+        "detailMaxProducts",
+        "detailRequestDelayMs",
+        
+        "cartQty",
+        "clearCartBefore",
+        "clearCartAfter",
+        "lowStockThreshold",
+        "requestDelayMs",
+        "navigationTimeoutMs",
     ];
 
     return Object.fromEntries(
@@ -412,19 +435,19 @@ function getAvailableSystemPath(pathNames) {
  * 사용자 홈 폴더를 우선 사용합니다.
  */
 function getDefaultOutputRoot() {
-  const baseDirectory =
-    process.env.USERPROFILE ||
-    process.env.HOME ||
-    os.homedir() ||
-    getAvailableSystemPath([
-      "downloads",
-      "userData",
-    ]);
+    const baseDirectory =
+        process.env.USERPROFILE ||
+        process.env.HOME ||
+        os.homedir() ||
+        getAvailableSystemPath([
+            "downloads",
+            "userData",
+        ]);
 
-  return path.resolve(
-    baseDirectory,
-    "MallCollector",
-  );
+    return path.resolve(
+        baseDirectory,
+        "MallCollector",
+    );
 }
 
 /** CSV 개별 저장 대화상자의 기본 폴더를 반환합니다. */
@@ -675,6 +698,12 @@ function createMainWindow() {
         minHeight: 720,
         show: false,
         backgroundColor: "#f4f6fa",
+        icon: path.resolve(
+            __dirname,
+            "..",
+            "assets",
+            "icon.ico",
+        ),
         webPreferences: {
             preload: path.resolve(
                 __dirname,

@@ -1,3 +1,5 @@
+// src/crawler.js
+
 const path = require("node:path");
 const { toSafeConfig } = require("./config");
 const { throwIfAborted } = require("./utils/common");
@@ -86,17 +88,48 @@ const CSV_HEADERS = {
     "productUrl",
     "imageUrl",
   ],
+  details: [
+    "sourceMall",
+    "categoryCode",
+    "productId",
+    "productUrl",
+    "productName",
+    "brandHint",
+    "categoryHint",
+    "categoryDepth1",
+    "categoryDepth2",
+    "categoryDepth3",
+    "productNo",
+    "barcode",
+    "outerBoxText",
+    "outerBoxQty",
+    "consumerPrice",
+    "manufacturer",
+    "material",
+    "packageSize",
+    "weight",
+    "origin",
+    "certification",
+    "warehouse",
+    "targetAge",
+    "warranty",
+    "asContact",
+    "my3plAvailable",
+    "my3plInboundFee",
+    "my3plOutboundFee",
+    "my3plStorageFee",
+    "packageQty",
+    "packageUnit",
+    "packageText",
+    "thumbnailImageUrlsText",
+    "introImageUrlsText",
+    "detailOptions",
+    "detailError",
+  ],
 };
 
 /** 선택한 쇼핑몰 adapter를 실행하고 공통 CSV/JSON 파일을 저장한다. */
-async function runCollection(
-  config,
-  {
-    runId,
-    onProgress = () => {},
-    signal,
-  },
-) {
+async function runCollection(config, { runId, onProgress = () => {}, signal }) {
   throwIfAborted(signal);
 
   const adapter = ADAPTERS[config.mall];
@@ -109,6 +142,7 @@ async function runCollection(
   const result = await adapter.run(config, { onProgress, signal });
 
   throwIfAborted(signal);
+
   const safeConfig = toSafeConfig(config);
   const payload = {
     summary: {
@@ -118,6 +152,8 @@ async function runCollection(
     inventoryItems: result.inventoryItems,
     productSummaries: result.productSummaries,
     products: result.products,
+    detailItems: result.detailItems || undefined,
+    popupOptionItems: result.popupOptionItems || undefined,
     activeProducts: result.activeProducts || undefined,
     soldOutProducts: result.soldOutProducts || undefined,
   };
@@ -140,7 +176,10 @@ async function runCollection(
   saveCsv(files.summaryCsv, CSV_HEADERS.summary, result.productSummaries);
   saveCsv(files.productsCsv, CSV_HEADERS.products, result.products);
 
-  /** 쇼핑몰별 디버그 HTML은 실행 폴더 아래에만 저장한다. */
+  if (result.detailItems?.length) {
+    saveCsv(files.detailsCsv, CSV_HEADERS.details, result.detailItems);
+  }
+
   for (const [fileName, content] of Object.entries(result.debugFiles || {})) {
     if (!content) continue;
     writeText(path.resolve(files.runDir, path.basename(fileName)), content);
@@ -154,6 +193,7 @@ async function runCollection(
       inventory: files.inventoryCsv,
       summary: files.summaryCsv,
       products: files.productsCsv,
+      details: result.detailItems?.length ? files.detailsCsv : null,
       result: files.resultJson,
     },
   };
