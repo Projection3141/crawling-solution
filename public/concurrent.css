@@ -52,3 +52,13 @@
     flex-direction: column;
   }
 }
+
+.run-card .run-delete-button {
+  margin-left: auto;
+}
+
+@media (max-width: 720px) {
+  .run-card .run-delete-button {
+    margin-left: 0;
+  }
+}

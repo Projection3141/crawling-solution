@@ -14,6 +14,11 @@ const {
   normalizeProductName,
   parsePackageInfo,
 } = require("../../utils/inventory");
+const {
+  getSafetyNumber,
+  gotoWithSiteRetry,
+  resetPageState,
+} = require("../../utils/site-safety");
 
 const CCDOME_SITE = {
   urls: {
@@ -81,17 +86,12 @@ function parseLoginState(html) {
     .map((_, element) => String($(element).attr("href") || "").toLowerCase())
     .get();
 
-  const logoutHrefSamples = hrefs.filter((href) =>
+  const logoutLinkFound = hrefs.some((href) =>
     href.includes("logout") ||
     href.includes("log_out") ||
-    href.includes("logoff"),
+    href.includes("logoff") ||
+    href.includes("member/logout"),
   );
-
-  const logoutLinkFound =
-    $("a[href*='logout']").length > 0 ||
-    $("a[href*='logout.php']").length > 0 ||
-    $("a[href*='member/logout']").length > 0 ||
-    logoutHrefSamples.length > 0;
 
   const loginFormFound =
     $("input[name='loginId']").length > 0 ||
@@ -107,17 +107,21 @@ function parseLoginState(html) {
       "존재하지 않는 회원",
     ].find((text) => bodyText.includes(text)) || "";
 
+  /**
+   * 로그아웃 링크가 가장 확실하다.
+   * 다만 과자생각은 페이지/팝업 상태에 따라 헤더 판정이 흔들릴 수 있으므로
+   * 로그인 폼이 사라지고 회원 관련 문구가 보이는 경우도 보조 성공으로 본다.
+   */
   const memberTextFound =
     bodyText.includes("로그아웃") ||
-    bodyText.includes("마이페이지") ||
     bodyText.includes("회원정보") ||
     bodyText.includes("정보수정") ||
+    bodyText.includes("마이페이지") ||
     bodyTextLower.includes("mypage");
 
   return {
-    loggedIn: (logoutLinkFound || memberTextFound) && !loginErrorText,
+    loggedIn: logoutLinkFound || (!loginFormFound && memberTextFound && !loginErrorText),
     logoutLinkFound,
-    logoutHrefSamples,
     loginFormFound,
     memberTextFound,
     errorText: loginErrorText,
@@ -167,15 +171,21 @@ async function closeCcdomeOverlays(page) {
 }
 
 /** 공통 계정 설정으로 과자생각에 로그인한다. */
-async function loginCcdome(page, config) {
+async function loginCcdome(page, config, signal) {
   const selectors = CCDOME_SITE.selectors.login;
 
   console.log("[LOGIN] 과자생각 로그인 시작");
 
-  await page.goto(new URL(CCDOME_SITE.urls.login, config.baseUrl).toString(), {
-    waitUntil: "domcontentloaded",
-    timeout: config.navigationTimeoutMs,
-  });
+  await gotoWithNavigationRetry(
+    page,
+    new URL(CCDOME_SITE.urls.login, config.baseUrl).toString(),
+    config,
+    "로그인 페이지",
+    signal,
+    {
+      readySelector: selectors.passwordInputs.join(", "),
+    },
+  );
 
   await fillFirstAvailable(
     page,
@@ -216,9 +226,8 @@ async function loginCcdome(page, config) {
   await sleep(2500);
 
   /**
-   * 로그인 후 사이트 자체 리다이렉트가 끝날 시간을 준다.
-   * 여기서 goods_list.php로 강제 이동하지 않는다.
-   * 목록 이동은 detectCatalog()에서 따로 수행한다.
+   * 로그인 버튼 클릭 후 과자생각이 main/index.php로 자동 이동하는 경우가 있어
+   * 곧바로 목록 URL로 이동하면 navigation 충돌이 발생할 수 있다.
    */
   await page
     .waitForLoadState("domcontentloaded", {
@@ -232,156 +241,99 @@ async function loginCcdome(page, config) {
     })
     .catch(() => null);
 
-  /**
-   * 로그인 완료 신호를 현재 페이지 DOM에서 먼저 기다린다.
-   * href="../member/logout.php?returnUrl=" 같은 상대경로도 통과한다.
-   */
-  await Promise.race([
-    page.waitForSelector(
-      [
-        "a[href*='logout']",
-        "a[href*='logout.php']",
-        "a[href*='member/logout']",
-        ".top_member_box a[href*='logout']",
-      ].join(", "),
-      {
-        timeout: 15000,
-      },
-    ),
-    page.waitForFunction(
-      () => {
-        const text = document.body?.innerText || "";
-        return (
-          text.includes("로그아웃") ||
-          text.includes("마이페이지") ||
-          text.includes("회원정보")
-        );
-      },
-      null,
-      {
-        timeout: 15000,
-      },
-    ),
-  ]).catch(() => null);
+  const listUrl = buildListUrl(1, config);
 
-  const html = await page.content();
-  const state = parseLoginState(html);
+  await gotoWithNavigationRetry(
+    page,
+    listUrl,
+    config,
+    "로그인 확인용 목록",
+    signal,
+    {
+      readySelector: CCDOME_SITE.selectors.list.item,
+    },
+  );
 
-  console.log("[CCDOME LOGIN CHECK]", {
-    url: page.url(),
-    loggedIn: state.loggedIn,
-    logoutLinkFound: state.logoutLinkFound,
-    logoutHrefSamples: state.logoutHrefSamples,
-    loginFormFound: state.loginFormFound,
-    memberTextFound: state.memberTextFound,
-    errorText: state.errorText,
-    bodyText: state.bodyText,
-  });
+  const state = parseLoginState(await page.content());
 
   if (!state.loggedIn) {
     throw new Error(
-      `과자생각 로그인 성공 확인 실패: ${state.errorText || `로그인 판정 실패. 현재 URL: ${page.url()}`
+      `과자생각 로그인 성공 확인 실패: ${state.errorText || "로그아웃 링크를 찾지 못했습니다."
       }`,
     );
   }
 
   console.log("[LOGIN] 과자생각 로그인 성공");
-  await closeCcdomeOverlays(page).catch(() => null);
 }
 
 /** 공통 카테고리·페이지 설정으로 과자생각 목록 URL을 생성한다. */
 function buildListUrl(pageNo, config) {
   const url = new URL(CCDOME_SITE.urls.list, config.baseUrl);
-  const pageSize = Number.isFinite(Number(config.pageSize)) && Number(config.pageSize) > 0
-    ? Number(config.pageSize)
-    : 40;
 
   url.searchParams.set("cateCd", String(config.category));
   url.searchParams.set("page", String(pageNo));
-  url.searchParams.set("pageNum", String(pageSize));
+  url.searchParams.set("pageNum", String(config.pageSize));
 
   return url.toString();
 }
 
-/** 목록 HTML에서 이미지가 있는 실제 상품 종류 수를 계산한다. */
-function parseImageBackedProductCount(html, config) {
-  const $ = cheerio.load(html);
-  const scope = findMainProductScope($);
-  const selectors = CCDOME_SITE.selectors.list;
-  const productIds = new Set();
+/** 공통 사이트 안전 모듈로 과자생각 페이지 이동을 복구한다. */
+async function gotoWithNavigationRetry(
+  page,
+  url,
+  config,
+  label = "페이지",
+  signal,
+  {
+    readySelector = "",
+    readyTimeoutMs = null,
+  } = {},
+) {
+  const maxAttempts = getSafetyNumber(
+    config,
+    "navigationRetryCount",
+    8,
+    3,
+    20,
+  );
+  const hardResetEvery = getSafetyNumber(
+    config,
+    "navigationHardResetEvery",
+    3,
+    2,
+    10,
+  );
 
-  scope.find(selectors.productImage).each((_, image) => {
-    const img = $(image);
-    const item = img.closest(selectors.item);
-    const link =
-      item.find(selectors.productLink).first().attr("href") ||
-      img.closest("a").attr("href") ||
-      "";
-
-    const productUrl = toAbsoluteUrl(link, config.baseUrl);
-
-    if (!productUrl) return;
-
-    try {
-      const productId = new URL(productUrl).searchParams.get("goodsNo") || "";
-
-      if (productId) {
-        productIds.add(productId);
+  return gotoWithSiteRetry(page, url, {
+    label: `[CCDOME] ${label}`,
+    signal,
+    maxAttempts,
+    timeoutMs: config.navigationTimeoutMs,
+    readySelector,
+    readyTimeoutMs: readyTimeoutMs || config.navigationTimeoutMs,
+    baseDelayMs: 900,
+    maxDelayMs: 15000,
+    multiplier: 1.6,
+    beforeAttempt: async ({ attempt }) => {
+      if (attempt > 1 && (attempt - 1) % hardResetEvery === 0) {
+        console.warn(
+          `[CCDOME] ${label} 이동 상태를 초기화합니다. (${attempt}/${maxAttempts})`,
+        );
+        await resetPageState(page, {
+          signal,
+          delayMs: 700,
+        });
       }
-    } catch {
-      /** 잘못된 href는 무시한다. */
-    }
+    },
+    onRetry: async () => {
+      await page
+        .waitForLoadState("domcontentloaded", {
+          timeout: 5000,
+        })
+        .catch(() => null);
+      await closeCcdomeOverlays(page).catch(() => null);
+    },
   });
-
-  return productIds.size;
-}
-
-/** 사이트 자동 리다이렉트와 page.goto가 충돌할 때 재시도한다. */
-async function gotoWithNavigationRetry(page, url, config, label = "페이지") {
-  let lastError = null;
-
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      const response = await page.goto(url, {
-        waitUntil: "domcontentloaded",
-        timeout: config.navigationTimeoutMs,
-      });
-
-      await page
-        .waitForLoadState("domcontentloaded", {
-          timeout: 5000,
-        })
-        .catch(() => null);
-
-      return response;
-    } catch (error) {
-      lastError = error;
-
-      const message = String(error?.message || "");
-      const retryable =
-        message.includes("interrupted by another navigation") ||
-        message.includes("Navigation failed because page was closed") ||
-        message.includes("net::ERR_ABORTED");
-
-      if (!retryable || attempt >= 3) {
-        throw error;
-      }
-
-      console.warn(
-        `[CCDOME] ${label} 이동 재시도 ${attempt}/3: ${message}`,
-      );
-
-      await page
-        .waitForLoadState("domcontentloaded", {
-          timeout: 5000,
-        })
-        .catch(() => null);
-
-      await sleep(800 * attempt);
-    }
-  }
-
-  throw lastError;
 }
 
 /** href 또는 onclick 문자열에서 페이지 번호를 추출한다. */
@@ -637,7 +589,7 @@ function parseCatalogInfo(html, config) {
 }
 
 /** 첫 목록 페이지에서 전체 상품 수와 마지막 페이지를 감지한다. */
-async function detectCatalog(page, config) {
+async function detectCatalog(page, config, signal) {
   const url = buildListUrl(1, config);
 
   console.log(`[PAGE DETECT] ${url}`);
@@ -647,6 +599,10 @@ async function detectCatalog(page, config) {
     url,
     config,
     "상품 목록 감지",
+    signal,
+    {
+      readySelector: CCDOME_SITE.selectors.list.item,
+    },
   );
 
   if (response && !response.ok()) {
@@ -680,8 +636,8 @@ async function detectCatalog(page, config) {
 }
 
 /** 수동 또는 자동 설정을 실제 수집 범위로 변환한다. */
-async function resolvePageRange(page, config) {
-  const detection = await detectCatalog(page, config);
+async function resolvePageRange(page, config, signal) {
+  const detection = await detectCatalog(page, config, signal);
   const detectedLastPage = detection.lastPage || null;
   let pageEnd = config.pageEnd;
   let mode = "manual";
@@ -718,7 +674,13 @@ async function resolvePageRange(page, config) {
 }
 
 /** 한 목록 페이지를 이동하고 Cheerio로 상품을 파싱한다. */
-async function collectListPage(page, pageNo, config, cachedHtml = null) {
+async function collectListPage(
+  page,
+  pageNo,
+  config,
+  cachedHtml = null,
+  signal,
+) {
   const startedAt = performance.now();
   const url = buildListUrl(pageNo, config);
   let html = cachedHtml;
@@ -729,6 +691,10 @@ async function collectListPage(page, pageNo, config, cachedHtml = null) {
       url,
       config,
       `${pageNo}페이지 목록`,
+      signal,
+      {
+        readySelector: CCDOME_SITE.selectors.list.item,
+      },
     );
 
     if (response && !response.ok()) {
@@ -748,14 +714,12 @@ async function collectListPage(page, pageNo, config, cachedHtml = null) {
 
   const products = parseProductList(html, pageNo, config);
   const soldOutCount = products.filter((item) => item.isSoldOut).length;
-  const imageBackedProductCount = parseImageBackedProductCount(html, config);
 
   return {
     html,
     products,
     soldOutCount,
     activeCount: products.length - soldOutCount,
-    imageBackedProductCount,
     elapsedMs: performance.now() - startedAt,
   };
 }
@@ -769,7 +733,11 @@ async function collectCcdomeProducts(
 ) {
   throwIfAborted(signal);
 
-  const { pageRange, firstPageHtml } = await resolvePageRange(page, config);
+  const { pageRange, firstPageHtml } = await resolvePageRange(
+    page,
+    config,
+    signal,
+  );
   throwIfAborted(signal);
   const productMap = new Map();
   const pageResults = [];
@@ -792,7 +760,13 @@ async function collectCcdomeProducts(
     throwIfAborted(signal);
 
     const cachedHtml = pageNo === 1 ? firstPageHtml : null;
-    const result = await collectListPage(page, pageNo, config, cachedHtml);
+    const result = await collectListPage(
+      page,
+      pageNo,
+      config,
+      cachedHtml,
+      signal,
+    );
     throwIfAborted(signal);
 
     if (!firstHtml) firstHtml = result.html;
@@ -812,18 +786,11 @@ async function collectCcdomeProducts(
       pageRange.stopReason = "duplicate-page";
       break;
     }
-    
+
     let addedCount = 0;
-    const maxProducts = Number(config.maxProducts || 0);
 
     for (const product of result.products) {
       if (productMap.has(product.productId)) continue;
-
-      if (maxProducts > 0 && productMap.size >= maxProducts) {
-        pageRange.stopReason = "max-products-reached";
-        break;
-      }
-
       productMap.set(product.productId, product);
       addedCount += 1;
     }
@@ -833,7 +800,6 @@ async function collectCcdomeProducts(
       totalCount: result.products.length,
       activeCount: result.activeCount,
       soldOutCount: result.soldOutCount,
-      imageBackedProductCount: result.imageBackedProductCount,
       addedCount,
       elapsedMs: +result.elapsedMs.toFixed(2),
     });

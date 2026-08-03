@@ -5,6 +5,7 @@ const CHANNELS = Object.freeze({
   getState: "collector:get-state",
   start: "collector:start",
   cancel: "collector:cancel",
+  deleteRun: "collector:delete-run",
   uploadCartItems: "collector:upload-cart-items",
   chooseOutputDirectory: "collector:choose-output-directory",
   saveResultFile: "collector:save-result-file",
@@ -34,6 +35,10 @@ contextBridge.exposeInMainWorld(
     start: (input) => invoke(CHANNELS.start, input),
     cancel: (runId) =>
       invoke(CHANNELS.cancel, {
+        runId,
+      }),
+    deleteRun: (runId) =>
+      invoke(CHANNELS.deleteRun, {
         runId,
       }),
     uploadCartItems: (input) => invoke(CHANNELS.uploadCartItems, input),

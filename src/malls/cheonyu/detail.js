@@ -13,6 +13,16 @@ const {
   normalizeProductName,
   parsePackageInfo,
 } = require("../../utils/inventory");
+const {
+  getSafetyNumber,
+  gotoWithSiteRetry,
+  isRetryableSiteError,
+  markSiteError,
+  replacePage,
+  resetPageState,
+  sleepWithSignal,
+  withSiteRetry,
+} = require("../../utils/site-safety");
 
 const CHEONYU_DETAIL = {
   selectors: {
@@ -25,17 +35,14 @@ const CHEONYU_DETAIL = {
     infoNumber: ".pdt-top-info .info-number",
     outerBox: ".pdt-top-info .inbox",
     consumerPrice: ".pdt_code .pdt_code_last strong",
-    mainPhotoLinks:
-      "#viewSmallPhoto a[onmouseover*='changeImg'], " +
-      ".small_photo a[onmouseover*='changeImg']",
-    detailImages:
-      "#tab_01 #viewContent img[src*='image3.cheonyu.com'], " +
-      "#tab_01 #viewContent img[data-src*='image3.cheonyu.com'], " +
-      "#viewContent img[src*='image3.cheonyu.com'], " +
-      "#viewContent img[data-src*='image3.cheonyu.com'], " +
+    smallPhotoLinks: "#viewSmallPhoto a, .small_photo a",
+    smallPhotoImages: "#viewSmallPhoto img, .small_photo img",
+    introImages:
+      "#tab_01 #viewContent img, " +
+      "#viewContent img, " +
+      ".pic#viewContent img, " +
       "img[src*='image3.cheonyu.com'], " +
-      "img[data-src*='image3.cheonyu.com'], " +
-      "img[data-original*='image3.cheonyu.com']",
+      "img[data-src*='image3.cheonyu.com']",
     detailSpecTable: 'table.info[alt="제품상세정보"]',
   },
 };
@@ -53,20 +60,16 @@ function toAbsoluteUrl(value, baseUrl) {
   }
 }
 
-/** 수집 결과로 사용할 수 있는 원본 이미지 URL인지 확인한다. */
 function isUsefulImageUrl(url) {
   const value = String(url || "").trim();
 
   if (!value) return false;
   if (value === "tites") return false;
   if (value.startsWith("data:")) return false;
-  if (/\/thumb\//i.test(value)) return false;
   if (/blank|noimg|loading|spinner/i.test(value)) return false;
 
-  return (
-    /\.(jpg|jpeg|png|gif|webp)(\?|#|$)/i.test(value) ||
-    value.includes("image3.cheonyu.com")
-  );
+  return /\.(jpg|jpeg|png|gif|webp)(\?|#|$)/i.test(value) ||
+    value.includes("image3.cheonyu.com");
 }
 
 function getImageCandidateUrls($, image, baseUrl) {
@@ -179,6 +182,36 @@ function parseDetailOptions($) {
   return options;
 }
 
+/** 마이3PL 비용 안내 table을 파싱한다. */
+function parseMy3pl($) {
+  const table = $("table")
+    .filter((_, element) => {
+      const text = normalizeWhitespace($(element).text());
+      return text.includes("마이3PL 가능여부") || text.includes("입고비용");
+    })
+    .first();
+
+  if (!table.length) {
+    return {
+      available: "",
+      inboundFee: "",
+      outboundFee: "",
+      storageFee: "",
+      raw: {},
+    };
+  }
+
+  const raw = parseKeyValueTable($, table);
+
+  return {
+    available: pickByIncludes(raw, ["마이3PL 가능여부", "가능여부"]),
+    inboundFee: toNumber(pickByIncludes(raw, ["입고비용"])),
+    outboundFee: toNumber(pickByIncludes(raw, ["출고비용"])),
+    storageFee: toNumber(pickByIncludes(raw, ["보관비용"])),
+    raw,
+  };
+}
+
 async function prepareDetailImages(page) {
   /**
    * 천유 상세 이미지는 하단 상세 영역에 lazy 로딩으로 붙는 경우가 있다.
@@ -246,48 +279,39 @@ function parseDetailHtml(html, product, config) {
   const outerBoxQty = toNumber(outerBoxText.match(/(\d+)\s*EA/i)?.[1] || "");
   const consumerPrice = toNumber($(selectors.consumerPrice).first().text());
 
-  /**
- * 썸네일 img의 /thumb/ 주소는 읽지 않는다.
- * onmouseover="changeImg('/_DATA/product/...jpg')"의 원본 경로만 읽는다.
- */
-  const mainImageUrls = unique(
-    $(selectors.mainPhotoLinks)
+  const thumbnailImageUrls = unique(
+    $(selectors.smallPhotoLinks)
       .map((_, element) =>
         toAbsoluteUrl(
-          extractChangeImgUrl(
-            $(element).attr("onmouseover"),
-          ),
+          extractChangeImgUrl($(element).attr("onmouseover")),
           config.baseUrl,
         ),
       )
       .get()
-      .filter(isUsefulImageUrl),
-  );
-
-  /**
-   * image3.cheonyu.com 상세 이미지 중 첫 번째 이미지만
-   * detail_img 문자열로 사용한다.
-   */
-  const detailImageUrls = unique(
-    $(selectors.detailImages)
-      .map((_, element) =>
-        getImageCandidateUrls(
-          $,
-          element,
-          config.baseUrl,
-        ),
-      )
-      .get()
-      .flat()
-      .filter((url) =>
-        url.includes("image3.cheonyu.com"),
+      .concat(
+        $(selectors.smallPhotoImages)
+          .map((_, element) => getImageCandidateUrls($, element, config.baseUrl))
+          .get()
+          .flat(),
       ),
   );
 
-  const detailImageUrl =
-    detailImageUrls[0] || "";
+  const introImageUrls = unique(
+    [
+      ...$(selectors.introImages)
+        .map((_, element) => getImageCandidateUrls($, element, config.baseUrl))
+        .get()
+        .flat(),
+
+      ...$("img[src*='image3.cheonyu.com'], img[data-src*='image3.cheonyu.com']")
+        .map((_, element) => getImageCandidateUrls($, element, config.baseUrl))
+        .get()
+        .flat(),
+    ],
+  );
 
   const detailSpecRaw = parseKeyValueTable($, $(selectors.detailSpecTable).first());
+  const my3pl = parseMy3pl($);
   const packageInfo = parsePackageInfo(productName);
 
   return {
@@ -316,85 +340,252 @@ function parseDetailHtml(html, product, config) {
     targetAge: pickByIncludes(detailSpecRaw, ["사용 대상 연령", "대상 연령"]),
     warranty: pickByIncludes(detailSpecRaw, ["품질보증기준"]),
     asContact: pickByIncludes(detailSpecRaw, ["A/S", "전화번호"]),
+    my3plAvailable: my3pl.available,
+    my3plInboundFee: my3pl.inboundFee,
+    my3plOutboundFee: my3pl.outboundFee,
+    my3plStorageFee: my3pl.storageFee,
     packageQty: packageInfo.packageQty,
     packageUnit: packageInfo.packageUnit,
     packageText: packageInfo.packageText,
     detailOptions: JSON.stringify(parseDetailOptions($)),
-    mainImageUrls,
-    detailImageUrl,
-    mainImageUrlsText: mainImageUrls.join(" | "),
-    thumbnailImageUrlsText: mainImageUrls.join(" | "),
-    introImageUrlsText: detailImageUrl,
+    thumbnailImageUrls,
+    introImageUrls,
+    thumbnailImageUrlsText: thumbnailImageUrls.join(" | "),
+    introImageUrlsText: introImageUrls.join(" | "),
     rawDetailSpec: detailSpecRaw,
+    rawMy3pl: my3pl.raw,
   };
 }
 
-/** 일반 수집으로 확보한 상품 URL을 순회하며 상세 정보를 수집한다. */
-async function collectCheonyuDetails(page, products, config, onProgress = () => { }, signal) {
+/** 신규 상세 작업 탭에 공통 이벤트를 연결한다. */
+async function setupCheonyuDetailWorkerPage(workerPage) {
+  workerPage.on("dialog", async (dialog) => {
+    await dialog.dismiss().catch(() => null);
+  });
+}
+
+/** 일반 수집으로 확보한 상품 URL을 안전한 병렬 작업자로 수집한다. */
+async function collectCheonyuDetails(
+  page,
+  products,
+  config,
+  onProgress = () => {},
+  signal,
+) {
   const targets = Array.from(
     new Map(
-      products
-        .filter((item) => item.productUrl)
+      (products || [])
+        .filter((item) => item?.productUrl)
         .map((item) => [String(item.productId), item]),
     ).values(),
   );
-
   const limitedTargets =
-    config.detailMaxProducts > 0
-      ? targets.slice(0, config.detailMaxProducts)
+    Number(config.detailMaxProducts) > 0
+      ? targets.slice(0, Number(config.detailMaxProducts))
       : targets;
-  const details = [];
 
-  for (let index = 0; index < limitedTargets.length; index += 1) {
-    throwIfAborted(signal);
+  if (limitedTargets.length < 1) return [];
 
-    const product = limitedTargets[index];
+  const concurrency = Math.min(
+    limitedTargets.length,
+    getSafetyNumber(config, "detailConcurrency", 5, 1, 5),
+  );
+  const retryCount = getSafetyNumber(
+    config,
+    "detailRetryCount",
+    6,
+    2,
+    12,
+  );
+  const hardResetEvery = getSafetyNumber(
+    config,
+    "detailHardResetEvery",
+    3,
+    2,
+    6,
+  );
+  const context = page.context();
+  const workers = [];
+  const details = new Array(limitedTargets.length);
+  let nextIndex = 0;
+  let completedCount = 0;
 
-    onProgress({
-      stage: "detail",
-      message: `상세 수집 중: ${index + 1}/${limitedTargets.length}`,
-      currentDetailIndex: index + 1,
-      detailTargetCount: limitedTargets.length,
-      productId: product.productId,
-    });
+  /** 기존 목록 탭은 건드리지 않고 상세 전용 탭만 만든다. */
+  for (let index = 0; index < concurrency; index += 1) {
+    const workerPage = await context.newPage();
+    await setupCheonyuDetailWorkerPage(workerPage);
+    workers.push({ page: workerPage, workerIndex: index });
+  }
+
+  async function collectOne(worker, product, targetIndex) {
+    let lastError = null;
 
     try {
-      const response = await page.goto(product.productUrl, {
-        waitUntil: "domcontentloaded",
-        timeout: config.navigationTimeoutMs,
-      });
+      return await withSiteRetry(
+        async () => {
+          const response = await gotoWithSiteRetry(
+            worker.page,
+            product.productUrl,
+            {
+              label: `천유 상세 상품 ${product.productId}`,
+              signal,
+              maxAttempts: 1,
+              timeoutMs: config.navigationTimeoutMs,
+              readySelector: CHEONYU_DETAIL.selectors.root,
+              readyTimeoutMs: config.navigationTimeoutMs,
+            },
+          );
 
-      if (response && !response.ok()) {
-        throw new Error(`HTTP ${response.status()}`);
-      }
+          if (response && !response.ok()) {
+            throw markSiteError(
+              new Error(`HTTP ${response.status()}`),
+              {
+                retryable: response.status() >= 500 || response.status() === 429,
+                statusCode: response.status(),
+                stage: "cheonyu-detail",
+              },
+            );
+          }
 
-      await page
-        .waitForSelector(CHEONYU_DETAIL.selectors.root, {
-          timeout: config.navigationTimeoutMs,
-        })
-        .catch(() => null);
+          if (typeof prepareDetailImages === "function") {
+            await prepareDetailImages(worker.page);
+          }
 
-      await prepareDetailImages(page);
+          const detail = parseDetailHtml(
+            await worker.page.content(),
+            product,
+            config,
+          );
 
-      const html = await page.content();
-      details.push(parseDetailHtml(html, product, config));
+          if (!detail?.productId || !detail?.productName) {
+            throw markSiteError(
+              new Error("천유 상세 핵심 필드가 비어 있습니다."),
+              {
+                retryable: true,
+                code: "DETAIL_VALIDATION_FAILED",
+                stage: "cheonyu-detail",
+              },
+            );
+          }
+
+          return detail;
+        },
+        {
+          label: `천유 상세 상품 ${product.productId}`,
+          maxAttempts: retryCount,
+          signal,
+          shouldRetry: (error) =>
+            isRetryableSiteError(error, {
+              signal,
+              retryUnknownErrors: true,
+            }),
+          baseDelayMs: 800,
+          maxDelayMs: 15000,
+          multiplier: 1.6,
+          onRetry: async ({ error, attempt, nextAttempt }) => {
+            lastError = error;
+
+            onProgress({
+              stage: "detail",
+              message:
+                `천유 상세 재시도 ${nextAttempt}/${retryCount} · ` +
+                `상품 ${targetIndex + 1}/${limitedTargets.length}`,
+              currentDetailIndex: completedCount,
+              detailTargetCount: limitedTargets.length,
+              productId: product.productId,
+              workerIndex: worker.workerIndex + 1,
+              detailAttempt: nextAttempt,
+            });
+
+            if (attempt % hardResetEvery === 0) {
+              console.warn(
+                `[CHEONYU DETAIL] 작업자 ${worker.workerIndex + 1} 탭 교체`,
+              );
+              worker.page = await replacePage(worker.page, {
+                signal,
+                setupPage: setupCheonyuDetailWorkerPage,
+              });
+            } else {
+              await resetPageState(worker.page, {
+                signal,
+                delayMs: 500,
+              });
+            }
+          },
+        },
+      );
     } catch (error) {
-      details.push({
-        sourceMall: config.mall,
-        categoryCode: config.category,
-        productId: product.productId,
-        productUrl: product.productUrl,
-        productName: product.productName,
-        detailError: error.message,
-      });
+      lastError = error;
     }
 
-    if (config.detailRequestDelayMs > 0 && index < limitedTargets.length - 1) {
-      await sleep(config.detailRequestDelayMs);
+    return {
+      sourceMall: config.mall,
+      categoryCode: config.category,
+      productId: product.productId,
+      productUrl: product.productUrl,
+      productName: product.productName,
+      detailError: lastError?.message || "상세 수집 실패",
+    };
+  }
+
+  async function runWorker(worker) {
+    if (worker.workerIndex > 0) {
+      await sleepWithSignal(worker.workerIndex * 250, signal);
+    }
+
+    while (true) {
+      throwIfAborted(signal);
+
+      const targetIndex = nextIndex;
+      nextIndex += 1;
+
+      if (targetIndex >= limitedTargets.length) return;
+
+      const product = limitedTargets[targetIndex];
+
+      onProgress({
+        stage: "detail",
+        message:
+          `천유 상세 수집 중: ${completedCount}/${limitedTargets.length} ` +
+          `(작업자 ${worker.workerIndex + 1}, 상품 ${targetIndex + 1})`,
+        currentDetailIndex: completedCount,
+        detailTargetCount: limitedTargets.length,
+        productId: product.productId,
+        workerIndex: worker.workerIndex + 1,
+        detailConcurrency: concurrency,
+      });
+
+      details[targetIndex] = await collectOne(worker, product, targetIndex);
+      completedCount += 1;
+
+      onProgress({
+        stage: "detail",
+        message: `천유 상세 수집 중: ${completedCount}/${limitedTargets.length}`,
+        currentDetailIndex: completedCount,
+        detailTargetCount: limitedTargets.length,
+        productId: product.productId,
+        workerIndex: worker.workerIndex + 1,
+        detailConcurrency: concurrency,
+      });
+
+      if (
+        Number(config.detailRequestDelayMs) > 0 &&
+        completedCount < limitedTargets.length
+      ) {
+        await sleepWithSignal(Number(config.detailRequestDelayMs), signal);
+      }
     }
   }
 
-  return details;
+  try {
+    await Promise.all(workers.map((worker) => runWorker(worker)));
+  } finally {
+    await Promise.all(
+      workers.map((worker) => worker.page.close().catch(() => null)),
+    );
+  }
+
+  return details.filter(Boolean);
 }
 
 module.exports = {

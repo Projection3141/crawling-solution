@@ -6,6 +6,13 @@ const {
   throwIfAborted,
   toNumber,
 } = require("../../utils/common");
+const {
+  getSafetyNumber,
+  gotoWithSiteRetry,
+  isRetryableSiteError,
+  resetPageState,
+  withSiteRetry,
+} = require("../../utils/site-safety");
 
 const CCDOME_CART = Object.freeze({
   urls: {
@@ -66,16 +73,22 @@ function buildCcdomeProductUrl(productId, config) {
 }
 
 /** 과자생각 장바구니 HTML을 읽는다. */
-async function readCcdomeCartHtml(page, config) {
+async function readCcdomeCartHtml(page, config, signal) {
   const url = new URL(CCDOME_CART.urls.cart, config.baseUrl).toString();
-  const response = await page.goto(url, {
-    waitUntil: "domcontentloaded",
-    timeout: config.navigationTimeoutMs,
+  await gotoWithSiteRetry(page, url, {
+    label: "과자생각 장바구니 페이지",
+    signal,
+    maxAttempts: getSafetyNumber(
+      config,
+      "cartNavigationRetryCount",
+      6,
+      2,
+      12,
+    ),
+    timeoutMs: config.navigationTimeoutMs,
+    baseDelayMs: 1000,
+    maxDelayMs: 15000,
   });
-
-  if (response && !response.ok()) {
-    throw new Error(`과자생각 장바구니 요청 실패: HTTP ${response.status()}`);
-  }
 
   await page
     .waitForLoadState("networkidle", {
@@ -219,8 +232,8 @@ async function triggerCcdomeCartAdd(page, product, config) {
 }
 
 /** 장바구니 페이지에서 지정 상품이 실제로 들어갔는지 확인한다. */
-async function verifyCcdomeCartItem(page, product, config) {
-  const cartHtml = await readCcdomeCartHtml(page, config);
+async function verifyCcdomeCartItem(page, product, config, signal) {
+  const cartHtml = await readCcdomeCartHtml(page, config, signal);
   const cartItems = parseCcdomeCartHtml(cartHtml, config);
   const productId = String(product.productId);
   const matched = cartItems.find(
@@ -237,28 +250,25 @@ async function verifyCcdomeCartItem(page, product, config) {
 }
 
 /** 과자생각 상품 상세페이지에서 수량을 설정하고 한 상품만 담는다. */
-async function addOneCcdomeProduct(page, product, config, signal) {
+async function addOneCcdomeProductAttempt(
+  page,
+  product,
+  config,
+  signal,
+) {
   throwIfAborted(signal);
 
   const productId = String(product.productId || "").trim();
   const quantity = Math.max(1, Math.trunc(Number(product.quantity) || 1));
   const productUrl = buildCcdomeProductUrl(productId, config);
-  const response = await page.goto(productUrl, {
-    waitUntil: "domcontentloaded",
-    timeout: config.navigationTimeoutMs,
+  await gotoWithSiteRetry(page, productUrl, {
+    label: `과자생각 장바구니 상품 ${productId}`,
+    signal,
+    maxAttempts: 1,
+    timeoutMs: config.navigationTimeoutMs,
+    readySelector: CCDOME_CART.selectors.root,
+    readyTimeoutMs: config.navigationTimeoutMs,
   });
-
-  if (response && !response.ok()) {
-    throw new Error(
-      `과자생각 상품 페이지 요청 실패: HTTP ${response.status()} (${productId})`,
-    );
-  }
-
-  await page
-    .waitForSelector(CCDOME_CART.selectors.root, {
-      timeout: config.navigationTimeoutMs,
-    })
-    .catch(() => null);
 
   const quantityInput = await findFirstVisible(
     page,
@@ -302,6 +312,7 @@ async function addOneCcdomeProduct(page, product, config, signal) {
       quantity,
     },
     config,
+    signal,
   );
 
   return {
@@ -314,6 +325,106 @@ async function addOneCcdomeProduct(page, product, config, signal) {
     cartItem,
     ...triggerResult,
   };
+}
+
+/**
+ * 과자생각 상품 한 개를 공통 사이트 안전 모듈로 재시도한다.
+ *
+ * 첫 시도에서 실제 담기는 성공했지만 장바구니 확인만 실패한 경우,
+ * 다음 시도 전에 장바구니를 먼저 확인하여 중복 추가를 방지한다.
+ */
+async function addOneCcdomeProduct(page, product, config, signal) {
+  const productId = String(product.productId || "").trim();
+  const quantity = Math.max(1, Math.trunc(Number(product.quantity) || 1));
+  const maxAttempts = getSafetyNumber(
+    config,
+    "cartRetryCount",
+    8,
+    3,
+    15,
+  );
+  const hardResetEvery = getSafetyNumber(
+    config,
+    "cartHardResetEvery",
+    3,
+    2,
+    6,
+  );
+
+  return withSiteRetry(
+    async ({ attempt }) => {
+      throwIfAborted(signal);
+
+      if (attempt > 1) {
+        const recoveredItem = await verifyCcdomeCartItem(
+          page,
+          {
+            ...product,
+            productId,
+            quantity,
+          },
+          config,
+          signal,
+        ).catch(() => null);
+
+        if (
+          recoveredItem &&
+          (Number(recoveredItem.quantity) < 1 ||
+            Number(recoveredItem.quantity) >= quantity)
+        ) {
+          console.log(
+            `[CCDOME CART] 상품 ${productId}는 이전 시도에서 이미 담긴 것으로 확인되었습니다.`,
+          );
+
+          return {
+            productId,
+            optionId: "",
+            quantity,
+            productUrl: buildCcdomeProductUrl(productId, config),
+            added: true,
+            verified: true,
+            recovered: true,
+            cartItem: recoveredItem,
+          };
+        }
+      }
+
+      return addOneCcdomeProductAttempt(
+        page,
+        {
+          ...product,
+          productId,
+          quantity,
+        },
+        config,
+        signal,
+      );
+    },
+    {
+      label: `과자생각 장바구니 상품 ${productId}`,
+      maxAttempts,
+      signal,
+      shouldRetry: (error) =>
+        isRetryableSiteError(error, {
+          signal,
+          retryUnknownErrors: true,
+        }),
+      baseDelayMs: 1200,
+      maxDelayMs: 20000,
+      multiplier: 1.7,
+      onRetry: async ({ attempt }) => {
+        if (attempt % hardResetEvery === 0) {
+          console.warn(
+            `[CCDOME CART] 상품 ${productId} 처리 상태를 초기화합니다.`,
+          );
+          await resetPageState(page, {
+            signal,
+            delayMs: 800,
+          });
+        }
+      },
+    },
+  );
 }
 
 /** 과자생각 상품 여러 개를 반드시 한 개씩 순차 처리한다. */

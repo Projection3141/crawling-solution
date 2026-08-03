@@ -46,6 +46,7 @@ const CHANNELS = Object.freeze({
     getState: "collector:get-state",
     start: "collector:start",
     cancel: "collector:cancel",
+    deleteRun: "collector:delete-run",
     uploadCartItems:
         "collector:upload-cart-items",
     chooseOutputDirectory: "collector:choose-output-directory",
@@ -107,9 +108,11 @@ const runResults = new Map();
 
 /**
  * 장바구니 작업 중인 계정만 수집 시작을 제한한다.
- * key 형식: site:localCredentialId 또는 site:accountId
+ *
+ * Map을 사용해 잠금 여부뿐 아니라 화면에 표시할 계정 정보도 함께 보관한다.
+ * key 형식은 계정 ID를 우선 사용하고, ID가 없을 때만 로컬 계정 식별자를 사용한다.
  */
-const cartAccountLocks = new Set();
+const cartAccountLocks = new Map();
 let activeCartUpload = null;
 let latestCompletedRunId = "";
 
@@ -198,15 +201,56 @@ function updateRunProgress(runId, progress) {
 
 /** 사이트와 계정으로 동시 실행 충돌 검사에 사용할 key를 만든다. */
 function createAccountLockKey(site, localCredentialId, accountId) {
-    const normalizedSite = String(site || "").trim();
+    const normalizedSite = String(site || "").trim().toLowerCase();
     const credentialId = String(localCredentialId || "").trim();
     const loginId = String(accountId || "").trim();
 
     if (!normalizedSite) return "";
-    if (credentialId) return `${normalizedSite}:credential:${credentialId}`;
+
+    /**
+     * 같은 로그인 계정을 로컬 계정 목록에 중복 저장해도 같은 계정으로 판정해야 한다.
+     * 따라서 localCredentialId보다 실제 로그인 ID를 우선한다.
+     */
     if (loginId) return `${normalizedSite}:login:${loginId}`;
+    if (credentialId) return `${normalizedSite}:credential:${credentialId}`;
 
     return `${normalizedSite}:env`;
+}
+
+/** 쇼핑몰 key를 사용자에게 표시할 한글 이름으로 바꾼다. */
+function getMallLabel(site) {
+    return site === "cheonyu"
+        ? "천유닷컴"
+        : site === "ccdome"
+          ? "과자생각"
+          : String(site || "쇼핑몰");
+}
+
+/** 충돌 안내에 사용할 계정 이름을 만든다. */
+function formatAccountLabel(site, accountName, accountId) {
+    const mallLabel = getMallLabel(site);
+    const name = String(accountName || "").trim();
+    const loginId = String(accountId || "").trim();
+
+    if (name && loginId) {
+        return `${mallLabel} 계정 '${name}' (ID: ${loginId})`;
+    }
+
+    if (name) return `${mallLabel} 계정 '${name}'`;
+    if (loginId) return `${mallLabel} 계정 (ID: ${loginId})`;
+
+    return `${mallLabel} 계정`;
+}
+
+/** 장바구니 계정 잠금을 등록하고 안내용 계정 정보도 저장한다. */
+function lockCartAccount(accountKey, site, account) {
+    if (!accountKey) return;
+
+    cartAccountLocks.set(accountKey, {
+        site,
+        accountName: String(account?.accountName || ""),
+        accountId: String(account?.accountId || ""),
+    });
 }
 
 /** 같은 계정을 사용 중인 수집 작업을 찾는다. */
@@ -518,16 +562,42 @@ async function fetchUploaderCartItems(signal) {
 /** GET 응답 배열을 사이트별로 분리해 실제 장바구니에 담는다. */
 async function uploadCartItems(input) {
     if (activeCartUpload) {
-        throw new Error("이미 장바구니 작업이 실행 중입니다.");
+        throw new Error("이미 다른 장바구니 담기 작업이 실행 중입니다.");
     }
 
     const controller = new AbortController();
     const lockedAccountKeys = new Set();
+    const preselectedAccounts = {};
 
     /**
-     * GET 응답을 받기 전에는 어느 사이트 계정이 실제로 필요한지 알 수 없다.
-     * 따라서 이 시점에는 두 번째 장바구니 실행만 막고 계정 잠금은 하지 않는다.
+     * Uploader GET이 끝나기 전에도 같은 계정으로 수집을 새로 시작하지 못하게
+     * 화면에서 선택된 계정을 먼저 임시 잠금한다.
+     * 실제 응답에 포함되지 않은 사이트 계정 잠금은 GET 직후 바로 해제한다.
      */
+    for (const site of ["cheonyu", "ccdome"]) {
+        const source = input?.accounts?.[site];
+        const accountId = String(source?.accountId || "").trim();
+        const accountPw = String(source?.accountPw || "");
+
+        if (!accountId || !accountPw) continue;
+
+        const account = {
+            accountId,
+            accountPw,
+            accountName: String(source?.accountName || ""),
+            localCredentialId: String(source?.localCredentialId || ""),
+        };
+        const accountKey = createAccountLockKey(
+            site,
+            account.localCredentialId,
+            account.accountId,
+        );
+
+        preselectedAccounts[site] = account;
+        lockedAccountKeys.add(accountKey);
+        lockCartAccount(accountKey, site, account);
+    }
+
     activeCartUpload = {
         controller,
         startedAtMs: Date.now(),
@@ -542,13 +612,34 @@ async function uploadCartItems(input) {
         const accounts = {};
 
         /**
-         * 응답에 실제로 포함된 사이트의 계정만 검증하고 잠근다.
-         * 같은 계정으로 이미 수집 중이면 장바구니 작업을 시작하지 않는다.
+         * 실제 Uploader 응답에 포함되지 않은 사이트 계정은 더 이상 잠글 필요가 없다.
+         */
+        for (const site of ["cheonyu", "ccdome"]) {
+            if (grouped[site].length > 0) continue;
+
+            const account = preselectedAccounts[site];
+            if (!account) continue;
+
+            const unusedKey = createAccountLockKey(
+                site,
+                account.localCredentialId,
+                account.accountId,
+            );
+
+            lockedAccountKeys.delete(unusedKey);
+            cartAccountLocks.delete(unusedKey);
+        }
+        emitState();
+
+        /**
+         * 응답에 실제로 포함된 사이트의 계정을 검증한다.
+         * 같은 계정으로 수집 중이면 장바구니 담기를 시작하지 않는다.
          */
         for (const site of ["cheonyu", "ccdome"]) {
             if (grouped[site].length < 1) continue;
 
-            const account = getCartAccount(input?.accounts, site);
+            const account = preselectedAccounts[site] ||
+                getCartAccount(input?.accounts, site);
             const accountKey = createAccountLockKey(
                 site,
                 account.localCredentialId,
@@ -558,20 +649,26 @@ async function uploadCartItems(input) {
 
             if (conflictingRun) {
                 const runState = runStates.get(conflictingRun.id);
+                const modeLabel =
+                    runState?.request?.collectionMode === "detail"
+                        ? "상세 수집"
+                        : "일반 수집";
+                const accountLabel = formatAccountLabel(
+                    site,
+                    account.accountName,
+                    account.accountId,
+                );
 
                 throw new Error(
-                    `${site} 장바구니 계정은 현재 ` +
-                    `${runState?.request?.collectionMode === "detail" ? "상세" : "일반"} ` +
-                    `수집에서 사용 중입니다.`,
+                    `${accountLabel}으로 현재 ${modeLabel}이 진행 중이라 ` +
+                    `장바구니 담기를 시작할 수 없습니다. ` +
+                    `해당 수집이 끝난 후 다시 시도하거나 다른 계정을 선택하세요.`,
                 );
             }
 
             accounts[site] = account;
             lockedAccountKeys.add(accountKey);
-        }
-
-        for (const key of lockedAccountKeys) {
-            cartAccountLocks.add(key);
+            lockCartAccount(accountKey, site, account);
         }
         emitState();
 
@@ -719,8 +816,19 @@ function startCollection(input) {
     const accountKey = createCollectionAccountKey(config, safeInput);
 
     if (cartAccountLocks.has(accountKey)) {
+        const lockInfo = cartAccountLocks.get(accountKey) || {};
+        const accountLabel = formatAccountLabel(
+            config.mall,
+            safeInput.accountName || lockInfo.accountName,
+            config.accountId || lockInfo.accountId,
+        );
+        const modeLabel =
+            safeInput.collectionMode === "detail" ? "상세 수집" : "일반 수집";
+
         throw new Error(
-            "선택한 계정은 현재 장바구니 담기 작업에서 사용 중입니다. 다른 계정을 선택하세요.",
+            `${accountLabel}으로 현재 장바구니 담기 작업이 진행 중이라 ` +
+            `${modeLabel}을 시작할 수 없습니다. ` +
+            `장바구니 작업이 끝난 후 다시 시도하거나 다른 계정을 선택하세요.`,
         );
     }
 
@@ -787,6 +895,68 @@ function cancelCollection(payload) {
     });
 
     run.controller.abort();
+
+    return cloneForRenderer(createPublicApplicationState());
+}
+
+/** 삭제 후 남은 완료 실행 중 가장 최근 실행 ID를 다시 계산한다. */
+function refreshLatestCompletedRunId() {
+    latestCompletedRunId =
+        Array.from(runStates.values())
+            .filter(
+                (runState) =>
+                    runState.status === "completed" &&
+                    runResults.has(runState.id),
+            )
+            .sort(
+                (a, b) =>
+                    Number(b.finishedAtMs || b.startedAtMs || 0) -
+                    Number(a.finishedAtMs || a.startedAtMs || 0),
+            )[0]?.id || "";
+}
+
+/**
+ * 완료·실패·취소된 실행을 실행 목록에서 제거한다.
+ *
+ * 결과 디렉터리와 실제 파일은 삭제하지 않는다.
+ * Renderer가 더 이상 해당 실행을 표시하거나 저장 버튼으로 접근하지 않도록
+ * 메모리 상태와 결과 경로 참조만 정리한다.
+ */
+function deleteRunFromList(payload) {
+    const runId = String(
+        typeof payload === "string" ? payload : payload?.runId || "",
+    ).trim();
+
+    if (!runId) {
+        throw new Error("삭제할 실행 ID가 없습니다.");
+    }
+
+    if (activeRuns.has(runId)) {
+        throw new Error(
+            "실행 중인 작업은 목록에서 삭제할 수 없습니다. 먼저 실행을 취소하세요.",
+        );
+    }
+
+    const runState = runStates.get(runId);
+
+    if (!runState) {
+        return cloneForRenderer(createPublicApplicationState());
+    }
+
+    if (["queued", "running", "canceling"].includes(runState.status)) {
+        throw new Error(
+            "실행 중인 작업은 목록에서 삭제할 수 없습니다. 먼저 실행을 취소하세요.",
+        );
+    }
+
+    runStates.delete(runId);
+    runResults.delete(runId);
+
+    if (latestCompletedRunId === runId) {
+        refreshLatestCompletedRunId();
+    }
+
+    emitState();
 
     return cloneForRenderer(createPublicApplicationState());
 }
@@ -972,6 +1142,10 @@ function registerIpcHandlers() {
 
     registerIpcHandler(CHANNELS.cancel, (payload) =>
         cancelCollection(payload),
+    );
+
+    registerIpcHandler(CHANNELS.deleteRun, (payload) =>
+        deleteRunFromList(payload),
     );
 
     registerIpcHandler(

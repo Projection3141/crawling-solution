@@ -13,43 +13,37 @@ const {
   normalizeProductName,
   parsePackageInfo,
 } = require("../../utils/inventory");
+const {
+  getSafetyNumber,
+  gotoWithSiteRetry,
+  isRetryableSiteError,
+  markSiteError,
+  replacePage,
+  resetPageState,
+  sleepWithSignal,
+  withSiteRetry,
+} = require("../../utils/site-safety");
 
 const CCDOME_DETAIL = {
   selectors: {
     root: ".sub_content, .goods_view, .item_goods_sec, #contents",
-
     categoryItems:
       ".location_wrap .location_select .location_tit span, " +
       ".location_wrap .location_select .location_tit a span, " +
       ".location_wrap .location_tit span",
-
-    title:
-      ".item_info_box .item_detail_tit h3, " +
-      ".item_detail_tit h3, " +
-      ".item_tit_detail_cont h3",
-
-    itemInfoList:
-      ".item_info_box .item_detail_list dl, " +
-      ".item_detail_list dl",
-
+    title: ".item_info_box .item_detail_tit h3, .item_detail_tit h3, .item_tit_detail_cont h3",
+    itemInfoList: ".item_info_box .item_detail_list dl, .item_detail_list dl",
     /**
-     * 상품 대표 원본 이미지.
-     *
-     * .item_photo_slide는 썸네일 영역이므로 포함하지 않는다.
+     * 첨부한 코드의 이미지 수집 경로를 그대로 사용한다.
      */
     mainImages:
-      ".item_photo_view .item_photo_big img, " +
-      ".item_photo_big span.img_photo_big img, " +
-      ".item_photo_big img",
-
-    /**
-     * 상품상세 탭의 실제 상세설명 이미지.
-     */
+      ".item_photo_view .item_photo_big #mainImage img, " +
+      ".item_photo_big span.img_photo_big #mainImage img, " +
+      ".item_photo_big #mainImage img",
     detailImages:
-      "#detail .detail_cont .detail_explain_box .txt-manual img, " +
-      "#detail .detail_cont .detail_explain_box .image-manual img, " +
-      "#detail .detail_cont .detail_explain_box img",
-
+      ".detail_explain_box center img, " +
+      ".detail_explain_box [align='center'] img, " +
+      ".detail_explain_box [align='CENTER'] img",
     detailTextScope:
       "#detail .detail_cont, " +
       "#detail, " +
@@ -78,59 +72,17 @@ function unique(values) {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
-/** 실제 상품 이미지로 쓸 수 있는 URL인지 확인한다. */
-function isUsefulImageUrl(url) {
-  const value = String(url || "").trim();
-
-  if (!value) return false;
-  if (value === "tites") return false;
-  if (value.startsWith("data:")) return false;
-  if (/\/thumb\//i.test(value)) return false;
-  if (/blank|noimg|loading|spinner|icon|btn_|arrow/i.test(value)) return false;
-
-  return (
-    /\.(jpg|jpeg|png|gif|webp)(\?|#|$)/i.test(value) ||
-    value.includes("gi.esmplus.com") ||
-    value.includes("godomall-storage.cdn-nhncommerce.com")
-  );
-}
-
-/** 이미지 태그에서 lazy/srcset 속성까지 포함해 실제 이미지 URL 후보를 모두 읽는다. */
-function getImageCandidateUrls($, element, baseUrl) {
+/** 이미지 태그에서 lazy 속성까지 포함해 실제 이미지 URL을 읽는다. */
+function getImageUrl($, element, baseUrl) {
   const item = $(element);
-  const urls = [];
 
-  const attributes = [
-    "src",
-    "data-src",
-    "data-original",
-    "data-lazy",
-    "data-url",
-    "data-img",
-    "lazy",
-  ];
-
-  for (const attr of attributes) {
-    const url = toAbsoluteUrl(item.attr(attr), baseUrl);
-
-    if (isUsefulImageUrl(url)) {
-      urls.push(url);
-    }
-  }
-
-  const srcset = item.attr("srcset") || item.attr("data-srcset") || "";
-
-  if (srcset) {
-    for (const part of srcset.split(",")) {
-      const url = toAbsoluteUrl(part.trim().split(/\s+/)[0], baseUrl);
-
-      if (isUsefulImageUrl(url)) {
-        urls.push(url);
-      }
-    }
-  }
-
-  return urls;
+  return toAbsoluteUrl(
+    item.attr("data-original") ||
+      item.attr("data-src") ||
+      item.attr("data-lazy") ||
+      item.attr("src"),
+    baseUrl,
+  );
 }
 
 /** dl/dt/dd 구조의 상품 정보 목록을 key-value 객체로 변환한다. */
@@ -141,9 +93,7 @@ function parseDefinitionList($, selector) {
     const key = normalizeWhitespace($(dl).find("dt").first().text());
     const value = normalizeWhitespace($(dl).find("dd").first().text());
 
-    if (key) {
-      result[key] = value;
-    }
+    if (key) result[key] = value;
   });
 
   return result;
@@ -155,7 +105,6 @@ function pickByIncludes(source, keywords) {
 
   for (const keyword of keywords) {
     const found = entries.find(([key]) => key.includes(keyword));
-
     if (found) return found[1];
   }
 
@@ -166,77 +115,7 @@ function pickByIncludes(source, keywords) {
 function parsePrice(value) {
   const text = normalizeWhitespace(value);
   const match = text.match(/-?\d[\d,]*/);
-
   return match ? toNumber(match[0]) : 0;
-}
-
-/**
- * 과자생각 상세 이미지 lazy 로딩을 유도한다.
- *
- * 상세 이미지는 #detail, .detail_explain_box, .txt-manual 하단에 있으며
- * 화면 근처까지 스크롤해야 src/data-src가 실제 URL로 채워지는 경우가 있다.
- */
-async function prepareCcdomeDetailImages(page, config) {
-  await page
-    .evaluate(async () => {
-      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-      const targets = [
-        document.querySelector("#detail"),
-        document.querySelector(".detail_explain_box"),
-        document.querySelector(".txt-manual"),
-        document.querySelector(".detail_cont"),
-        document.querySelector(".item_goods_sec"),
-        document.body,
-      ].filter(Boolean);
-
-      for (const target of targets) {
-        target.scrollIntoView?.({
-          block: "center",
-          behavior: "instant",
-        });
-
-        await wait(400);
-      }
-
-      /**
-       * 상세 이미지가 아주 아래에 붙어 있는 경우를 대비해
-       * 중간과 하단을 한 번씩 밟아준다.
-       */
-      window.scrollTo(0, Math.floor(document.body.scrollHeight * 0.55));
-      await wait(500);
-
-      window.scrollTo(0, document.body.scrollHeight);
-      await wait(800);
-    })
-    .catch(() => null);
-
-  await page
-    .waitForFunction(
-      () => {
-        const images = Array.from(document.querySelectorAll("img"));
-
-        return images.some((image) => {
-          const src =
-            image.getAttribute("src") ||
-            image.getAttribute("data-src") ||
-            image.getAttribute("data-original") ||
-            image.getAttribute("data-lazy") ||
-            "";
-
-          return (
-            src.includes("gi.esmplus.com") ||
-            src.includes("godomall-storage.cdn-nhncommerce.com") ||
-            /\.(jpg|jpeg|png|gif|webp)(\?|#|$)/i.test(src)
-          );
-        });
-      },
-      null,
-      {
-        timeout: Math.min(config.navigationTimeoutMs || 60000, 10000),
-      },
-    )
-    .catch(() => null);
 }
 
 /** 상세 설명 영역의 이미지 URL을 추출한다. */
@@ -245,21 +124,7 @@ function parseDetailImages($, config) {
   const urls = [];
 
   $(selectors.detailImages).each((_, img) => {
-    urls.push(...getImageCandidateUrls($, img, config.baseUrl));
-  });
-
-  /**
-   * selector가 일부 빗나가도 상세 전용 외부 이미지 도메인은 fallback으로 다시 확인한다.
-   */
-  $(
-    "img[src*='gi.esmplus.com'], " +
-    "img[data-src*='gi.esmplus.com'], " +
-    "img[data-original*='gi.esmplus.com'], " +
-    "img[src*='godomall-storage.cdn-nhncommerce.com'], " +
-    "img[data-src*='godomall-storage.cdn-nhncommerce.com'], " +
-    "img[data-original*='godomall-storage.cdn-nhncommerce.com']",
-  ).each((_, img) => {
-    urls.push(...getImageCandidateUrls($, img, config.baseUrl));
+    urls.push(getImageUrl($, img, config.baseUrl));
   });
 
   return unique(urls);
@@ -270,7 +135,7 @@ function parseMainImages($, config) {
   const urls = [];
 
   $(CCDOME_DETAIL.selectors.mainImages).each((_, img) => {
-    urls.push(...getImageCandidateUrls($, img, config.baseUrl));
+    urls.push(getImageUrl($, img, config.baseUrl));
   });
 
   return unique(urls);
@@ -280,7 +145,6 @@ function parseMainImages($, config) {
 function parseCcdomeDetailHtml(html, product, config) {
   const $ = cheerio.load(html);
   const selectors = CCDOME_DETAIL.selectors;
-
   const categoryItems = $(selectors.categoryItems)
     .map((_, element) => normalizeWhitespace($(element).text()))
     .get()
@@ -288,24 +152,12 @@ function parseCcdomeDetailHtml(html, product, config) {
     .filter((value) => ![">", "홈"].includes(value));
 
   const itemInfo = parseDefinitionList($, selectors.itemInfoList);
-
   const productName =
     normalizeProductName($(selectors.title).first().text()) ||
     normalizeProductName(product.productName);
-
   const packageInfo = parsePackageInfo(productName);
-  const mainImageUrls = parseMainImages(
-    $,
-    config,
-  ).filter((url) => !/\/thumb\//i.test(url));
-
-  const detailImageUrls = parseDetailImages(
-    $,
-    config,
-  ).filter((url) => !/\/thumb\//i.test(url));
-
-  const detailImageUrl = detailImageUrls[0] || "";
-  const introImageUrls = detailImageUrls;
+  const mainImageUrls = parseMainImages($, config);
+  const introImageUrls = parseDetailImages($, config);
 
   const expiryDate = pickByIncludes(itemInfo, ["소비기한", "유통기한"]);
   const salePriceText = pickByIncludes(itemInfo, ["판매가"]);
@@ -329,9 +181,7 @@ function parseCcdomeDetailHtml(html, product, config) {
     productNo: String(product.productId || ""),
     barcode: "",
     outerBoxText: boxComposition,
-    outerBoxQty: toNumber(
-      boxComposition.match(/(\d+)\s*(?:개입|개|EA|ea|입)/)?.[1] || "",
-    ),
+    outerBoxQty: toNumber(boxComposition.match(/(\d+)\s*(?:개입|개|EA|ea|입)/)?.[1] || ""),
     consumerPrice: 0,
 
     /** CCDOME 상세 전용 필드 */
@@ -365,10 +215,7 @@ function parseCcdomeDetailHtml(html, product, config) {
 
     mainImageUrls,
     thumbnailImageUrls: mainImageUrls,
-    detailImageUrls,
-    detailImageUrl,
     introImageUrls,
-
     mainImageUrlsText: mainImageUrls.join(" | "),
     thumbnailImageUrlsText: mainImageUrls.join(" | "),
     introImageUrlsText: introImageUrls.join(" | "),
@@ -377,90 +224,240 @@ function parseCcdomeDetailHtml(html, product, config) {
   };
 }
 
-/** 과자생각 상세페이지들을 순회하며 상세 row를 수집한다. */
+/** 신규 상세 작업 탭에 공통 이벤트를 연결한다. */
+async function setupCcdomeDetailWorkerPage(workerPage) {
+  workerPage.on("dialog", async (dialog) => {
+    await dialog.dismiss().catch(() => null);
+  });
+}
+
+/** 과자생각 상세페이지들을 안전한 병렬 작업자로 수집한다. */
 async function collectCcdomeDetails(
   page,
   products,
   config,
-  onProgress = () => { },
+  onProgress = () => {},
   signal,
 ) {
   const targets = Array.from(
     new Map(
-      products
-        .filter((item) => item.productUrl)
+      (products || [])
+        .filter((item) => item?.productUrl)
         .map((item) => [String(item.productId), item]),
     ).values(),
   );
-
   const limitedTargets =
-    config.detailMaxProducts > 0
-      ? targets.slice(0, config.detailMaxProducts)
+    Number(config.detailMaxProducts) > 0
+      ? targets.slice(0, Number(config.detailMaxProducts))
       : targets;
 
-  const details = [];
+  if (limitedTargets.length < 1) return [];
 
-  for (let index = 0; index < limitedTargets.length; index += 1) {
-    throwIfAborted(signal);
+  const concurrency = Math.min(
+    limitedTargets.length,
+    getSafetyNumber(config, "detailConcurrency", 5, 1, 5),
+  );
+  const retryCount = getSafetyNumber(
+    config,
+    "detailRetryCount",
+    6,
+    2,
+    12,
+  );
+  const hardResetEvery = getSafetyNumber(
+    config,
+    "detailHardResetEvery",
+    3,
+    2,
+    6,
+  );
+  const context = page.context();
+  const workers = [];
+  const details = new Array(limitedTargets.length);
+  let nextIndex = 0;
+  let completedCount = 0;
 
-    const product = limitedTargets[index];
+  for (let index = 0; index < concurrency; index += 1) {
+    const workerPage = await context.newPage();
+    await setupCcdomeDetailWorkerPage(workerPage);
+    workers.push({ page: workerPage, workerIndex: index });
+  }
 
-    onProgress({
-      stage: "detail",
-      message: `과자생각 상세 수집 중: ${index + 1}/${limitedTargets.length}`,
-      currentDetailIndex: index + 1,
-      detailTargetCount: limitedTargets.length,
-      productId: product.productId,
-    });
+  async function collectOne(worker, product, targetIndex) {
+    let lastError = null;
 
     try {
-      const response = await page.goto(product.productUrl, {
-        waitUntil: "domcontentloaded",
-        timeout: config.navigationTimeoutMs,
-      });
+      return await withSiteRetry(
+        async () => {
+          const response = await gotoWithSiteRetry(
+            worker.page,
+            product.productUrl,
+            {
+              label: `과자생각 상세 상품 ${product.productId}`,
+              signal,
+              maxAttempts: 1,
+              timeoutMs: config.navigationTimeoutMs,
+              readySelector: CCDOME_DETAIL.selectors.root,
+              readyTimeoutMs: config.navigationTimeoutMs,
+            },
+          );
 
-      if (response && !response.ok()) {
-        throw new Error(`HTTP ${response.status()}`);
-      }
+          if (response && !response.ok()) {
+            throw markSiteError(
+              new Error(`HTTP ${response.status()}`),
+              {
+                retryable: response.status() >= 500 || response.status() === 429,
+                statusCode: response.status(),
+                stage: "ccdome-detail",
+              },
+            );
+          }
 
-      await page
-        .waitForSelector(CCDOME_DETAIL.selectors.root, {
-          timeout: config.navigationTimeoutMs,
-        })
-        .catch(() => null);
+          if (typeof prepareCcdomeDetailImages === "function") {
+            await prepareCcdomeDetailImages(worker.page);
+          }
 
-      /**
-       * 상세 이미지 영역까지 스크롤해서 lazy 이미지 URL이 DOM에 들어오게 만든 뒤
-       * HTML을 읽는다.
-       */
-      await prepareCcdomeDetailImages(page, config);
+          const detail = parseCcdomeDetailHtml(
+            await worker.page.content(),
+            product,
+            config,
+          );
 
-      const html = await page.content();
-      details.push(parseCcdomeDetailHtml(html, product, config));
+          if (!detail?.productId || !detail?.productName) {
+            throw markSiteError(
+              new Error("과자생각 상세 핵심 필드가 비어 있습니다."),
+              {
+                retryable: true,
+                code: "DETAIL_VALIDATION_FAILED",
+                stage: "ccdome-detail",
+              },
+            );
+          }
+
+          return detail;
+        },
+        {
+          label: `과자생각 상세 상품 ${product.productId}`,
+          maxAttempts: retryCount,
+          signal,
+          shouldRetry: (error) =>
+            isRetryableSiteError(error, {
+              signal,
+              retryUnknownErrors: true,
+            }),
+          baseDelayMs: 1000,
+          maxDelayMs: 20000,
+          multiplier: 1.7,
+          onRetry: async ({ error, attempt, nextAttempt }) => {
+            lastError = error;
+
+            onProgress({
+              stage: "detail",
+              message:
+                `과자생각 상세 재시도 ${nextAttempt}/${retryCount} · ` +
+                `상품 ${targetIndex + 1}/${limitedTargets.length}`,
+              currentDetailIndex: completedCount,
+              detailTargetCount: limitedTargets.length,
+              productId: product.productId,
+              workerIndex: worker.workerIndex + 1,
+              detailAttempt: nextAttempt,
+            });
+
+            if (attempt % hardResetEvery === 0) {
+              console.warn(
+                `[CCDOME DETAIL] 작업자 ${worker.workerIndex + 1} 탭 교체`,
+              );
+              worker.page = await replacePage(worker.page, {
+                signal,
+                setupPage: setupCcdomeDetailWorkerPage,
+              });
+            } else {
+              await resetPageState(worker.page, {
+                signal,
+                delayMs: 700,
+              });
+            }
+          },
+        },
+      );
     } catch (error) {
-      details.push({
-        sourceMall: config.mall,
-        categoryCode: config.category,
-        productId: product.productId,
-        productUrl: product.productUrl,
-        productName: product.productName,
-        brandHint: product.brandHint || inferBrand(product.productName),
-        categoryHint: product.categoryHint || inferCategory(product.productName),
-        detailError: error.message,
-      });
+      lastError = error;
     }
 
-    if (config.detailRequestDelayMs > 0 && index < limitedTargets.length - 1) {
-      await sleep(config.detailRequestDelayMs);
+    return {
+      sourceMall: config.mall,
+      categoryCode: config.category,
+      productId: product.productId,
+      productUrl: product.productUrl,
+      productName: product.productName,
+      brandHint: product.brandHint || inferBrand(product.productName),
+      categoryHint: product.categoryHint || inferCategory(product.productName),
+      detailError: lastError?.message || "상세 수집 실패",
+    };
+  }
+
+  async function runWorker(worker) {
+    if (worker.workerIndex > 0) {
+      await sleepWithSignal(worker.workerIndex * 300, signal);
+    }
+
+    while (true) {
+      throwIfAborted(signal);
+
+      const targetIndex = nextIndex;
+      nextIndex += 1;
+
+      if (targetIndex >= limitedTargets.length) return;
+
+      const product = limitedTargets[targetIndex];
+
+      onProgress({
+        stage: "detail",
+        message:
+          `과자생각 상세 수집 중: ${completedCount}/${limitedTargets.length} ` +
+          `(작업자 ${worker.workerIndex + 1}, 상품 ${targetIndex + 1})`,
+        currentDetailIndex: completedCount,
+        detailTargetCount: limitedTargets.length,
+        productId: product.productId,
+        workerIndex: worker.workerIndex + 1,
+        detailConcurrency: concurrency,
+      });
+
+      details[targetIndex] = await collectOne(worker, product, targetIndex);
+      completedCount += 1;
+
+      onProgress({
+        stage: "detail",
+        message: `과자생각 상세 수집 중: ${completedCount}/${limitedTargets.length}`,
+        currentDetailIndex: completedCount,
+        detailTargetCount: limitedTargets.length,
+        productId: product.productId,
+        workerIndex: worker.workerIndex + 1,
+        detailConcurrency: concurrency,
+      });
+
+      if (
+        Number(config.detailRequestDelayMs) > 0 &&
+        completedCount < limitedTargets.length
+      ) {
+        await sleepWithSignal(Number(config.detailRequestDelayMs), signal);
+      }
     }
   }
 
-  return details;
+  try {
+    await Promise.all(workers.map((worker) => runWorker(worker)));
+  } finally {
+    await Promise.all(
+      workers.map((worker) => worker.page.close().catch(() => null)),
+    );
+  }
+
+  return details.filter(Boolean);
 }
 
 module.exports = {
   CCDOME_DETAIL,
   collectCcdomeDetails,
   parseCcdomeDetailHtml,
-  prepareCcdomeDetailImages,
 };

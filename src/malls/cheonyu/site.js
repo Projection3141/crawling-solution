@@ -16,6 +16,15 @@ const {
   normalizeProductName,
   parsePackageInfo,
 } = require("../../utils/inventory");
+const {
+  createNonRetryableError,
+  getSafetyNumber,
+  gotoWithSiteRetry,
+  isRetryableSiteError,
+  markSiteError,
+  resetPageState,
+  withSiteRetry,
+} = require("../../utils/site-safety");
 
 const CHEONYU_SITE = {
   urls: {
@@ -76,16 +85,69 @@ function parseLoginState(html) {
   };
 }
 
+/** 공통 사이트 안전 모듈로 천유 페이지 이동을 복구한다. */
+async function gotoCheonyuSafely(
+  page,
+  url,
+  config,
+  label,
+  signal,
+  {
+    readySelector = "",
+    maxAttempts = null,
+  } = {},
+) {
+  const attempts =
+    Number(maxAttempts) ||
+    getSafetyNumber(config, "navigationRetryCount", 8, 3, 20);
+  const hardResetEvery = getSafetyNumber(
+    config,
+    "navigationHardResetEvery",
+    3,
+    2,
+    10,
+  );
+
+  return gotoWithSiteRetry(page, url, {
+    label: `[CHEONYU] ${label}`,
+    signal,
+    maxAttempts: attempts,
+    timeoutMs: config.navigationTimeoutMs,
+    readySelector,
+    readyTimeoutMs: config.navigationTimeoutMs,
+    baseDelayMs: 900,
+    maxDelayMs: 15000,
+    multiplier: 1.6,
+    beforeAttempt: async ({ attempt }) => {
+      if (attempt > 1 && (attempt - 1) % hardResetEvery === 0) {
+        console.warn(
+          `[CHEONYU] ${label} 이동 상태를 초기화합니다. (${attempt}/${attempts})`,
+        );
+        await resetPageState(page, {
+          signal,
+          delayMs: 700,
+        });
+      }
+    },
+  });
+}
+
 /** 공통 계정 설정으로 천유닷컴에 로그인한다. */
-async function loginCheonyu(page, config) {
+async function loginCheonyu(page, config, signal) {
   const selectors = CHEONYU_SITE.selectors.login;
 
   console.log("[LOGIN] 천유닷컴 로그인 시작");
 
-  await page.goto(new URL(CHEONYU_SITE.urls.login, config.baseUrl).toString(), {
-    waitUntil: "domcontentloaded",
-    timeout: config.navigationTimeoutMs,
-  });
+  await gotoCheonyuSafely(
+    page,
+    new URL(CHEONYU_SITE.urls.login, config.baseUrl).toString(),
+    config,
+    "로그인 페이지",
+    signal,
+    {
+      readySelector: selectors.passwordInputs.join(", "),
+    },
+  );
 
   await fillFirstAvailable(page, selectors.idInputs, config.accountId, "ID");
   await fillFirstAvailable(
@@ -116,10 +178,13 @@ async function loginCheonyu(page, config) {
   }
 
   await sleep(1000);
-  await page.goto(config.baseUrl, {
-    waitUntil: "domcontentloaded",
-    timeout: config.navigationTimeoutMs,
-  });
+  await gotoCheonyuSafely(
+    page,
+    config.baseUrl,
+    config,
+    "로그인 확인 페이지",
+    signal,
+  );
 
   if (!parseLoginState(await page.content()).loggedIn) {
     throw new Error("천유닷컴 로그인 성공 확인에 실패했습니다.");
@@ -230,7 +295,13 @@ async function addProductsFromListPagesToCart(
       currentPage: pageNo,
     });
 
-    const { candidates } = await collectListCandidates(page, pageNo, config);
+    const { candidates } = await collectListCandidates(
+      page,
+      pageNo,
+      config,
+      null,
+      signal,
+    );
     const requestMap = new Map(
       pageProducts.map((item) => [String(item.productId), item]),
     );
@@ -256,6 +327,7 @@ async function addProductsFromListPagesToCart(
       pageNo,
       config,
       targets,
+      signal,
     );
 
     allTargets.push(...targets);
@@ -341,24 +413,21 @@ function parseCatalogInfo(html, config) {
 }
 
 /** 첫 목록 페이지에서 전체 상품 수와 마지막 페이지를 감지한다. */
-async function detectCatalog(page, config) {
+async function detectCatalog(page, config, signal) {
   const url = buildListUrl(1, config);
   const selectors = CHEONYU_SITE.selectors.list;
 
   console.log(`[PAGE DETECT] ${url}`);
 
-  const response = await page.goto(url, {
-    waitUntil: "domcontentloaded",
-    timeout: config.navigationTimeoutMs,
-  });
-
-  if (response && !response.ok()) {
-    throw new Error(`천유 상품 목록 요청 실패: HTTP ${response.status()}`);
-  }
-
-  await page.waitForSelector(
-    `${selectors.productCheck}, ${selectors.productLink}`,
-    { timeout: config.navigationTimeoutMs },
+  await gotoCheonyuSafely(
+    page,
+    url,
+    config,
+    "상품 목록 감지",
+    signal,
+    {
+      readySelector: `${selectors.productCheck}, ${selectors.productLink}`,
+    },
   );
 
   /** ProductCount가 비동기로 채워지는 경우를 최대 30초까지 기다린다. */
@@ -400,8 +469,8 @@ async function detectCatalog(page, config) {
 }
 
 /** 수동 또는 자동 설정을 실제 수집 범위로 변환한다. */
-async function resolvePageRange(page, config) {
-  const detection = await detectCatalog(page, config);
+async function resolvePageRange(page, config, signal) {
+  const detection = await detectCatalog(page, config, signal);
   const detectedLastPage = detection.lastPage || null;
   let pageEnd = config.pageEnd;
   let mode = "manual";
@@ -494,7 +563,13 @@ function parseListHtml(html, pageNo, config) {
 }
 
 /** 한 상품 목록 페이지에서 장바구니 담기 가능한 상품을 추출한다. */
-async function collectListCandidates(page, pageNo, config, cachedHtml = null) {
+async function collectListCandidates(
+  page,
+  pageNo,
+  config,
+  cachedHtml = null,
+  signal,
+) {
   const selectors = CHEONYU_SITE.selectors.list;
   const listUrl = buildListUrl(pageNo, config);
   let html = cachedHtml;
@@ -502,20 +577,15 @@ async function collectListCandidates(page, pageNo, config, cachedHtml = null) {
   if (!html) {
     console.log(`[LIST ${pageNo}] 이동: ${listUrl}`);
 
-    const response = await page.goto(listUrl, {
-      waitUntil: "domcontentloaded",
-      timeout: config.navigationTimeoutMs,
-    });
-
-    if (response && !response.ok()) {
-      throw new Error(
-        `천유 상품 목록 요청 실패: HTTP ${response.status()} - ${listUrl}`,
-      );
-    }
-
-    await page.waitForSelector(
-      `${selectors.productCheck}, ${selectors.productLink}`,
-      { timeout: config.navigationTimeoutMs },
+    await gotoCheonyuSafely(
+      page,
+      listUrl,
+      config,
+      `${pageNo}페이지 목록`,
+      signal,
+      {
+        readySelector: `${selectors.productCheck}, ${selectors.productLink}`,
+      },
     );
 
     html = await page.content();
@@ -563,7 +633,11 @@ async function findCheonyuProductsByIds(
     pageStart: 1,
     pageEnd: 0,
   };
-  const { pageRange, firstPageHtml } = await resolvePageRange(page, searchConfig);
+  const { pageRange, firstPageHtml } = await resolvePageRange(
+    page,
+    searchConfig,
+    signal,
+  );
   const foundMap = new Map();
 
   for (
@@ -586,6 +660,7 @@ async function findCheonyuProductsByIds(
       pageNo,
       searchConfig,
       pageNo === 1 ? firstPageHtml : null,
+      signal,
     );
 
     for (const candidate of candidates) {
@@ -719,6 +794,8 @@ async function parseAndPreparePopupOptions(
   const requests = requestedProducts.map((item) => ({
     productId: String(item.productId || ""),
     productName: String(item.productName || "").replace(/\s+/g, " ").trim(),
+    hasExplicitCartRequests:
+      Array.isArray(item.cartRequests) && item.cartRequests.length > 0,
     cartRequests: Array.isArray(item.cartRequests)
       ? item.cartRequests.map((request) => ({
           productId: String(item.productId || ""),
@@ -777,7 +854,7 @@ async function parseAndPreparePopupOptions(
               (requestedOptionId === request.productId && optionId === "0")
             );
           });
-          const selectedForCart = requestProduct
+          const selectedForCart = requestProduct?.hasExplicitCartRequests
             ? selectable && Boolean(matchedRequest)
             : selectable;
           const quantity = matchedRequest?.quantity || defaultOptionQty;
@@ -942,11 +1019,17 @@ async function closeCheonyuOptionPopup(page) {
  * 기존 코드는 window.setOption 또는 wrapper 존재만 확인했기 때문에
  * AJAX 옵션 데이터가 들어오기 전에 파싱하는 race condition이 발생할 수 있었다.
  */
-async function waitForReadyCheonyuOptionPopup(page, config) {
-  const timeout = Math.max(
-    30000,
-    Math.min(Number(config.navigationTimeoutMs) || 60000, 90000),
-  );
+async function waitForReadyCheonyuOptionPopup(
+  page,
+  config,
+  timeoutOverrideMs = null,
+) {
+  const configuredTimeout =
+    Number(timeoutOverrideMs) ||
+    Number(config.optionPopupWaitTimeoutMs) ||
+    Number(config.navigationTimeoutMs) ||
+    60000;
+  const timeout = Math.max(15000, Math.min(configuredTimeout, 120000));
 
   await page.waitForFunction(
     () => {
@@ -1018,180 +1101,322 @@ async function waitForReadyCheonyuOptionPopup(page, config) {
   await page.waitForTimeout(700);
 }
 
-/** 일괄담기 버튼을 누르고 요청된 옵션만 장바구니에 담는다. */
+/**
+ * 여러 차례 팝업 AJAX가 비어 있으면 목록 문서 자체를 다시 불러온다.
+ *
+ * wrapper만 남고 option table이 없는 상태는 같은 DOM에서 재클릭만 반복해도
+ * 이전 요청 상태가 남을 수 있으므로, 목록 페이지를 새로 열고 대상 체크를 복원한다.
+ */
+async function resetCheonyuBulkListPage(
+  page,
+  pageNo,
+  config,
+  requestedProducts,
+  signal,
+) {
+  console.warn(
+    `[BULK ${pageNo}] 옵션 요청 상태 초기화를 위해 목록 페이지를 새로 불러옵니다.`,
+  );
+
+  await closeCheonyuOptionPopup(page);
+
+  const listUrl = buildListUrl(pageNo, config);
+  await gotoCheonyuSafely(
+    page,
+    listUrl,
+    config,
+    `${pageNo}페이지 하드 리셋`,
+    signal,
+    {
+      readySelector:
+        `${CHEONYU_SITE.selectors.list.productCheck}, ` +
+        `${CHEONYU_SITE.selectors.list.productLink}`,
+      maxAttempts: 6,
+    },
+  );
+
+  if (requestedProducts.length > 0) {
+    await markProductsForBulkCart(page, requestedProducts, config);
+  }
+
+  await sleep(1500);
+}
+
+/** 일괄담기 버튼을 누르고 요청된 옵션만 안전하게 장바구니에 담는다. */
 async function clickBulkCartAndConfirm(
   page,
   pageNo,
   config,
   requestedProducts = [],
+  signal,
 ) {
   const selectors = CHEONYU_SITE.selectors.list;
-  const maxAttempts = 3;
+  const maxAttempts = getSafetyNumber(
+    config,
+    "optionPopupMaxAttempts",
+    15,
+    3,
+    30,
+  );
+  const hardResetEvery = getSafetyNumber(
+    config,
+    "optionPopupHardResetEvery",
+    3,
+    2,
+    10,
+  );
   let lastPopupState = null;
   let lastError = null;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const bulkButton = page.locator(selectors.bulkButton).first();
+  try {
+    return await withSiteRetry(
+      async ({ attempt }) => {
+        if (attempt > 1) {
+          const shouldHardReset =
+            requestedProducts.length > 0 &&
+            (attempt - 1) % hardResetEvery === 0;
 
-    if ((await bulkButton.count()) < 1) {
-      throw new Error(`${selectors.bulkButton} 버튼을 찾지 못했습니다.`);
-    }
-
-    if (attempt > 1) {
-      console.warn(
-        `[BULK ${pageNo}] 옵션 팝업 재시도 ${attempt}/${maxAttempts}`,
-      );
-
-      await closeCheonyuOptionPopup(page);
-      await sleep(1000 * attempt);
-    }
-
-    console.log(
-      `[BULK ${pageNo}] 장바구니 일괄담기` +
-        (attempt > 1 ? ` (${attempt}차 시도)` : ""),
-    );
-
-    await bulkButton.click();
-
-    try {
-      await waitForReadyCheonyuOptionPopup(page, config);
-    } catch (error) {
-      lastError = error;
-      lastPopupState = await readCheonyuOptionPopupState(page).catch(() => null);
-
-      console.warn(
-        `[BULK ${pageNo}] 옵션 팝업 준비 실패`,
-        lastPopupState,
-      );
-
-      continue;
-    }
-
-    const hasSetOption = await page.evaluate(
-      () => typeof window.setOption === "function",
-    );
-
-    lastPopupState = {
-      hasSetOption,
-      ...(await readCheonyuOptionPopupState(page)),
-      ...parsePopupHtml(await page.content()),
-    };
-
-    if (!hasSetOption) {
-      lastError = new Error("천유 옵션 확정 함수 setOption을 찾지 못했습니다.");
-      continue;
-    }
-
-    const popupOptionRows = await parseAndPreparePopupOptions(
-      page,
-      pageNo,
-      config,
-      requestedProducts,
-    );
-
-    if (requestedProducts.length > 0) {
-      for (const product of requestedProducts) {
-        for (const request of product.cartRequests || []) {
-          const requestedOptionId = String(request.optionId ?? "0");
-          const matchedRow = popupOptionRows.find((row) => {
-            if (String(row.productId) !== String(product.productId)) return false;
-
-            return (
-              String(row.optionId) === requestedOptionId ||
-              (requestedOptionId === String(product.productId) &&
-                String(row.optionId) === "0")
+          if (shouldHardReset) {
+            await resetCheonyuBulkListPage(
+              page,
+              pageNo,
+              config,
+              requestedProducts,
+              signal,
             );
-          });
-
-          if (!matchedRow) {
-            throw new Error(
-              `천유 상품 ${product.productId}에서 옵션 ${requestedOptionId}를 찾지 못했습니다.`,
-            );
-          }
-
-          if (!matchedRow.selectable) {
-            throw new Error(
-              `천유 상품 ${product.productId}의 옵션 ${requestedOptionId}는 구매할 수 없습니다.`,
-            );
-          }
-
-          if (matchedRow.maxStock > 0 && request.quantity > matchedRow.maxStock) {
-            throw new Error(
-              `천유 상품 ${product.productId} 옵션 ${requestedOptionId}: ` +
-                `요청 ${request.quantity}개, 구매 가능 ${matchedRow.maxStock}개`,
-            );
-          }
-
-          if (!matchedRow.selectedForCart) {
-            throw new Error(
-              `천유 상품 ${product.productId}의 옵션 ${requestedOptionId} 선택에 실패했습니다.`,
-            );
+          } else {
+            await closeCheonyuOptionPopup(page);
           }
         }
-      }
-    }
 
-    const selectedCount = popupOptionRows.filter(
-      (item) => item.selectedForCart,
-    ).length;
+        const bulkButton = page.locator(selectors.bulkButton).first();
 
-    if (selectedCount < 1) {
-      lastError = new Error(
-        "옵션 row는 생성됐지만 선택 가능한 천유 옵션이 없습니다.",
-      );
+        if ((await bulkButton.count()) < 1) {
+          throw markSiteError(
+            new Error(`${selectors.bulkButton} 버튼을 찾지 못했습니다.`),
+            {
+              retryable: true,
+              code: "BULK_BUTTON_NOT_FOUND",
+              stage: "cheonyu-popup",
+            },
+          );
+        }
 
-      lastPopupState = {
-        ...lastPopupState,
-        parsedRowCount: popupOptionRows.length,
-        selectedCount,
-      };
+        console.log(
+          `[BULK ${pageNo}] 장바구니 일괄담기` +
+            (attempt > 1 ? ` (${attempt}차 시도)` : ""),
+        );
 
-      console.warn(
-        `[BULK ${pageNo}] 선택 가능한 옵션 없음`,
-        lastPopupState,
-      );
+        await bulkButton.click({
+          timeout: config.navigationTimeoutMs,
+        });
 
-      continue;
-    }
+        const popupWaitTimeoutMs =
+          attempt <= 5 ? 30000 : attempt <= 10 ? 45000 : 60000;
 
-    await page.evaluate(() => window.setOption());
+        await waitForReadyCheonyuOptionPopup(
+          page,
+          config,
+          popupWaitTimeoutMs,
+        );
 
-    /** 옵션 팝업이 닫히거나 숨겨져 실제 장바구니 반영이 시작됐는지 확인한다. */
-    await page
-      .waitForFunction(
-        () => {
-          const wrappers = Array.from(
-            document.querySelectorAll(".many_add_wrap, .many_add"),
+        const hasSetOption = await page.evaluate(
+          () => typeof window.setOption === "function",
+        );
+
+        lastPopupState = {
+          hasSetOption,
+          ...(await readCheonyuOptionPopupState(page)),
+          ...parsePopupHtml(await page.content()),
+        };
+
+        if (!hasSetOption) {
+          throw markSiteError(
+            new Error("천유 옵션 확정 함수 setOption을 찾지 못했습니다."),
+            {
+              retryable: true,
+              code: "SET_OPTION_NOT_FOUND",
+              stage: "cheonyu-popup",
+              details: lastPopupState,
+            },
+          );
+        }
+
+        const popupOptionRows = await parseAndPreparePopupOptions(
+          page,
+          pageNo,
+          config,
+          requestedProducts,
+        );
+
+        if (requestedProducts.length > 0) {
+          for (const product of requestedProducts) {
+            for (const request of product.cartRequests || []) {
+              const requestedOptionId = String(request.optionId ?? "0");
+              const matchedRow = popupOptionRows.find((row) => {
+                if (String(row.productId) !== String(product.productId)) {
+                  return false;
+                }
+
+                return (
+                  String(row.optionId) === requestedOptionId ||
+                  (requestedOptionId === String(product.productId) &&
+                    String(row.optionId) === "0")
+                );
+              });
+
+              if (!matchedRow) {
+                throw markSiteError(
+                  new Error(
+                    `천유 상품 ${product.productId}에서 옵션 ` +
+                      `${requestedOptionId}를 찾지 못했습니다.`,
+                  ),
+                  {
+                    retryable: true,
+                    code: "REQUESTED_OPTION_NOT_FOUND",
+                    stage: "cheonyu-popup",
+                  },
+                );
+              }
+
+              if (!matchedRow.selectable) {
+                throw createNonRetryableError(
+                  `천유 상품 ${product.productId}의 옵션 ` +
+                    `${requestedOptionId}는 구매할 수 없습니다.`,
+                  {
+                    code: "OPTION_NOT_PURCHASABLE",
+                    stage: "cheonyu-popup",
+                  },
+                );
+              }
+
+              if (
+                matchedRow.maxStock > 0 &&
+                request.quantity > matchedRow.maxStock
+              ) {
+                throw createNonRetryableError(
+                  `천유 상품 ${product.productId} 옵션 ${requestedOptionId}: ` +
+                    `요청 ${request.quantity}개, 구매 가능 ` +
+                    `${matchedRow.maxStock}개`,
+                  {
+                    code: "QUANTITY_EXCEEDS_STOCK",
+                    stage: "cheonyu-popup",
+                  },
+                );
+              }
+
+              if (!matchedRow.selectedForCart) {
+                throw markSiteError(
+                  new Error(
+                    `천유 상품 ${product.productId}의 옵션 ` +
+                      `${requestedOptionId} 선택에 실패했습니다.`,
+                  ),
+                  {
+                    retryable: true,
+                    code: "OPTION_SELECTION_FAILED",
+                    stage: "cheonyu-popup",
+                  },
+                );
+              }
+            }
+          }
+        }
+
+        const selectedCount = popupOptionRows.filter(
+          (item) => item.selectedForCart,
+        ).length;
+
+        if (selectedCount < 1) {
+          lastPopupState = {
+            ...lastPopupState,
+            parsedRowCount: popupOptionRows.length,
+            selectedCount,
+          };
+
+          throw markSiteError(
+            new Error(
+              "옵션 row는 생성됐지만 선택 가능한 천유 옵션이 없습니다.",
+            ),
+            {
+              retryable: true,
+              code: "NO_SELECTABLE_OPTIONS",
+              stage: "cheonyu-popup",
+              details: lastPopupState,
+            },
+          );
+        }
+
+        await page.evaluate(() => window.setOption());
+
+        await page
+          .waitForFunction(
+            () => {
+              const wrappers = Array.from(
+                document.querySelectorAll(".many_add_wrap, .many_add"),
+              );
+
+              return wrappers.every((element) => {
+                const style = window.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+
+                return (
+                  style.display === "none" ||
+                  style.visibility === "hidden" ||
+                  Number(style.opacity || "1") === 0 ||
+                  rect.width === 0 ||
+                  rect.height === 0
+                );
+              });
+            },
+            null,
+            { timeout: 30000 },
+          )
+          .catch(() => null);
+
+        await sleep(1500);
+
+        return {
+          page: pageNo,
+          mode: "popup-setOption",
+          popupState: lastPopupState,
+          popupOptionRows,
+          selectedCount,
+          attempt,
+          maxAttempts,
+        };
+      },
+      {
+        label: `천유 ${pageNo}페이지 옵션 팝업`,
+        maxAttempts,
+        signal,
+        shouldRetry: (error) =>
+          isRetryableSiteError(error, {
+            signal,
+            retryUnknownErrors: true,
+          }),
+        baseDelayMs: 1000,
+        maxDelayMs: 15000,
+        multiplier: 1.45,
+        onRetry: async ({ error, nextAttempt }) => {
+          lastError = error;
+          lastPopupState = await readCheonyuOptionPopupState(page).catch(
+            () => error?.details || lastPopupState,
           );
 
-          return wrappers.every((element) => {
-            const style = window.getComputedStyle(element);
-            const rect = element.getBoundingClientRect();
-
-            return (
-              style.display === "none" ||
-              style.visibility === "hidden" ||
-              Number(style.opacity || "1") === 0 ||
-              rect.width === 0 ||
-              rect.height === 0
-            );
-          });
+          console.warn(
+            `[BULK ${pageNo}] 옵션 팝업 재시도 ` +
+              `${nextAttempt}/${maxAttempts}`,
+            lastPopupState,
+          );
         },
-        null,
-        { timeout: 30000 },
-      )
-      .catch(() => null);
+      },
+    );
+  } catch (error) {
+    lastError = error;
+  }
 
-    await sleep(1500);
-
-    return {
-      page: pageNo,
-      mode: "popup-setOption",
-      popupState: lastPopupState,
-      popupOptionRows,
-      selectedCount,
-      attempt,
-    };
+  if (lastError?.retryable === false) {
+    throw lastError;
   }
 
   const diagnostic = lastPopupState
@@ -1214,7 +1439,11 @@ async function bulkAddPages(
 ) {
   throwIfAborted(signal);
 
-  const { pageRange, firstPageHtml } = await resolvePageRange(page, config);
+  const { pageRange, firstPageHtml } = await resolvePageRange(
+    page,
+    config,
+    signal,
+  );
   throwIfAborted(signal);
   const allTargets = [];
   const allPopupOptionRows = [];
@@ -1243,6 +1472,7 @@ async function bulkAddPages(
       pageNo,
       config,
       cachedHtml,
+      signal,
     );
     throwIfAborted(signal);
 
@@ -1269,7 +1499,13 @@ async function bulkAddPages(
 
     if (targets.length > 0) {
       await markProductsForBulkCart(page, targets, config);
-      const bulkResult = await clickBulkCartAndConfirm(page, pageNo, config);
+      const bulkResult = await clickBulkCartAndConfirm(
+        page,
+        pageNo,
+        config,
+        targets,
+        signal,
+      );
       throwIfAborted(signal);
 
       allTargets.push(...targets);

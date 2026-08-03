@@ -928,6 +928,17 @@ function createRunCard(run) {
     actions.append(stopRepeatButton, repeatText);
   }
 
+  if (!RUNNING_STATUSES.has(run.status)) {
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "danger-button run-delete-button";
+    deleteButton.textContent = "목록에서 삭제";
+    deleteButton.addEventListener("click", () =>
+      deleteRunFromList(run.id),
+    );
+    actions.append(deleteButton);
+  }
+
   if (run.outputDirectory) {
     const openButton = document.createElement("button");
     openButton.type = "button";
@@ -1115,6 +1126,47 @@ async function cancelRun(runId) {
   try {
     const applicationState = await window.collectorApp.cancel(runId);
     handleStateChanged(applicationState);
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+/**
+ * 완료·실패·취소된 실행을 화면 목록에서 제거한다.
+ * 실제 결과 폴더와 파일은 유지한다.
+ */
+async function deleteRunFromList(runId) {
+  clearError();
+  clearSuccess();
+
+  const run = state.applicationState?.runs?.find(
+    (item) => item.id === runId,
+  );
+
+  if (!run) {
+    return;
+  }
+
+  if (RUNNING_STATUSES.has(run.status)) {
+    showError(
+      "실행 중인 작업은 목록에서 삭제할 수 없습니다. 먼저 실행을 취소하세요.",
+    );
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `실행 결과 ${runId}을(를) 목록에서 삭제하시겠습니까?\n\n` +
+      "결과 폴더와 실제 파일은 삭제되지 않습니다.",
+  );
+
+  if (!confirmed) return;
+
+  clearRepeatPlan(runId);
+
+  try {
+    const applicationState = await window.collectorApp.deleteRun(runId);
+    handleStateChanged(applicationState);
+    showSuccess("실행 결과를 목록에서 삭제했습니다. 결과 파일은 유지됩니다.");
   } catch (error) {
     showError(error.message);
   }
