@@ -568,11 +568,13 @@ async function uploadCartItems(input) {
     const controller = new AbortController();
     const lockedAccountKeys = new Set();
     const preselectedAccounts = {};
+    const preselectedAccountKeys = {};
 
     /**
-     * Uploader GET이 끝나기 전에도 같은 계정으로 수집을 새로 시작하지 못하게
-     * 화면에서 선택된 계정을 먼저 임시 잠금한다.
-     * 실제 응답에 포함되지 않은 사이트 계정 잠금은 GET 직후 바로 해제한다.
+     * 1) 화면에서 선택된 계정을 먼저 정규화한다.
+     *
+     * 이 단계에서는 아직 잠금을 걸지 않는다. 여러 사이트 계정 중 하나라도
+     * 이미 수집에 사용 중이면 중간에 생성된 잠금이 남지 않도록 하기 위함이다.
      */
     for (const site of ["cheonyu", "ccdome"]) {
         const source = input?.accounts?.[site];
@@ -594,6 +596,55 @@ async function uploadCartItems(input) {
         );
 
         preselectedAccounts[site] = account;
+        preselectedAccountKeys[site] = accountKey;
+    }
+
+    /**
+     * 2) Uploader GET 요청 전에 같은 계정의 수집 작업을 검사한다.
+     *
+     * 이전에는 Uploader 응답을 받은 뒤 충돌을 검사했기 때문에, 수집 중에
+     * 장바구니 담기를 누르면 계정 충돌 문구보다 Uploader 응답 오류가 먼저
+     * 표시될 수 있었다. 이제 동시 실행 시도를 즉시 차단한다.
+     */
+    for (const site of ["cheonyu", "ccdome"]) {
+        const account = preselectedAccounts[site];
+        const accountKey = preselectedAccountKeys[site];
+
+        if (!account || !accountKey) continue;
+
+        const conflictingRun = findActiveRunByAccountKey(accountKey);
+
+        if (!conflictingRun) continue;
+
+        const runState = runStates.get(conflictingRun.id);
+        const modeLabel =
+            runState?.request?.collectionMode === "detail"
+                ? "상세 수집"
+                : "일반 수집";
+        const accountLabel = formatAccountLabel(
+            site,
+            account.accountName,
+            account.accountId,
+        );
+
+        throw new Error(
+            `${accountLabel}으로 현재 ${modeLabel}이 진행 중입니다. ` +
+                `같은 계정으로 수집과 장바구니 담기를 동시에 실행할 수 없어 ` +
+                `장바구니 담기에 실패했습니다. ` +
+                `해당 수집이 끝난 후 다시 시도하거나 다른 계정을 선택하세요.`,
+        );
+    }
+
+    /**
+     * 3) 충돌이 없으면 선택된 계정을 즉시 잠근다.
+     * Uploader GET 대기 중에도 같은 계정으로 새 수집을 시작할 수 없다.
+     */
+    for (const site of ["cheonyu", "ccdome"]) {
+        const account = preselectedAccounts[site];
+        const accountKey = preselectedAccountKeys[site];
+
+        if (!account || !accountKey) continue;
+
         lockedAccountKeys.add(accountKey);
         lockCartAccount(accountKey, site, account);
     }
@@ -660,9 +711,10 @@ async function uploadCartItems(input) {
                 );
 
                 throw new Error(
-                    `${accountLabel}으로 현재 ${modeLabel}이 진행 중이라 ` +
-                    `장바구니 담기를 시작할 수 없습니다. ` +
-                    `해당 수집이 끝난 후 다시 시도하거나 다른 계정을 선택하세요.`,
+                    `${accountLabel}으로 현재 ${modeLabel}이 진행 중입니다. ` +
+                        `같은 계정으로 수집과 장바구니 담기를 동시에 실행할 수 없어 ` +
+                        `장바구니 담기에 실패했습니다. ` +
+                        `해당 수집이 끝난 후 다시 시도하거나 다른 계정을 선택하세요.`,
                 );
             }
 
@@ -826,9 +878,10 @@ function startCollection(input) {
             safeInput.collectionMode === "detail" ? "상세 수집" : "일반 수집";
 
         throw new Error(
-            `${accountLabel}으로 현재 장바구니 담기 작업이 진행 중이라 ` +
-            `${modeLabel}을 시작할 수 없습니다. ` +
-            `장바구니 작업이 끝난 후 다시 시도하거나 다른 계정을 선택하세요.`,
+            `${accountLabel}으로 현재 장바구니 담기 작업이 진행 중입니다. ` +
+                `같은 계정으로 장바구니 담기와 ${modeLabel}을 동시에 실행할 수 없어 ` +
+                `${modeLabel} 시작에 실패했습니다. ` +
+                `장바구니 작업이 끝난 후 다시 시도하거나 다른 계정을 선택하세요.`,
         );
     }
 
