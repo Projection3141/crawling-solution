@@ -7,10 +7,13 @@ npm install
 npx playwright install chromium
 cp .env.example .env
 npm run web
+```
 
 브라우저 또는 Electron WebView에서 다음 주소를 엽니다.
 
+```bash
 http://127.0.0.1:3210
+```
 
 설정 우선순위
 
@@ -18,19 +21,23 @@ public 화면 입력 > .env 공통 설정 > 코드 기본값
 
 계정 키는 쇼핑몰 구분 없이 다음 두 개만 사용합니다.
 
+```bash
 ACCOUNT_ID=
 ACCOUNT_PW=
+```
 
 결과 파일
 
 실행별로 다음 경로가 생성됩니다.
 
+```bash
 out/<mall>/<run-id>/
 ├─ inventory.csv
 ├─ summary.csv
 ├─ products.csv
 ├─ result.json
 └─ debug-*.html
+```
 
 inventory.csv: 천유는 옵션별 수량, 과자생각은 판매 가능/품절 상태
 
@@ -40,7 +47,6 @@ products.csv: 수집한 전체 상품 목록
 
 
 
----
 
 # 크롤링 프로그램 설치·실행 차단 시 조치 안내
 
@@ -68,8 +74,6 @@ Microsoft Defender SmartScreen에서 인식할 수 없는 앱의 시작을 차�
 3. 회사에서 전달받은 정식 설치 파일이 맞다면 `실행`을 클릭합니다.
 
 `실행` 버튼이 없거나 계속 차단될 경우 다음 항목을 확인합니다.
-
----
 
 ## 2. Windows 보안의 보호 기록 확인
 
