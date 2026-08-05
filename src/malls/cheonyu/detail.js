@@ -499,7 +499,7 @@ async function collectCheonyuDetails(
 
   const concurrency = Math.min(
     limitedTargets.length,
-    getSafetyNumber(config, "detailConcurrency", 5, 1, 5),
+    getSafetyNumber(config, "detailConcurrency", 10, 1, 10)
   );
   const retryCount = getSafetyNumber(
     config,

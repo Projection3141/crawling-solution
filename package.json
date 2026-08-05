@@ -1,14 +1,18 @@
 {
   "name": "mall-collector-desktop",
   "productName": "Mall Collector",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "천유닷컴과 과자생각 상품·재고를 로컬에서 수집하는 Electron 데스크톱 앱",
   "main": "electron/main.js",
   "private": true,
   "scripts": {
     "start": "electron-forge start",
     "translate": "node translate/translate.js",
-    "package": "electron-forge package"
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "check": "node scripts/check-syntax.js",
+    "postinstall": "node scripts/install-playwright.js",
+    "clean": "node -e \"require('node:fs').rmSync('out', { recursive: true, force: true })\""
   },
   "keywords": [
     "electron",

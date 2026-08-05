@@ -11,7 +11,6 @@ const ARCHIVE_PATH = path.resolve(
 let archiveQueue = Promise.resolve();
 
 const PRODUCT_FIELDS = [
-  "_id",
   "id",
   "sku",
   "slug",
@@ -156,7 +155,6 @@ function normalizeImageUrls(value) {
 /** 새 상품의 전체 백엔드 구조를 생성한다. */
 function createEmptyProduct(productId) {
   return {
-    _id: null,
     id: productId,
     sku: "",
     slug: "",

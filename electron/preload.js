@@ -1,3 +1,5 @@
+// electron/preload.js
+
 const { contextBridge, ipcRenderer } = require("electron");
 
 const CHANNELS = Object.freeze({
@@ -7,6 +9,7 @@ const CHANNELS = Object.freeze({
   cancel: "collector:cancel",
   deleteRun: "collector:delete-run",
   uploadCartItems: "collector:upload-cart-items",
+  setShippingEnabled: "collector:set-shipping-enabled",
   chooseOutputDirectory: "collector:choose-output-directory",
   saveResultFile: "collector:save-result-file",
   openResultDirectory: "collector:open-result-directory",
@@ -42,6 +45,10 @@ contextBridge.exposeInMainWorld(
         runId,
       }),
     uploadCartItems: (input) => invoke(CHANNELS.uploadCartItems, input),
+    setShippingEnabled: (enabled) =>
+      invoke(CHANNELS.setShippingEnabled, {
+        enabled: enabled === true,
+      }),
     chooseOutputDirectory: () => invoke(CHANNELS.chooseOutputDirectory),
     saveResultFile: (fileType, runId = "") =>
       invoke(CHANNELS.saveResultFile, {

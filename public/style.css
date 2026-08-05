@@ -732,3 +732,57 @@ button:disabled {
     flex-direction: column;
   }
 }
+
+/** 앱 상단 운송정보 자동 전송 제어 */
+.app-header-controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.shipping-toggle-button {
+  min-height: 40px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #f8fafc;
+  padding: 8px 14px;
+  color: #475569;
+  font-size: 0.82rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease,
+    transform 0.15s ease;
+}
+
+.shipping-toggle-button:hover:not(:disabled) {
+  border-color: #94a3b8;
+  transform: translateY(-1px);
+}
+
+.shipping-toggle-button.enabled {
+  border-color: #86efac;
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.shipping-toggle-button.shipping-off {
+  border-color: #cbd5e1;
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+@media (max-width: 680px) {
+  .app-header-controls {
+    width: 100%;
+    align-items: flex-start;
+    flex-direction: column-reverse;
+  }
+
+  .shipping-toggle-button {
+    width: 100%;
+  }
+}

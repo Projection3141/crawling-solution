@@ -1,3 +1,5 @@
+// electron/main.js
+
 process.env.PLAYWRIGHT_BROWSERS_PATH ||= "0";
 
 const fs = require("node:fs");
@@ -29,9 +31,12 @@ const {
     resolveRunConfig,
 } = require("../src/config");
 const {
-  runCartUpload,
+    runCartUpload,
 } = require("../src/cart-uploader");
 const { runCollection } = require("../src/crawler");
+const {
+    createShippingScheduler,
+} = require("../src/shipping-scheduler");
 const { loadEnvironment } = require("./environment");
 
 const APP_SCHEME = "mall-collector";
@@ -49,6 +54,8 @@ const CHANNELS = Object.freeze({
     deleteRun: "collector:delete-run",
     uploadCartItems:
         "collector:upload-cart-items",
+    setShippingEnabled:
+        "collector:set-shipping-enabled",
     chooseOutputDirectory: "collector:choose-output-directory",
     saveResultFile: "collector:save-result-file",
     openResultDirectory: "collector:open-result-directory",
@@ -94,6 +101,7 @@ let selectedOutputRoot = "";
 let closePromptOpen = false;
 let quitAfterRun = false;
 let allowImmediateQuit = false;
+let shippingScheduler = null;
 
 /**
  * 여러 수집 작업을 동시에 실행하기 위한 상태 저장소.
@@ -151,6 +159,17 @@ function createPublicApplicationState() {
             running: Boolean(activeCartUpload),
             startedAtMs: activeCartUpload?.startedAtMs || null,
             lockedAccountCount: cartAccountLocks.size,
+        },
+        shipping: shippingScheduler?.getState() || {
+            enabled: false,
+            running: false,
+            intervalMs: 60 * 60 * 1000,
+            lastStartedAt: null,
+            lastFinishedAt: null,
+            lastSuccessAt: null,
+            lastRecordCount: 0,
+            lastError: "",
+            nextRunAt: null,
         },
     };
 }
@@ -222,8 +241,8 @@ function getMallLabel(site) {
     return site === "cheonyu"
         ? "천유닷컴"
         : site === "ccdome"
-          ? "과자생각"
-          : String(site || "쇼핑몰");
+            ? "과자생각"
+            : String(site || "쇼핑몰");
 }
 
 /** 충돌 안내에 사용할 계정 이름을 만든다. */
@@ -477,12 +496,12 @@ function extractUploaderCartItems(responseData) {
     const candidate = Array.isArray(responseData)
         ? responseData
         : Array.isArray(responseData?.data)
-          ? responseData.data
-          : Array.isArray(responseData?.items)
-            ? responseData.items
-            : Array.isArray(responseData?.data?.items)
-              ? responseData.data.items
-              : null;
+            ? responseData.data
+            : Array.isArray(responseData?.items)
+                ? responseData.items
+                : Array.isArray(responseData?.data?.items)
+                    ? responseData.data.items
+                    : null;
 
     if (!candidate) {
         throw new Error("Uploader 응답이 상품 배열 형식이 아닙니다.");
@@ -629,9 +648,9 @@ async function uploadCartItems(input) {
 
         throw new Error(
             `${accountLabel}으로 현재 ${modeLabel}이 진행 중입니다. ` +
-                `같은 계정으로 수집과 장바구니 담기를 동시에 실행할 수 없어 ` +
-                `장바구니 담기에 실패했습니다. ` +
-                `해당 수집이 끝난 후 다시 시도하거나 다른 계정을 선택하세요.`,
+            `같은 계정으로 수집과 장바구니 담기를 동시에 실행할 수 없어 ` +
+            `장바구니 담기에 실패했습니다. ` +
+            `해당 수집이 끝난 후 다시 시도하거나 다른 계정을 선택하세요.`,
         );
     }
 
@@ -712,9 +731,9 @@ async function uploadCartItems(input) {
 
                 throw new Error(
                     `${accountLabel}으로 현재 ${modeLabel}이 진행 중입니다. ` +
-                        `같은 계정으로 수집과 장바구니 담기를 동시에 실행할 수 없어 ` +
-                        `장바구니 담기에 실패했습니다. ` +
-                        `해당 수집이 끝난 후 다시 시도하거나 다른 계정을 선택하세요.`,
+                    `같은 계정으로 수집과 장바구니 담기를 동시에 실행할 수 없어 ` +
+                    `장바구니 담기에 실패했습니다. ` +
+                    `해당 수집이 끝난 후 다시 시도하거나 다른 계정을 선택하세요.`,
                 );
             }
 
@@ -879,9 +898,9 @@ function startCollection(input) {
 
         throw new Error(
             `${accountLabel}으로 현재 장바구니 담기 작업이 진행 중입니다. ` +
-                `같은 계정으로 장바구니 담기와 ${modeLabel}을 동시에 실행할 수 없어 ` +
-                `${modeLabel} 시작에 실패했습니다. ` +
-                `장바구니 작업이 끝난 후 다시 시도하거나 다른 계정을 선택하세요.`,
+            `같은 계정으로 장바구니 담기와 ${modeLabel}을 동시에 실행할 수 없어 ` +
+            `${modeLabel} 시작에 실패했습니다. ` +
+            `장바구니 작업이 끝난 후 다시 시도하거나 다른 계정을 선택하세요.`,
         );
     }
 
@@ -1206,6 +1225,18 @@ function registerIpcHandlers() {
         uploadCartItems,
     );
 
+    registerIpcHandler(
+        CHANNELS.setShippingEnabled,
+        async (payload) => {
+            if (!shippingScheduler) {
+                throw new Error("운송정보 전송기가 초기화되지 않았습니다.");
+            }
+
+            return shippingScheduler.setEnabled(
+                payload?.enabled === true,
+            );
+        },
+    );
 
     registerIpcHandler(
         CHANNELS.chooseOutputDirectory,
@@ -1439,9 +1470,26 @@ async function bootstrap() {
 
     ensureDir(selectedOutputRoot);
 
+    shippingScheduler =
+        createShippingScheduler({
+            /**
+             * KSE 로그인 세션을 앱 사용자 데이터 폴더에 저장합니다.
+             */
+            profileDirectory: path.join(
+                environmentInfo.userDataDir,
+                "kse-profile",
+            ),
+
+            onStateChanged: () => {
+                emitState();
+            },
+        });
+
     registerRendererProtocol();
     registerIpcHandlers();
     createMainWindow();
+
+    shippingScheduler.start();
 }
 
 const isSquirrelStartup = require(
@@ -1492,6 +1540,10 @@ if (isSquirrelStartup) {
             if (!mainWindow) {
                 createMainWindow();
             }
+        });
+
+        app.on("before-quit", () => {
+            shippingScheduler?.dispose();
         });
 
         app.on("window-all-closed", () => {

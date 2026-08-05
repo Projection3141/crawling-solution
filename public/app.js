@@ -45,6 +45,7 @@ const elements = {
   categoryHelp: document.querySelector("#categoryHelp"),
   envHint: document.querySelector("#envHint"),
   appBadge: document.querySelector("#appBadge"),
+  shippingToggleButton: document.querySelector("#shippingToggleButton"),
 
   activeRunCount: document.querySelector("#activeRunCount"),
   runList: document.querySelector("#runList"),
@@ -77,6 +78,13 @@ const state = {
     cart: {
       running: false,
       lockedAccountKeys: [],
+    },
+    shipping: {
+      enabled: false,
+      running: false,
+      lastError: "",
+      lastRecordCount: 0,
+      nextRunAt: null,
     },
   },
   unsubscribe: null,
@@ -683,6 +691,87 @@ function clearSuccess() {
   elements.successMessage.textContent = "";
 }
 
+/** 운송정보 자동 전송 ON/OFF 상태를 버튼에 표시한다. */
+function renderShippingState(shipping = {}) {
+  if (!elements.shippingToggleButton) return;
+
+  const enabled = shipping.enabled === true;
+  const running = shipping.running === true;
+
+  elements.shippingToggleButton.classList.toggle(
+    "enabled",
+    enabled,
+  );
+  elements.shippingToggleButton.classList.toggle(
+    "shipping-off",
+    !enabled,
+  );
+  elements.shippingToggleButton.setAttribute(
+    "aria-pressed",
+    String(enabled),
+  );
+
+  if (running) {
+    elements.shippingToggleButton.textContent =
+      "운송정보 서버 전송 중...";
+  } else {
+    elements.shippingToggleButton.textContent =
+      `운송정보 서버 전송 ${enabled ? "ON" : "OFF"}`;
+  }
+
+  if (shipping.lastError) {
+    elements.shippingToggleButton.title =
+      `마지막 전송 오류: ${shipping.lastError}`;
+    return;
+  }
+
+  if (shipping.lastSuccessAt) {
+    const successTime = new Date(
+      shipping.lastSuccessAt,
+    ).toLocaleString("ko-KR");
+
+    elements.shippingToggleButton.title =
+      `마지막 성공: ${successTime} · ${Number(
+        shipping.lastRecordCount || 0,
+      ).toLocaleString("ko-KR")}건`;
+    return;
+  }
+
+  elements.shippingToggleButton.title = enabled
+    ? "앱 실행 직후 전송하고 이후 1시간마다 반복합니다."
+    : "운송정보 자동 전송이 꺼져 있습니다.";
+}
+
+/** 운송정보 자동 전송 ON/OFF를 변경한다. */
+async function toggleShippingEnabled() {
+  clearError();
+  clearSuccess();
+
+  const currentEnabled =
+    state.applicationState?.shipping?.enabled === true;
+  const nextEnabled = !currentEnabled;
+
+  elements.shippingToggleButton.disabled = true;
+
+  try {
+    await window.collectorApp.setShippingEnabled(
+      nextEnabled,
+    );
+
+    const applicationState =
+      await window.collectorApp.getState();
+
+    handleStateChanged(applicationState);
+    showSuccess(
+      `운송정보 서버 전송을 ${nextEnabled ? "켰습니다" : "껐습니다"}.`,
+    );
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    elements.shippingToggleButton.disabled = false;
+  }
+}
+
 /** 특정 실행의 반복 타이머와 계획을 제거한다. */
 function clearRepeatPlan(runId) {
   const timerId = state.repeatTimers.get(runId);
@@ -1023,6 +1112,7 @@ function handleStateChanged(applicationState) {
   };
 
   renderRunList(state.applicationState);
+  renderShippingState(state.applicationState.shipping);
   scheduleRepeatRuns(state.applicationState);
 }
 
@@ -1360,6 +1450,11 @@ elements.saveDetailsButton.addEventListener(
 elements.cartUploadButton.addEventListener(
   "click",
   submitCartUpload,
+);
+
+elements.shippingToggleButton.addEventListener(
+  "click",
+  toggleShippingEnabled,
 );
 
 elements.cartCheonyuAccountSelect.addEventListener("change", () => {
