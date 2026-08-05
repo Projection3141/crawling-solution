@@ -258,3 +258,31 @@ Windows 보안 보호 기록 화면
 > 회사에서 전달받은 정식 파일이 맞는지 확인한 후 `추가 정보 → 실행`, 파일 속성의 `차단 해제`, Windows 보안의 `보호 기록 → 허용 또는 복원` 순서로 조치해 주세요.  
 > 파일이 이미 삭제된 경우에는 허용 처리 후 설치 파일을 다시 받아 재설치해야 합니다.  
 > Windows Defender 전체 비활성화는 권장하지 않습니다.
+
+
+---
+
+result.json 구조
+
+```bash
+summary
+├─ 전체 수집 결과 요약
+
+products
+├─ 목록 페이지에서 발견한 상품 정보
+└─ productId당 1개
+
+popupOptionItems
+├─ 장바구니 옵션 팝업에서 확인한 옵션 정보
+├─ 선택 불가능·품절 옵션도 포함
+└─ productId 중복 존재
+
+inventoryItems
+├─ 실제 장바구니에서 수집한 재고 정보
+├─ 고유 상품
+└─ 옵션 상품은 옵션별로 productId가 반복됨
+
+productSummaries
+├─ inventoryItems를 productId 기준으로 합산한 요약
+└─ productId당 1개
+```

@@ -9,6 +9,15 @@ const {
   writeJson,
   writeText,
 } = require("./utils/files");
+const {
+  translateResultData,
+} = require("../translate/translate");
+const {
+  createBackendProducts,
+} = require("./utils/backend-product");
+const {
+  updateProductArchive,
+} = require("./utils/product-archive");
 
 const ADAPTERS = {
   cheonyu: require("./malls/cheonyu"),
@@ -557,7 +566,14 @@ function parseUploadResponseText(text) {
  *   data: productUrl이 제거된 JSON 객체
  * }
  */
-async function postResultJson(type, data, { signal } = {}) {
+async function postResultJson(
+  type,
+  data,
+  {
+    signal,
+    translatedData = null,
+  } = {},
+) {
   throwIfAborted(signal);
 
   if (typeof fetch !== "function") {
@@ -585,6 +601,19 @@ async function postResultJson(type, data, { signal } = {}) {
   const body = {
     type,
     data: removeProductUrlDeep(data),
+
+    /**
+     * 기존 type/data 계약은 유지하고,
+     * 재고 POST에 번역 결과 JSON을 함께 전달한다.
+     */
+    ...(translatedData !== null
+      ? {
+        translatedData:
+          removeProductUrlDeep(
+            translatedData,
+          ),
+      }
+      : {}),
   };
 
   try {
@@ -646,6 +675,101 @@ async function postResultJson(type, data, { signal } = {}) {
   }
 }
 
+/** 번역 입력에 사용할 상품·옵션 row를 생성한다. */
+function createTranslationInput(result, collectionMode) {
+  const inventoryItems = Array.isArray(result.inventoryItems)
+    ? result.inventoryItems
+    : [];
+  const products = Array.isArray(result.products)
+    ? result.products
+    : [];
+  const detailItems = Array.isArray(result.detailItems)
+    ? result.detailItems
+    : [];
+  const sourceItems =
+    collectionMode === "detail" && detailItems.length > 0
+      ? detailItems
+      : products;
+  const sourceMap = new Map(
+    sourceItems
+      .map((item) => [
+        String(item?.productId || item?.id || item?.productNo || "").trim(),
+        item,
+      ])
+      .filter(([id]) => Boolean(id)),
+  );
+  const inventoryIds = new Set();
+  const rows = [];
+
+  for (const item of inventoryItems) {
+    const productId = String(item?.productId || "").trim();
+
+    if (!productId) {
+      continue;
+    }
+
+    if (collectionMode === "detail" && !sourceMap.has(productId)) {
+      continue;
+    }
+
+    inventoryIds.add(productId);
+    const sourceItem = sourceMap.get(productId) || {};
+    const normalizedName = String(
+      collectionMode === "detail"
+        ? sourceItem?.normalizedName ||
+          sourceItem?.nameKo ||
+          sourceItem?.productName ||
+          item?.normalizedName ||
+          item?.nameKo ||
+          item?.productName ||
+          ""
+        : item?.normalizedName ||
+          item?.nameKo ||
+          sourceItem?.normalizedName ||
+          sourceItem?.nameKo ||
+          sourceItem?.productName ||
+          item?.productName ||
+          "",
+    ).trim();
+
+    rows.push({
+      ...item,
+      productId,
+      normalizedName,
+    });
+  }
+
+  /** 재고 row가 없는 품절·장바구니 불가 상품도 상품명 번역 대상으로 남긴다. */
+  for (const [productId, item] of sourceMap) {
+    if (inventoryIds.has(productId)) {
+      continue;
+    }
+
+    rows.push({
+      ...item,
+      productId,
+      normalizedName: String(
+        item?.normalizedName ||
+          item?.nameKo ||
+          item?.productName ||
+          "",
+      ).trim(),
+      options: Array.isArray(item?.options)
+        ? item.options
+        : undefined,
+      hasOption:
+        Array.isArray(item?.options) &&
+        item.options.length > 0,
+      optionId: "0",
+      optionText: "",
+    });
+  }
+
+  return {
+    inventoryItems: rows,
+  };
+}
+
 /** 선택한 쇼핑몰 adapter를 실행하고 공통 CSV/JSON 파일을 저장한다. */
 async function runCollection(config, { runId, onProgress = () => { }, signal }) {
   throwIfAborted(signal);
@@ -662,33 +786,22 @@ async function runCollection(config, { runId, onProgress = () => { }, signal }) 
   throwIfAborted(signal);
 
   const safeConfig = toSafeConfig(config);
-  const payload = {
+  const rawPayload = {
     summary: {
       ...result.summary,
       config: safeConfig,
     },
-
-    /**
-     * 일반 수집 결과는 기존 result.json에 저장한다.
-     * 상세 수집 데이터는 detailResult.json으로 분리한다.
-     */
     inventoryItems: result.inventoryItems,
     productSummaries: result.productSummaries,
     products: result.products,
-
-    activeProducts:
-      result.activeProducts || undefined,
-
-    soldOutProducts:
-      result.soldOutProducts || undefined,
-
-    popupOptionItems:
-      result.popupOptionItems || undefined,
+    activeProducts: result.activeProducts || undefined,
+    soldOutProducts: result.soldOutProducts || undefined,
+    popupOptionItems: result.popupOptionItems || undefined,
   };
 
   onProgress({
     stage: "saving",
-    message: "CSV와 결과 JSON을 저장하고 있습니다.",
+    message: "CSV와 수집 결과를 정리하고 있습니다.",
     pageRange: result.summary.pageRange,
     detectedTotalProductCount: result.summary.detectedTotalProductCount,
     collectedProductCount: result.summary.collectedProductCount,
@@ -704,8 +817,6 @@ async function runCollection(config, { runId, onProgress = () => { }, signal }) 
   saveCsv(files.summaryCsv, CSV_HEADERS.summary, result.productSummaries);
   saveCsv(files.productsCsv, CSV_HEADERS.products, result.products);
 
-  
-
   if (result.detailItems?.length) {
     saveCsv(files.detailsCsv, CSV_HEADERS.details, result.detailItems);
   }
@@ -714,36 +825,24 @@ async function runCollection(config, { runId, onProgress = () => { }, signal }) 
     if (!content) continue;
     writeText(path.resolve(files.runDir, path.basename(fileName)), content);
   }
+  
 
-  /** 일반 수집 결과 JSON */
-  writeJson(files.resultJson, payload);
+  /** 실행 결과 폴더에 번역 결과 원본을 별도 저장한다. */
+  const translatedResultPath = path.resolve(
+    files.runDir,
+    "result_translated.json",
+  );
+  
 
-  /** 상세페이지까지 실제로 수집된 상품만 별도 JSON으로 저장 */
-  const detailResult = createDetailResultObject(
-    result.detailItems || [],
-    result.inventoryItems || [],
-    result.productSummaries || [],
+  const translationInput = createTranslationInput(
+    result,
+    config.collectionMode,
   );
 
-  const hasDetailResult =
-    Object.keys(detailResult).length > 0;
 
-  if (hasDetailResult) {
-    writeJson(
-      files.detailResultJson,
-      detailResult,
-    );
-  }
-
-  /**
-   * 파일을 다시 읽지 않고 메모리에 완성된 JSON 객체를 그대로 POST한다.
-   * 전송용 복사본에서만 productUrl 키를 재귀적으로 제거한다.
-   */
   onProgress({
-    stage: "uploading",
-    message: hasDetailResult
-      ? "재고 및 디테일 결과 JSON을 서버에 전송하고 있습니다."
-      : "재고 결과 JSON을 서버에 전송하고 있습니다.",
+    stage: "translating",
+    message: "상품명과 옵션명을 번역하고 있습니다.",
     pageRange: result.summary.pageRange,
     detectedTotalProductCount: result.summary.detectedTotalProductCount,
     collectedProductCount: result.summary.collectedProductCount,
@@ -755,19 +854,106 @@ async function runCollection(config, { runId, onProgress = () => { }, signal }) 
 
   throwIfAborted(signal);
 
-  const uploads = {
-    inventory: await postResultJson("재고", payload, { signal }),
-    detail: null,
-  };
-
-  if (hasDetailResult) {
-    uploads.detail = await postResultJson("디테일", detailResult, {
+  const translationResult = await translateResultData(
+    translationInput,
+    {
+      outputPath: translatedResultPath,
       signal,
-    });
+      collectionMode: config.collectionMode,
+    },
+  );
+  const translatedData = translationResult.translatedItems;
+
+  // ---1차 검수 완---
+  // console.log("result.products", result.products);
+  // console.log("result.detailItems", result.detailItems);
+
+  /** 일반/상세 모두 동일한 백엔드 상품 타입으로 변환한다. */
+  const backendProducts = await createBackendProducts({
+    collectionMode: config.collectionMode,
+    products: result.products || [],
+    inventoryItems: result.inventoryItems || [],
+    detailItems: result.detailItems || [],
+    translatedItems: translatedData,
+    lowStockThreshold: Number(config.lowStockThreshold) || 10,
+  });
+
+  /**
+   * 일반·상세·번역 결과를 productId와 optionId 기준으로 통합한다.
+   * 현재 수집에서 비어 있는 필드는 기존 archive 값을 유지한다.
+   */
+  const archiveUpdate = await updateProductArchive(
+    backendProducts,
+    { source: config.collectionMode },
+  );
+  const mergedBackendProducts = archiveUpdate.currentProducts;
+
+  /** result.json은 현재 상품의 통합 archive 결과를 저장한다. */
+  writeJson(files.resultJson, mergedBackendProducts);
+
+  const hasDetailResult =
+    config.collectionMode === "detail" &&
+    mergedBackendProducts.length > 0;
+
+  /** 기존 상세 결과 파일 경로 호환을 위해 같은 데이터 타입으로 저장한다. */
+  if (hasDetailResult) {
+    writeJson(files.detailResultJson, mergedBackendProducts);
   }
 
+  console.log("[BACKEND PRODUCT] 변환 완료", {
+    collectionMode: config.collectionMode,
+    productCount: mergedBackendProducts.length,
+    translatedProductCount: translatedData.length,
+    skippedOptionCount: translationResult.skippedOptions.length,
+    archiveNewProductCount: archiveUpdate.stats.newProductCount,
+    archiveUpdatedProductCount: archiveUpdate.stats.updatedProductCount,
+    archiveChangedFieldCount: archiveUpdate.stats.changedFieldCount,
+    outputPath: files.resultJson,
+  });
+
+  onProgress({
+    stage: "uploading",
+    message:
+      config.collectionMode === "detail"
+        ? "상세 상품 데이터를 서버에 전송하고 있습니다."
+        : "일반 상품 데이터를 서버에 전송하고 있습니다.",
+    pageRange: result.summary.pageRange,
+    detectedTotalProductCount: result.summary.detectedTotalProductCount,
+    collectedProductCount: result.summary.collectedProductCount,
+    targetProductCount: result.summary.targetProductCount,
+    productSummaryCount: result.summary.productSummaryCount,
+    soldOutProductCount: result.summary.soldOutProductCount,
+    elapsedMs: result.summary.elapsedMs,
+  });
+
+  throwIfAborted(signal);
+
+  const uploadType =
+    config.collectionMode === "detail"
+      ? "디테일"
+      : "재고";
+  const uploadResult = await postResultJson(
+    uploadType,
+    mergedBackendProducts,
+    { signal },
+  );
+  const uploads = {
+    inventory:
+      config.collectionMode === "general"
+        ? uploadResult
+        : null,
+    detail:
+      config.collectionMode === "detail"
+        ? uploadResult
+        : null,
+  };
+
   return {
-    payload,
+    payload: {
+      summary: rawPayload.summary,
+      products: mergedBackendProducts,
+    },
+    translatedData,
     uploads,
     files: {
       inventory: files.inventoryCsv,
@@ -775,6 +961,7 @@ async function runCollection(config, { runId, onProgress = () => { }, signal }) 
       products: files.productsCsv,
       details: result.detailItems?.length ? files.detailsCsv : null,
       result: files.resultJson,
+      translatedResult: translatedResultPath,
       detailResult: hasDetailResult ? files.detailResultJson : null,
     },
   };

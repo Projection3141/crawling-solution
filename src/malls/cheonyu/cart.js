@@ -139,6 +139,8 @@ function parseCartHtml(html, config) {
       categoryHint: inferCategory(productName),
       optionText,
       hasOption: optionText.length > 0,
+      optionId: "0",
+      submitOptionId: "",
       requestedQty,
       maxStock,
       stockStatus,

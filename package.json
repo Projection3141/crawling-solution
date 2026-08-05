@@ -7,13 +7,8 @@
   "private": true,
   "scripts": {
     "start": "electron-forge start",
-    "package": "electron-forge package",
-    "make": "electron-forge make",
-    "check": "node scripts/check-syntax.js",
-    "cheonyu": "node src/cli.js cheonyu",
-    "ccdome": "node src/cli.js ccdome",
-    "postinstall": "node scripts/install-playwright.js",
-    "clean": "node -e \"require('node:fs').rmSync('out', { recursive: true, force: true })\""
+    "translate": "node translate/translate.js",
+    "package": "electron-forge package"
   },
   "keywords": [
     "electron",
@@ -31,7 +26,9 @@
     "cheerio": "^1.2.0",
     "dotenv": "^17.4.2",
     "electron-squirrel-startup": "^1.0.1",
-    "playwright": "^1.60.0"
+    "openai": "^7.4.0",
+    "playwright": "^1.60.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.11.2",

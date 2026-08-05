@@ -37,13 +37,21 @@ const CHEONYU_DETAIL = {
     consumerPrice: ".pdt_code .pdt_code_last strong",
     smallPhotoLinks: "#viewSmallPhoto a, .small_photo a",
     smallPhotoImages: "#viewSmallPhoto img, .small_photo img",
+    mainImages:
+      "#productView .photo_wrap .main_photo img, " +
+      "#productView .photo_wrap .big_img img, " +
+      "#productView .view_photo img, " +
+      "#productView img#mainImg, " +
+      "#productView img[id*='mainImage'], " +
+      "#productView .pdt_photo img",
     introImages:
       "#tab_01 #viewContent img, " +
       "#viewContent img, " +
       ".pic#viewContent img, " +
       "img[src*='image3.cheonyu.com'], " +
       "img[data-src*='image3.cheonyu.com']",
-    detailSpecTable: 'table.info[alt="제품상세정보"]',
+    detailSpecTable: '#productView table.info',
+    detailSpecRows: '#productView table.info tbody tr',
   },
 };
 
@@ -120,6 +128,42 @@ function unique(values) {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
+/** /thumb/ 중복 이미지인지 확인한다. */
+function isThumbnailImageUrl(value) {
+  return /\/thumb\//i.test(String(value || ""));
+}
+
+/**
+ * 대표 이미지 selector와 상품번호가 포함된 이미지 URL을 함께 확인한다.
+ * 천유 상품 대표 이미지는 /_DATA/product/.../{productId}_*.jpg 형태도 사용한다.
+ */
+function parseMainImageUrls($, productId, config) {
+  const urls = [];
+
+  $(CHEONYU_DETAIL.selectors.mainImages).each((_, image) => {
+    urls.push(...getImageCandidateUrls($, image, config.baseUrl));
+  });
+
+  $("#productView img").each((_, image) => {
+    const candidates = getImageCandidateUrls($, image, config.baseUrl);
+
+    for (const url of candidates) {
+      if (
+        productId &&
+        url.includes(`/${productId}_`) &&
+        !url.includes("image3.cheonyu.com") &&
+        !url.includes("image4.cheonyu.com")
+      ) {
+        urls.push(url);
+      }
+    }
+  });
+
+  return unique(urls).filter(
+    (url) => !isThumbnailImageUrl(url),
+  );
+}
+
 /** th/td가 반복되는 상세 table을 key-value 객체로 변환한다. */
 function parseKeyValueTable($, table) {
   const result = {};
@@ -142,6 +186,49 @@ function parseKeyValueTable($, table) {
   });
 
   return result;
+}
+
+
+/** 상세 table의 모든 th/td 쌍을 백엔드 specs 원본 row로 변환한다. */
+function parseSpecRows($, selector) {
+  const rows = [];
+  const seen = new Set();
+
+  $(selector).each((_, tr) => {
+    const cells = $(tr).children("th,td").toArray();
+
+    for (let index = 0; index < cells.length - 1; index += 1) {
+      const cell = cells[index];
+
+      if (String(cell.tagName).toLowerCase() !== "th") {
+        continue;
+      }
+
+      const nextCell = cells[index + 1];
+
+      if (String(nextCell?.tagName).toLowerCase() !== "td") {
+        continue;
+      }
+
+      const label = normalizeWhitespace($(cell).text());
+      const value = normalizeWhitespace($(nextCell).text());
+
+      if (!label || !value || seen.has(label)) {
+        continue;
+      }
+
+      seen.add(label);
+      rows.push({
+        labelKo: label,
+        labelJa: label,
+        valueKo: value,
+        valueJa: value,
+        sortOrder: rows.length * 10,
+      });
+    }
+  });
+
+  return rows;
 }
 
 /** key 이름 일부가 일치하는 상세값을 가져온다. */
@@ -296,6 +383,17 @@ function parseDetailHtml(html, product, config) {
       ),
   );
 
+  const mainImageUrls = unique([
+    ...parseMainImageUrls(
+      $,
+      String(product.productId || productNo || ""),
+      config,
+    ),
+    ...thumbnailImageUrls.filter(
+      (url) => !isThumbnailImageUrl(url),
+    ),
+  ]);
+
   const introImageUrls = unique(
     [
       ...$(selectors.introImages)
@@ -310,7 +408,10 @@ function parseDetailHtml(html, product, config) {
     ],
   );
 
-  const detailSpecRaw = parseKeyValueTable($, $(selectors.detailSpecTable).first());
+  const specRows = parseSpecRows($, selectors.detailSpecRows);
+  const detailSpecRaw = Object.fromEntries(
+    specRows.map((row) => [row.labelKo, row.valueKo]),
+  );
   const my3pl = parseMy3pl($);
   const packageInfo = parsePackageInfo(productName);
 
@@ -320,7 +421,7 @@ function parseDetailHtml(html, product, config) {
     productId: String(product.productId || productNo || ""),
     productUrl: product.productUrl,
     productName,
-    brandHint: inferBrand(productName),
+    brandHint: product.brandHint || inferBrand(productName),
     categoryHint: inferCategory(productName),
     categoryDepth1,
     categoryDepth2,
@@ -348,8 +449,18 @@ function parseDetailHtml(html, product, config) {
     packageUnit: packageInfo.packageUnit,
     packageText: packageInfo.packageText,
     detailOptions: JSON.stringify(parseDetailOptions($)),
+    specRows,
+
+    /** 백엔드 상품 이미지 구조의 원본 필드다. */
+    mainImageUrls,
+    detailImageUrls: introImageUrls,
     thumbnailImageUrls,
     introImageUrls,
+    images: {
+      main_img: mainImageUrls,
+      detail_img: introImageUrls,
+    },
+    mainImageUrlsText: mainImageUrls.join(" | "),
     thumbnailImageUrlsText: thumbnailImageUrls.join(" | "),
     introImageUrlsText: introImageUrls.join(" | "),
     rawDetailSpec: detailSpecRaw,

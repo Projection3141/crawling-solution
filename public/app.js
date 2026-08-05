@@ -859,28 +859,28 @@ function createRunCard(run) {
       ),
     ),
     createMetricCard(
-      "수집 전체 상품 수",
+      "수집할 상품 개수",
       displayNumber(
         summary.collectedProductCount ??
         progress.collectedProductCount,
       ),
     ),
     createMetricCard(
-      "일반 수집 대상 수",
+      "수집 가능한 상품 수(일반)",
       displayNumber(
         summary.targetProductCount ??
         progress.targetProductCount,
       ),
     ),
     createMetricCard(
-      "상세 수집 상품 수",
+      "상세 수집 진행 수",
       formatDetailProgress(progress, summary),
     ),
     createMetricCard(
-      "상품 요약 수",
+      "수집한 상품 수(품절 제외, 옵션 포함)",
       displayNumber(
-        summary.productSummaryCount ??
-        progress.productSummaryCount,
+        summary.inventoryRowCount ?? progress.inventoryRowCount ??
+        summary.productSummaryCount ?? progress.productSummaryCount,
       ),
     ),
     createMetricCard(

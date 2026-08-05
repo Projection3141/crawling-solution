@@ -125,6 +125,7 @@ async function probeCheonyuCartStock(
     clearAfter = false,
     onProgress = () => {},
     signal,
+    popupOptionRows = [],
   } = {},
 ) {
   throwIfAborted(signal);
@@ -142,8 +143,40 @@ async function probeCheonyuCartStock(
   const targetIds = new Set(
     products.map((item) => String(item.productId)),
   );
+
+  const popupMap = new Map();
+  for (const row of popupOptionRows || []) {
+    const productId = String(row.productId || "").trim();
+    const optionText = String(row.optionText || "").trim();
+    const key = `${productId}::${optionText || "0"}`;
+
+    if (!productId) continue;
+    if (!popupMap.has(key)) {
+      popupMap.set(key, row);
+    }
+  }
+
   const inventoryItems = sortInventoryItems(
-    allCartItems.filter((item) => targetIds.has(String(item.productId))),
+    allCartItems
+      .filter((item) => targetIds.has(String(item.productId)))
+      .map((item) => {
+        const productId = String(item.productId || "").trim();
+        const optionText = String(item.optionText || "").trim();
+        const key = `${productId}::${optionText || "0"}`;
+        const popupRow = popupMap.get(key);
+
+        if (popupRow) {
+          return {
+            ...item,
+            optionId: popupRow.optionId ?? item.optionId,
+            submitOptionId: popupRow.submitOptionId ?? item.submitOptionId,
+            hasOption: popupRow.hasOption ?? item.hasOption,
+            productName: popupRow.productName || item.productName,
+          };
+        }
+
+        return item;
+      }),
   );
   let clearAfterResult = null;
 

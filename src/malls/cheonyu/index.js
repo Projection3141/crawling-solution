@@ -130,6 +130,7 @@ async function runCheonyu(
       {
         probeQty: config.cartQty || 999,
         clearAfter: config.clearCartAfter,
+        popupOptionRows: allPopupOptionRows,
         onProgress: (progress) => {
           onProgress({
             ...progress,
