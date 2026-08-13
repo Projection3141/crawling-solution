@@ -55,6 +55,45 @@ const CHEONYU_DETAIL = {
   },
 };
 
+const CHEONYU_BLOCKING_HTTP_STATUS_CODES = new Set([403, 429]);
+
+/** 기준 상세 지연의 70~160% 범위에서 다음 요청 간격을 선택한다. */
+function getRandomCheonyuDetailDelayMs(baseDelayMs, random = Math.random) {
+  const baseDelay = Math.max(0, Number(baseDelayMs) || 0);
+
+  if (baseDelay < 1) return 0;
+
+  const minDelay = Math.round(baseDelay * 0.7);
+  const maxDelay = Math.round(baseDelay * 1.6);
+  const sample = Math.min(Math.max(Number(random()) || 0, 0), 1 - Number.EPSILON);
+
+  return minDelay + Math.floor(sample * (maxDelay - minDelay + 1));
+}
+
+/** 천유가 접근을 거부하거나 요청량을 제한한 응답인지 확인한다. */
+function isCheonyuBlockingError(error) {
+  const statusCode = Number(error?.statusCode || error?.status || 0);
+  return CHEONYU_BLOCKING_HTTP_STATUS_CODES.has(statusCode);
+}
+
+/** 차단 응답을 자동 IP 변경 없이 전체 상세 수집 중단 오류로 변환한다. */
+function createCheonyuCircuitError(error) {
+  const statusCode = Number(error?.statusCode || error?.status || 0);
+
+  return markSiteError(
+    new Error(
+      `천유가 요청을 거부하거나 제한했습니다(HTTP ${statusCode}). ` +
+      "IP를 자동 변경하지 않고 상세 수집을 중단합니다.",
+    ),
+    {
+      retryable: false,
+      code: "CHEONYU_DETAIL_CIRCUIT_OPEN",
+      statusCode,
+      stage: "cheonyu-detail",
+    },
+  );
+}
+
 /** 상대/절대 이미지 경로를 절대 URL로 정규화한다. */
 function toAbsoluteUrl(value, baseUrl) {
   const raw = String(value || "").trim();
@@ -499,7 +538,7 @@ async function collectCheonyuDetails(
 
   const concurrency = Math.min(
     limitedTargets.length,
-    getSafetyNumber(config, "detailConcurrency", 10, 1, 10)
+    getSafetyNumber(config, "detailConcurrency", 3, 1, 10)
   );
   const retryCount = getSafetyNumber(
     config,
@@ -518,8 +557,62 @@ async function collectCheonyuDetails(
   const context = page.context();
   const workers = [];
   const details = new Array(limitedTargets.length);
+  const circuitController = new AbortController();
+  const workerSignal = signal
+    ? AbortSignal.any([signal, circuitController.signal])
+    : circuitController.signal;
   let nextIndex = 0;
   let completedCount = 0;
+  let circuitError = null;
+  let nextRequestAt = 0;
+  let requestGate = Promise.resolve();
+
+  /** 여러 상세 탭의 최상위 페이지 요청이 한꺼번에 시작되지 않도록 직렬로 간격을 예약한다. */
+  async function waitForDetailRequestSlot() {
+    let releaseGate;
+    const previousGate = requestGate;
+    requestGate = new Promise((resolve) => {
+      releaseGate = resolve;
+    });
+
+    await previousGate;
+
+    try {
+      throwIfAborted(workerSignal);
+
+      const remainingMs = Math.max(0, nextRequestAt - Date.now());
+      if (remainingMs > 0) {
+        await sleepWithSignal(remainingMs, workerSignal);
+      }
+
+      nextRequestAt = Date.now() + getRandomCheonyuDetailDelayMs(
+        config.detailRequestDelayMs,
+      );
+    } finally {
+      releaseGate();
+    }
+  }
+
+  async function tripCircuit(error) {
+    if (circuitError) return circuitError;
+
+    circuitError = createCheonyuCircuitError(error);
+
+    onProgress({
+      stage: "blocked",
+      message: circuitError.message,
+      currentDetailIndex: completedCount,
+      detailTargetCount: limitedTargets.length,
+      detailConcurrency: concurrency,
+    });
+
+    circuitController.abort();
+    await Promise.all(
+      workers.map((worker) => worker.page.close().catch(() => null)),
+    );
+
+    return circuitError;
+  }
 
   /** 기존 목록 탭은 건드리지 않고 상세 전용 탭만 만든다. */
   for (let index = 0; index < concurrency; index += 1) {
@@ -534,12 +627,14 @@ async function collectCheonyuDetails(
     try {
       return await withSiteRetry(
         async () => {
+          await waitForDetailRequestSlot();
+
           const response = await gotoWithSiteRetry(
             worker.page,
             product.productUrl,
             {
               label: `천유 상세 상품 ${product.productId}`,
-              signal,
+              signal: workerSignal,
               maxAttempts: 1,
               timeoutMs: config.navigationTimeoutMs,
               readySelector: CHEONYU_DETAIL.selectors.root,
@@ -551,7 +646,7 @@ async function collectCheonyuDetails(
             throw markSiteError(
               new Error(`HTTP ${response.status()}`),
               {
-                retryable: response.status() >= 500 || response.status() === 429,
+                retryable: response.status() >= 500,
                 statusCode: response.status(),
                 stage: "cheonyu-detail",
               },
@@ -584,12 +679,20 @@ async function collectCheonyuDetails(
         {
           label: `천유 상세 상품 ${product.productId}`,
           maxAttempts: retryCount,
-          signal,
-          shouldRetry: (error) =>
-            isRetryableSiteError(error, {
-              signal,
+          signal: workerSignal,
+          shouldRetry: async (error) => {
+            if (isCheonyuBlockingError(error)) {
+              await tripCircuit(error);
+              return false;
+            }
+
+            if (circuitError) return false;
+
+            return isRetryableSiteError(error, {
+              signal: workerSignal,
               retryUnknownErrors: true,
-            }),
+            });
+          },
           baseDelayMs: 800,
           maxDelayMs: 15000,
           multiplier: 1.6,
@@ -613,12 +716,12 @@ async function collectCheonyuDetails(
                 `[CHEONYU DETAIL] 작업자 ${worker.workerIndex + 1} 탭 교체`,
               );
               worker.page = await replacePage(worker.page, {
-                signal,
+                signal: workerSignal,
                 setupPage: setupCheonyuDetailWorkerPage,
               });
             } else {
               await resetPageState(worker.page, {
-                signal,
+                signal: workerSignal,
                 delayMs: 500,
               });
             }
@@ -627,6 +730,14 @@ async function collectCheonyuDetails(
       );
     } catch (error) {
       lastError = error;
+
+      if (isCheonyuBlockingError(lastError)) {
+        await tripCircuit(lastError);
+      }
+
+      if (circuitError) {
+        throw circuitError;
+      }
     }
 
     return {
@@ -640,56 +751,58 @@ async function collectCheonyuDetails(
   }
 
   async function runWorker(worker) {
-    if (worker.workerIndex > 0) {
-      await sleepWithSignal(worker.workerIndex * 250, signal);
-    }
-
-    while (true) {
-      throwIfAborted(signal);
-
-      const targetIndex = nextIndex;
-      nextIndex += 1;
-
-      if (targetIndex >= limitedTargets.length) return;
-
-      const product = limitedTargets[targetIndex];
-
-      onProgress({
-        stage: "detail",
-        message:
-          `천유 상세 수집 중: ${completedCount}/${limitedTargets.length} ` +
-          `(작업자 ${worker.workerIndex + 1}, 상품 ${targetIndex + 1})`,
-        currentDetailIndex: completedCount,
-        detailTargetCount: limitedTargets.length,
-        productId: product.productId,
-        workerIndex: worker.workerIndex + 1,
-        detailConcurrency: concurrency,
-      });
-
-      details[targetIndex] = await collectOne(worker, product, targetIndex);
-      completedCount += 1;
-
-      onProgress({
-        stage: "detail",
-        message: `천유 상세 수집 중: ${completedCount}/${limitedTargets.length}`,
-        currentDetailIndex: completedCount,
-        detailTargetCount: limitedTargets.length,
-        productId: product.productId,
-        workerIndex: worker.workerIndex + 1,
-        detailConcurrency: concurrency,
-      });
-
-      if (
-        Number(config.detailRequestDelayMs) > 0 &&
-        completedCount < limitedTargets.length
-      ) {
-        await sleepWithSignal(Number(config.detailRequestDelayMs), signal);
+    try {
+      if (worker.workerIndex > 0) {
+        await sleepWithSignal(worker.workerIndex * 250, workerSignal);
       }
+
+      while (true) {
+        throwIfAborted(workerSignal);
+
+        const targetIndex = nextIndex;
+        nextIndex += 1;
+
+        if (targetIndex >= limitedTargets.length) return;
+
+        const product = limitedTargets[targetIndex];
+
+        onProgress({
+          stage: "detail",
+          message:
+            `천유 상세 수집 중: ${completedCount}/${limitedTargets.length} ` +
+            `(작업자 ${worker.workerIndex + 1}, 상품 ${targetIndex + 1})`,
+          currentDetailIndex: completedCount,
+          detailTargetCount: limitedTargets.length,
+          productId: product.productId,
+          workerIndex: worker.workerIndex + 1,
+          detailConcurrency: concurrency,
+        });
+
+        details[targetIndex] = await collectOne(worker, product, targetIndex);
+        completedCount += 1;
+
+        onProgress({
+          stage: "detail",
+          message: `천유 상세 수집 중: ${completedCount}/${limitedTargets.length}`,
+          currentDetailIndex: completedCount,
+          detailTargetCount: limitedTargets.length,
+          productId: product.productId,
+          workerIndex: worker.workerIndex + 1,
+          detailConcurrency: concurrency,
+        });
+
+      }
+    } catch (error) {
+      throw circuitError || error;
     }
   }
 
   try {
-    await Promise.all(workers.map((worker) => runWorker(worker)));
+    try {
+      await Promise.all(workers.map((worker) => runWorker(worker)));
+    } catch (error) {
+      throw circuitError || error;
+    }
   } finally {
     await Promise.all(
       workers.map((worker) => worker.page.close().catch(() => null)),
@@ -702,5 +815,6 @@ async function collectCheonyuDetails(
 module.exports = {
   CHEONYU_DETAIL,
   collectCheonyuDetails,
+  getRandomCheonyuDetailDelayMs,
   parseDetailHtml,
 };

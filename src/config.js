@@ -29,10 +29,161 @@ const MALLS = Object.freeze({
   },
 });
 
+const CHEONYU_PROXY_SLOT_COUNT = 5;
+const SUPPORTED_PROXY_PROTOCOLS = new Set([
+  "http:",
+  "socks5:",
+]);
+
+/** 천유 전용 프록시가 설정된 슬롯 번호만 반환한다. */
+function getConfiguredCheonyuProxySlots(env = process.env) {
+  return Array.from(
+    { length: CHEONYU_PROXY_SLOT_COUNT },
+    (_, index) => index + 1,
+  ).filter((slot) => hasValue(env?.[`CHEONYU_PROXY_${slot}_SERVER`]));
+}
+
+/** 화면이나 환경변수에서 받은 프록시 슬롯 번호를 검증한다. */
+function normalizeCheonyuProxySlot(value, label = "천유 프록시 슬롯") {
+  const slot = Number(value);
+
+  if (
+    !Number.isInteger(slot) ||
+    slot < 1 ||
+    slot > CHEONYU_PROXY_SLOT_COUNT
+  ) {
+    throw new Error(`${label}은 1~${CHEONYU_PROXY_SLOT_COUNT} 사이의 정수여야 합니다.`);
+  }
+
+  return slot;
+}
+
+/** 프록시 주소를 Playwright가 지원하는 형식으로 검증한다. */
+function normalizeProxyServer(value, slot) {
+  const server = String(value || "").trim();
+  let url;
+
+  try {
+    url = new URL(server);
+  } catch {
+    throw new Error(
+      `천유 프록시 슬롯 ${slot} 주소가 올바르지 않습니다. ` +
+      "http://호스트:포트 형식으로 설정하세요.",
+    );
+  }
+
+  if (!SUPPORTED_PROXY_PROTOCOLS.has(url.protocol)) {
+    throw new Error(
+      `천유 프록시 슬롯 ${slot}은 HTTP 또는 SOCKS5 주소만 지원합니다.`,
+    );
+  }
+
+  if (url.username || url.password) {
+    throw new Error(
+      `천유 프록시 슬롯 ${slot}의 인증정보는 주소에 넣지 말고 ` +
+      "USERNAME/PASSWORD 항목에 분리해서 설정하세요.",
+    );
+  }
+
+  return server;
+}
+
+/** 선택된 천유 프록시 슬롯을 Playwright BrowserContext 설정으로 변환한다. */
+function resolveCheonyuProxy(input, env, mall) {
+  if (mall !== "cheonyu") {
+    return {
+      cheonyuProxySlot: 0,
+      proxy: undefined,
+    };
+  }
+
+  const configuredSlots = getConfiguredCheonyuProxySlots(env);
+  const requestedValue = hasValue(input?.cheonyuProxySlot)
+    ? input.cheonyuProxySlot
+    : env?.CHEONYU_PROXY_SLOT;
+
+  if (configuredSlots.length < 1) {
+    if (hasValue(requestedValue)) {
+      throw new Error(
+        "천유 프록시 슬롯이 선택됐지만 CHEONYU_PROXY_n_SERVER 설정이 없습니다.",
+      );
+    }
+
+    return {
+      cheonyuProxySlot: 0,
+      proxy: undefined,
+    };
+  }
+
+  const slot = hasValue(requestedValue)
+    ? normalizeCheonyuProxySlot(requestedValue)
+    : configuredSlots[0];
+
+  if (!configuredSlots.includes(slot)) {
+    throw new Error(`천유 프록시 슬롯 ${slot}이 .env에 설정되어 있지 않습니다.`);
+  }
+
+  const prefix = `CHEONYU_PROXY_${slot}`;
+  const server = normalizeProxyServer(env[`${prefix}_SERVER`], slot);
+  const username = String(env[`${prefix}_USERNAME`] || "").trim();
+  const password = String(env[`${prefix}_PASSWORD`] || "");
+
+  if (Boolean(username) !== Boolean(password)) {
+    throw new Error(
+      `천유 프록시 슬롯 ${slot}의 USERNAME과 PASSWORD는 둘 다 설정하거나 ` +
+      "둘 다 비워야 합니다.",
+    );
+  }
+
+  if (new URL(server).protocol === "socks5:" && username) {
+    throw new Error(
+      `천유 프록시 슬롯 ${slot}의 사용자 인증은 HTTP/HTTPS 프록시 주소를 사용하세요.`,
+    );
+  }
+
+  return {
+    cheonyuProxySlot: slot,
+    proxy: {
+      server,
+      ...(username ? { username, password } : {}),
+    },
+  };
+}
+
 function pickValue(input, inputKey, env, envKey, fallback) {
   if (hasValue(input?.[inputKey])) return input[inputKey];
   if (hasValue(env?.[envKey])) return env[envKey];
   return fallback;
+}
+
+/** User-Agent 헤더에 사용할 수 있는 한 줄 문자열로 검증한다. */
+function normalizeUserAgent(value, label = "User-Agent") {
+  const userAgent = String(value || "").trim();
+
+  if (!userAgent) return undefined;
+  if (userAgent.length > 512) {
+    throw new Error(`${label}는 512자 이하여야 합니다.`);
+  }
+  if (/[\r\n\0]/.test(userAgent)) {
+    throw new Error(`${label}에는 줄바꿈이나 NUL 문자를 사용할 수 없습니다.`);
+  }
+
+  return userAgent;
+}
+
+/** 화면 입력은 천유에만 적용하고 기존 공통 USER_AGENT 설정은 유지한다. */
+function resolveUserAgent(input, env, mall) {
+  if (mall === "cheonyu" && hasValue(input?.cheonyuUserAgent)) {
+    return normalizeUserAgent(input.cheonyuUserAgent, "천유 User-Agent");
+  }
+
+  if (mall === "cheonyu" && hasValue(env?.CHEONYU_USER_AGENT)) {
+    return normalizeUserAgent(env.CHEONYU_USER_AGENT, "CHEONYU_USER_AGENT");
+  }
+
+  return hasValue(env?.USER_AGENT)
+    ? normalizeUserAgent(env.USER_AGENT, "USER_AGENT")
+    : undefined;
 }
 
 function pickBoolean(input, inputKey, env, envKey, fallback) {
@@ -203,6 +354,8 @@ function resolveRunConfig(
     throw new Error(`PAGE_END(${pageEnd})가 MAX_SAFE_PAGES(${maxSafePages})를 초과했습니다.`);
   }
 
+  const cheonyuProxy = resolveCheonyuProxy(input, env, mall);
+
   return {
     mall,
     mallLabel: mallInfo.label,
@@ -231,10 +384,21 @@ function resolveRunConfig(
       "detailRequestDelayMs",
       env,
       "DETAIL_REQUEST_DELAY_MS",
-      300,
+      1000,
       0,
     ),
     detailMaxProducts: pickInteger(input, "detailMaxProducts", env, "DETAIL_MAX_PRODUCTS", 0, 0),
+    detailConcurrency:
+      mall === "cheonyu"
+        ? pickInteger(
+          input,
+          "detailConcurrency",
+          env,
+          "CHEONYU_DETAIL_CONCURRENCY",
+          3,
+          1,
+        )
+        : 5,
     maxSafePages,
     navigationTimeoutMs: pickInteger(
       input,
@@ -246,7 +410,9 @@ function resolveRunConfig(
     ),
 
     viewport: { width: 1440, height: 1000 },
-    userAgent: hasValue(env.USER_AGENT) ? String(env.USER_AGENT) : undefined,
+    userAgent: resolveUserAgent(input, env, mall),
+    cheonyuProxySlot: cheonyuProxy.cheonyuProxySlot,
+    proxy: cheonyuProxy.proxy,
     baseOutDir: resolveOutputDir(input, env, defaultOutputDir),
   };
 }
@@ -272,14 +438,35 @@ function toSafeConfig(config) {
     requestDelayMs: config.requestDelayMs,
     detailRequestDelayMs: config.detailRequestDelayMs,
     detailMaxProducts: config.detailMaxProducts,
+    detailConcurrency: config.detailConcurrency,
     maxSafePages: config.maxSafePages,
     navigationTimeoutMs: config.navigationTimeoutMs,
+    proxyEnabled: Boolean(config.proxy),
+    cheonyuProxySlot: config.cheonyuProxySlot || 0,
   };
 }
 
 function getPublicDefaults(env = process.env, outputDirectory = "") {
   const envMall = String(env.MALL || "cheonyu").trim().toLowerCase();
   const mall = MALLS[envMall] ? envMall : "cheonyu";
+  const configuredProxySlots = getConfiguredCheonyuProxySlots(env);
+  const defaultProxySlot = configuredProxySlots.length > 0
+    ? hasValue(env.CHEONYU_PROXY_SLOT)
+      ? normalizeCheonyuProxySlot(
+        env.CHEONYU_PROXY_SLOT,
+        "CHEONYU_PROXY_SLOT",
+      )
+      : configuredProxySlots[0]
+    : 0;
+
+  if (
+    defaultProxySlot > 0 &&
+    !configuredProxySlots.includes(defaultProxySlot)
+  ) {
+    throw new Error(
+      `기본 천유 프록시 슬롯 ${defaultProxySlot}이 .env에 설정되어 있지 않습니다.`,
+    );
+  }
 
   return {
     malls: Object.values(MALLS).map((item) => ({
@@ -306,6 +493,13 @@ function getPublicDefaults(env = process.env, outputDirectory = "") {
       pageSize: MALLS[mall].defaultPageSize,
       hasAccountId: hasValue(env.ACCOUNT_ID),
       hasAccountPw: hasValue(env.ACCOUNT_PW),
+    },
+
+    proxyDefaults: {
+      cheonyu: {
+        configuredSlots: configuredProxySlots,
+        defaultSlot: defaultProxySlot,
+      },
     },
 
     outputDirectory,

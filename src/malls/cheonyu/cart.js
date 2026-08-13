@@ -2,6 +2,7 @@
 
 const cheerio = require("cheerio");
 const { sleep, toNumber } = require("../../utils/common");
+const { createHttpStatusError } = require("../../utils/site-safety");
 const {
   inferBrand,
   inferCategory,
@@ -36,10 +37,15 @@ const CHEONYU_CART = {
 
 /** 천유 장바구니의 렌더링 완료 HTML을 읽는다. */
 async function readCartHtml(page, config) {
-  await page.goto(new URL(CHEONYU_CART.urls.cart, config.baseUrl).toString(), {
+  const url = new URL(CHEONYU_CART.urls.cart, config.baseUrl).toString();
+  const response = await page.goto(url, {
     waitUntil: "domcontentloaded",
     timeout: config.navigationTimeoutMs,
   });
+
+  if (response && !response.ok()) {
+    throw createHttpStatusError(response, "천유 장바구니 이동", url);
+  }
 
   await page
     .waitForSelector(CHEONYU_CART.selectors.table, {
@@ -190,6 +196,14 @@ async function clearCartByCartIds(context, cartIds, config) {
         timeout: config.navigationTimeoutMs,
       },
     );
+
+    if (!response.ok()) {
+      throw createHttpStatusError(
+        response,
+        "천유 장바구니 삭제",
+        new URL(CHEONYU_CART.urls.cartApi, config.baseUrl).toString(),
+      );
+    }
 
     results.push({
       status: response.status(),

@@ -283,6 +283,36 @@ function findActiveRunByAccountKey(accountKey) {
     );
 }
 
+/** 동일 천유 프록시 슬롯의 동시 실행을 막기 위한 key를 만든다. */
+function createProxySlotLockKey(config) {
+    if (config?.mall !== "cheonyu") return "";
+
+    if (!config?.proxy || !config?.cheonyuProxySlot) {
+        return "cheonyu:direct";
+    }
+
+    return `cheonyu:proxy:${config.cheonyuProxySlot}`;
+}
+
+/** 천유 네트워크 잠금 key를 사용자용 이름으로 바꾼다. */
+function formatProxySlotLockLabel(proxySlotKey) {
+    if (proxySlotKey === "cheonyu:direct") return "천유 직접 연결";
+
+    const slot = String(proxySlotKey || "").split(":").at(-1);
+    return `천유 프록시 슬롯 ${slot}`;
+}
+
+/** 같은 천유 프록시 슬롯을 사용 중인 수집 작업을 찾는다. */
+function findActiveRunByProxySlotKey(proxySlotKey) {
+    if (!proxySlotKey) return null;
+
+    return (
+        Array.from(activeRuns.values()).find(
+            (run) => run.proxySlotKey === proxySlotKey,
+        ) || null
+    );
+}
+
 /** 종료 대기 중이며 모든 작업이 끝났으면 앱을 종료한다. */
 function maybeQuitAfterWork() {
     if (!quitAfterRun) return;
@@ -361,6 +391,8 @@ function normalizeRunInput(input) {
 
         "detailMaxProducts",
         "detailRequestDelayMs",
+        "cheonyuProxySlot",
+        "cheonyuUserAgent",
 
         "cartQty",
         "clearCartBefore",
@@ -397,6 +429,8 @@ function createPublicRunRequest(config, safeInput) {
             String(safeInput.accountName || "").trim() ||
             (safeInput.localCredentialId ? "등록 계정" : ".env 계정"),
         localCredentialId: String(safeInput.localCredentialId || ""),
+        proxyEnabled: Boolean(config.proxy),
+        cheonyuProxySlot: config.cheonyuProxySlot || 0,
         executionOptions: safeInput.executionOptions || {
             runMode: "once",
         },
@@ -488,6 +522,7 @@ function getCartAccount(accounts, site) {
         accountPw,
         accountName: String(source?.accountName || ""),
         localCredentialId: String(source?.localCredentialId || ""),
+        cheonyuProxySlot: source?.cheonyuProxySlot,
     };
 }
 
@@ -578,6 +613,30 @@ async function fetchUploaderCartItems(signal) {
     }
 }
 
+/** 장바구니용 공통 실행 설정을 생성한다. */
+function createCartRunConfig(site, account, input) {
+    return resolveRunConfig(
+        {
+            mall: site,
+            category: site === "cheonyu" ? "-1" : "017",
+            accountId: account.accountId,
+            accountPw: account.accountPw,
+            accountName: account.accountName,
+            localCredentialId: account.localCredentialId,
+            cheonyuProxySlot: account.cheonyuProxySlot,
+            cheonyuUserAgent: input?.cheonyuUserAgent,
+            showBrowser: input?.showBrowser === true,
+            pageStart: 1,
+            pageEnd: 0,
+            clearCartBefore: false,
+            clearCartAfter: false,
+            outDir: selectedOutputRoot,
+        },
+        process.env,
+        getDefaultOutputRoot(),
+    );
+}
+
 /** GET 응답 배열을 사이트별로 분리해 실제 장바구니에 담는다. */
 async function uploadCartItems(input) {
     if (activeCartUpload) {
@@ -586,8 +645,10 @@ async function uploadCartItems(input) {
 
     const controller = new AbortController();
     const lockedAccountKeys = new Set();
+    const lockedProxySlotKeys = new Set();
     const preselectedAccounts = {};
     const preselectedAccountKeys = {};
+    const preselectedConfigs = {};
 
     /**
      * 1) 화면에서 선택된 계정을 먼저 정규화한다.
@@ -607,6 +668,7 @@ async function uploadCartItems(input) {
             accountPw,
             accountName: String(source?.accountName || ""),
             localCredentialId: String(source?.localCredentialId || ""),
+            cheonyuProxySlot: source?.cheonyuProxySlot,
         };
         const accountKey = createAccountLockKey(
             site,
@@ -616,6 +678,23 @@ async function uploadCartItems(input) {
 
         preselectedAccounts[site] = account;
         preselectedAccountKeys[site] = accountKey;
+
+        const config = createCartRunConfig(site, account, input);
+        const proxySlotKey = createProxySlotLockKey(config);
+
+        preselectedConfigs[site] = config;
+        if (proxySlotKey) lockedProxySlotKeys.add(proxySlotKey);
+    }
+
+    for (const proxySlotKey of lockedProxySlotKeys) {
+        const conflictingRun = findActiveRunByProxySlotKey(proxySlotKey);
+
+        if (!conflictingRun) continue;
+
+        throw new Error(
+            `${formatProxySlotLockLabel(proxySlotKey)}에서 이미 수집 작업이 진행 중입니다. ` +
+            "같은 IP의 요청이 겹치지 않도록 기존 작업이 끝난 후 다시 실행하세요.",
+        );
     }
 
     /**
@@ -672,6 +751,7 @@ async function uploadCartItems(input) {
         controller,
         startedAtMs: Date.now(),
         accountKeys: lockedAccountKeys,
+        proxySlotKeys: lockedProxySlotKeys,
     };
     emitState();
 
@@ -698,6 +778,13 @@ async function uploadCartItems(input) {
 
             lockedAccountKeys.delete(unusedKey);
             cartAccountLocks.delete(unusedKey);
+
+            const unusedProxySlotKey = createProxySlotLockKey(
+                preselectedConfigs[site],
+            );
+            if (unusedProxySlotKey) {
+                lockedProxySlotKeys.delete(unusedProxySlotKey);
+            }
         }
         emitState();
 
@@ -740,6 +827,14 @@ async function uploadCartItems(input) {
             accounts[site] = account;
             lockedAccountKeys.add(accountKey);
             lockCartAccount(accountKey, site, account);
+
+            const config =
+                preselectedConfigs[site] ||
+                createCartRunConfig(site, account, input);
+            const proxySlotKey = createProxySlotLockKey(config);
+
+            preselectedConfigs[site] = config;
+            if (proxySlotKey) lockedProxySlotKeys.add(proxySlotKey);
         }
         emitState();
 
@@ -751,24 +846,7 @@ async function uploadCartItems(input) {
             if (siteItems.length < 1) continue;
 
             const account = accounts[site];
-            const config = resolveRunConfig(
-                {
-                    mall: site,
-                    category: site === "cheonyu" ? "-1" : "017",
-                    accountId: account.accountId,
-                    accountPw: account.accountPw,
-                    accountName: account.accountName,
-                    localCredentialId: account.localCredentialId,
-                    showBrowser: input?.showBrowser === true,
-                    pageStart: 1,
-                    pageEnd: 0,
-                    clearCartBefore: false,
-                    clearCartAfter: false,
-                    outDir: selectedOutputRoot,
-                },
-                process.env,
-                getDefaultOutputRoot(),
-            );
+            const config = preselectedConfigs[site];
 
             const cartItems = mergeDuplicateCartItems(siteItems);
             const cartResult = await runCartUpload(config, cartItems, {
@@ -885,6 +963,7 @@ function startCollection(input) {
         getDefaultOutputRoot(),
     );
     const accountKey = createCollectionAccountKey(config, safeInput);
+    const proxySlotKey = createProxySlotLockKey(config);
 
     if (cartAccountLocks.has(accountKey)) {
         const lockInfo = cartAccountLocks.get(accountKey) || {};
@@ -904,6 +983,22 @@ function startCollection(input) {
         );
     }
 
+    const conflictingProxyRun = findActiveRunByProxySlotKey(proxySlotKey);
+
+    if (conflictingProxyRun) {
+        throw new Error(
+            `${formatProxySlotLockLabel(proxySlotKey)}에서 이미 수집 작업이 진행 중입니다. ` +
+            "같은 IP의 요청이 겹치지 않도록 기존 작업이 끝난 후 다시 실행하세요.",
+        );
+    }
+
+    if (proxySlotKey && activeCartUpload?.proxySlotKeys?.has(proxySlotKey)) {
+        throw new Error(
+            `${formatProxySlotLockLabel(proxySlotKey)}에서 장바구니 작업이 진행 중입니다. ` +
+            "같은 IP의 요청이 겹치지 않도록 기존 작업이 끝난 후 다시 실행하세요.",
+        );
+    }
+
     const id = createRunId();
     const controller = new AbortController();
     const startedAtMs = Date.now();
@@ -912,6 +1007,7 @@ function startCollection(input) {
         controller,
         startedAtMs,
         accountKey,
+        proxySlotKey,
     };
     const runState = {
         id,
@@ -1389,6 +1485,11 @@ function createMainWindow() {
                 !app.isPackaged,
         },
     });
+
+    const fakeChromeUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+    mainWindow.webContents.setUserAgent(fakeChromeUA);
+    console.log("현재 설정된 웹 브라우저 명찰:", mainWindow.webContents.getUserAgent());
 
     hardenSessionAndWindow(mainWindow);
 

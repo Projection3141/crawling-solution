@@ -12,6 +12,7 @@ const {
   getMemoryMb,
   throwIfAborted,
 } = require("../../utils/common");
+const { installHttpBlockGuard } = require("../../utils/site-safety");
 const {
   buildProductSummaries,
   sortInventoryItems,
@@ -32,12 +33,17 @@ async function runCheonyu(
 ) {
   const startedAt = performance.now();
   const memoryStart = getMemoryMb();
+  const blockController = new AbortController();
+  const runSignal = signal
+    ? AbortSignal.any([signal, blockController.signal])
+    : blockController.signal;
   let browser = null;
   let context = null;
+  let blockGuard = null;
   let releaseAbort = () => { };
 
   try {
-    throwIfAborted(signal);
+    throwIfAborted(runSignal);
     onProgress({
       stage: "starting",
       message: "천유닷컴 브라우저를 준비하고 있습니다.",
@@ -46,12 +52,25 @@ async function runCheonyu(
     browser = await browserType.launch({
       headless: config.headless,
     });
-    releaseAbort = bindAbortToBrowser(signal, browser);
-    throwIfAborted(signal);
+    releaseAbort = bindAbortToBrowser(runSignal, browser);
+    throwIfAborted(runSignal);
 
     context = await browser.newContext({
       viewport: config.viewport,
       userAgent: config.userAgent,
+      ...(config.proxy ? { proxy: config.proxy } : {}),
+    });
+
+    blockGuard = installHttpBlockGuard(context, {
+      hostname: new URL(config.baseUrl).hostname,
+      label: "천유",
+      onBlocked: (error) => {
+        blockController.abort();
+        onProgress({
+          stage: "blocked",
+          message: error.message,
+        });
+      },
     });
 
     await installLightweightRouting(context, {
@@ -66,8 +85,8 @@ async function runCheonyu(
       stage: "login",
       message: "천유닷컴에 로그인하고 있습니다.",
     });
-    await loginCheonyu(page, config);
-    throwIfAborted(signal);
+    await loginCheonyu(page, config, runSignal);
+    throwIfAborted(runSignal);
 
     let clearBeforeResult = null;
 
@@ -77,7 +96,7 @@ async function runCheonyu(
         message: "기존 장바구니를 정리하고 있습니다.",
       });
       clearBeforeResult = await clearCartAll(page, context, config);
-      throwIfAborted(signal);
+      throwIfAborted(runSignal);
     }
 
     const {
@@ -95,10 +114,10 @@ async function runCheonyu(
           elapsedMs: performance.now() - startedAt,
         });
       },
-      signal,
+      runSignal,
     );
 
-    throwIfAborted(signal);
+    throwIfAborted(runSignal);
 
     const targetProducts = Array.from(
       new Map(allTargets.map((item) => [String(item.productId), item])).values(),
@@ -137,11 +156,11 @@ async function runCheonyu(
             elapsedMs: performance.now() - startedAt,
           });
         },
-        signal,
+        signal: runSignal,
       },
     );
 
-    throwIfAborted(signal);
+    throwIfAborted(runSignal);
 
     const productSummaries = buildProductSummaries(inventoryItems);
     let detailItems = [];
@@ -168,10 +187,10 @@ async function runCheonyu(
             elapsedMs: performance.now() - startedAt,
           });
         },
-        signal,
+        runSignal,
       );
 
-      throwIfAborted(signal);
+      throwIfAborted(runSignal);
     }
 
     const elapsedMs = performance.now() - startedAt;
@@ -235,6 +254,8 @@ async function runCheonyu(
       elapsedText: summary.elapsedText,
     });
 
+    throwIfAborted(runSignal);
+
     return {
       summary,
       inventoryItems,
@@ -246,7 +267,10 @@ async function runCheonyu(
         "debug-cart.html": cartHtml,
       },
     };
+  } catch (error) {
+    throw blockGuard?.getError() || error;
   } finally {
+    blockGuard?.dispose();
     releaseAbort();
     if (context) await context.close().catch(() => null);
     if (browser) await browser.close().catch(() => null);

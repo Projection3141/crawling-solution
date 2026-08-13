@@ -2,6 +2,8 @@
 
 const ACCOUNT_STORAGE_KEY = "mall-collector-accounts-v1";
 const SELECTED_ACCOUNT_STORAGE_KEY = "mall-collector-selected-account-id";
+const CHEONYU_PROXY_SLOT_STORAGE_KEY = "mall-collector-cheonyu-proxy-slot";
+const CHEONYU_USER_AGENT_STORAGE_KEY = "mall-collector-cheonyu-user-agent";
 
 const CART_ACCOUNT_STORAGE_KEYS = Object.freeze({
   cheonyu: "mall-collector-cart-account-cheonyu",
@@ -33,6 +35,10 @@ const elements = {
   repeatValue: document.querySelector("#repeatValue"),
   repeatUnit: document.querySelector("#repeatUnit"),
   browserMode: document.querySelector("#browserMode"),
+  cheonyuProxySlot: document.querySelector("#cheonyuProxySlot"),
+  cheonyuProxyHelp: document.querySelector("#cheonyuProxyHelp"),
+  cheonyuUserAgent: document.querySelector("#cheonyuUserAgent"),
+  cheonyuUserAgentHelp: document.querySelector("#cheonyuUserAgentHelp"),
   outputDirectory: document.querySelector("#outputDirectory"),
   chooseOutputButton: document.querySelector("#chooseOutputButton"),
   openSettingsButton: document.querySelector("#openSettingsButton"),
@@ -60,6 +66,8 @@ const elements = {
 
   cartCheonyuAccountSelect:
     document.querySelector("#cartCheonyuAccountSelect"),
+  cartCheonyuProxySlot:
+    document.querySelector("#cartCheonyuProxySlot"),
   cartCcdomeAccountSelect:
     document.querySelector("#cartCcdomeAccountSelect"),
   cartUploadButton:
@@ -151,6 +159,82 @@ function maskPassword(password) {
   if (text.length <= 2) return "*".repeat(text.length);
 
   return `${text.slice(0, 1)}${"*".repeat(Math.max(text.length - 2, 4))}${text.slice(-1)}`;
+}
+
+/** 비밀정보 없이 .env에 구성된 천유 프록시 슬롯만 화면에 표시한다. */
+function renderCheonyuProxySlots() {
+  const proxyDefaults = state.defaults?.proxyDefaults?.cheonyu || {};
+  const configuredSlots = Array.isArray(proxyDefaults.configuredSlots)
+    ? proxyDefaults.configuredSlots
+    : [];
+  const defaultSlot = Number(proxyDefaults.defaultSlot) || 0;
+  const selects = [
+    elements.cheonyuProxySlot,
+    elements.cartCheonyuProxySlot,
+  ].filter(Boolean);
+
+  if (configuredSlots.length < 1) {
+    for (const select of selects) {
+      select.replaceChildren();
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "설정된 프록시 없음";
+      select.append(option);
+      select.disabled = true;
+    }
+
+    localStorage.removeItem(CHEONYU_PROXY_SLOT_STORAGE_KEY);
+    elements.cheonyuProxyHelp.textContent =
+      ".env에 프록시를 등록하면 천유 수집에만 적용됩니다.";
+    return;
+  }
+
+  const savedSlot = Number(
+    localStorage.getItem(CHEONYU_PROXY_SLOT_STORAGE_KEY),
+  );
+  const selectedValue = configuredSlots.includes(savedSlot)
+    ? String(savedSlot)
+    : "";
+
+  for (const select of selects) {
+    select.replaceChildren();
+
+    const defaultOption = document.createElement("option");
+    defaultOption.value = "";
+    defaultOption.textContent = `.env 기본 슬롯 (${defaultSlot})`;
+    select.append(defaultOption);
+
+    for (const slot of configuredSlots) {
+      const option = document.createElement("option");
+      option.value = String(slot);
+      option.textContent = `프록시 슬롯 ${slot}`;
+      select.append(option);
+    }
+
+    select.value = selectedValue;
+    select.disabled = false;
+  }
+
+  elements.cheonyuProxyHelp.textContent =
+    "선택한 슬롯은 작업이 끝날 때까지 고정되며 자동으로 변경되지 않습니다.";
+}
+
+/** 수집과 장바구니의 천유 프록시 슬롯 선택을 동일하게 유지한다. */
+function syncCheonyuProxySlot(source) {
+  const value = String(source?.value || "");
+
+  for (const select of [
+    elements.cheonyuProxySlot,
+    elements.cartCheonyuProxySlot,
+  ]) {
+    if (select && !select.disabled) select.value = value;
+  }
+
+  if (value) {
+    localStorage.setItem(CHEONYU_PROXY_SLOT_STORAGE_KEY, value);
+  } else {
+    localStorage.removeItem(CHEONYU_PROXY_SLOT_STORAGE_KEY);
+  }
 }
 
 /** 사이트별 장바구니 계정 선택 목록을 갱신한다. */
@@ -502,6 +586,15 @@ function buildPayload() {
   setNumberIfPresent(payload, "detailMaxProducts", elements.detailMaxProducts);
   setNumberIfPresent(payload, "detailRequestDelayMs", elements.detailRequestDelayMs);
 
+  if (elements.cheonyuProxySlot?.value) {
+    payload.cheonyuProxySlot = Number(elements.cheonyuProxySlot.value);
+  }
+
+  const cheonyuUserAgent = elements.cheonyuUserAgent?.value.trim();
+  if (cheonyuUserAgent) {
+    payload.cheonyuUserAgent = cheonyuUserAgent;
+  }
+
   return payload;
 }
 
@@ -551,12 +644,17 @@ function updateEnvHint() {
       : "환경 계정 미설정";
 
   const localAccountText = `등록 계정 ${state.accounts.length}개`;
+  const configuredProxyCount =
+    state.defaults.proxyDefaults?.cheonyu?.configuredSlots?.length || 0;
+  const proxyText = configuredProxyCount > 0
+    ? `천유 프록시 ${configuredProxyCount}개`
+    : "천유 프록시 미설정";
 
   elements.envHint.textContent =
     `${loadedEnvText} · ` +
     `기본 ${state.defaults.envDefaults.mall} · ` +
     `PAGE_END ${state.defaults.envDefaults.pageEnd} · ` +
-    `${envAccountText} · ` +
+    `${envAccountText} · ${proxyText} · ` +
     localAccountText;
 }
 
@@ -900,7 +998,10 @@ function createRunCard(run) {
       : "일반 수집";
   title.textContent =
     `${mallLabel} · ${modeLabel} · ` +
-    `${run.request?.accountName || ".env 계정"}`;
+    `${run.request?.accountName || ".env 계정"}` +
+    (run.request?.proxyEnabled
+      ? ` · 프록시 슬롯 ${run.request.cheonyuProxySlot}`
+      : "");
 
   titleWrap.append(kicker, title);
 
@@ -1149,6 +1250,10 @@ async function loadDefaults() {
   elements.appBadge.textContent = `로컬 앱 v${defaults.app.version}`;
   elements.appBadge.classList.add("connected");
 
+  elements.cheonyuUserAgent.value =
+    localStorage.getItem(CHEONYU_USER_AGENT_STORAGE_KEY) || "";
+
+  renderCheonyuProxySlots();
   updateEnvHint();
   updateMallHelp();
   updateAccountHelp();
@@ -1283,6 +1388,9 @@ function buildCartBatchPayload() {
       accountPw: cheonyuAccount.password,
       accountName: cheonyuAccount.name,
       localCredentialId: cheonyuAccount.id,
+      cheonyuProxySlot: elements.cartCheonyuProxySlot?.value
+        ? Number(elements.cartCheonyuProxySlot.value)
+        : undefined,
     };
   }
 
@@ -1302,6 +1410,7 @@ function buildCartBatchPayload() {
   return {
     accounts,
     showBrowser: elements.browserMode.value === "show",
+    cheonyuUserAgent: elements.cheonyuUserAgent?.value.trim() || undefined,
   };
 }
 
@@ -1425,6 +1534,22 @@ elements.cancelAccountManagerButton.addEventListener("click", closeAccountManage
 elements.registerAccountButton.addEventListener("click", registerAccount);
 elements.collectionMode.addEventListener("change", updateCollectionModeGuide);
 elements.runMode.addEventListener("change", updateRunModeGuide);
+elements.cheonyuProxySlot.addEventListener("change", (event) => {
+  syncCheonyuProxySlot(event.currentTarget);
+});
+elements.cartCheonyuProxySlot.addEventListener("change", (event) => {
+  syncCheonyuProxySlot(event.currentTarget);
+});
+elements.cheonyuUserAgent.addEventListener("change", (event) => {
+  const value = event.currentTarget.value.trim();
+  event.currentTarget.value = value;
+
+  if (value) {
+    localStorage.setItem(CHEONYU_USER_AGENT_STORAGE_KEY, value);
+  } else {
+    localStorage.removeItem(CHEONYU_USER_AGENT_STORAGE_KEY);
+  }
+});
 elements.chooseOutputButton.addEventListener("click", chooseOutputDirectory);
 elements.openSettingsButton.addEventListener("click", openSettingsDirectory);
 elements.openResultDirectoryButton.addEventListener(

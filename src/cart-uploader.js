@@ -10,6 +10,7 @@ const {
 const {
   throwIfAborted,
 } = require("./utils/common");
+const { installHttpBlockGuard } = require("./utils/site-safety");
 const {
   parseCartHtml,
   readCartHtml,
@@ -34,23 +35,32 @@ async function createCartBrowser(config, browserType) {
   const browser = await browserType.launch({
     headless: config.headless,
   });
-  const context = await browser.newContext({
-    viewport: config.viewport,
-    userAgent: config.userAgent,
-  });
+  let context = null;
 
-  await installLightweightRouting(context, {
-    showBrowser: config.showBrowser,
-  });
+  try {
+    context = await browser.newContext({
+      viewport: config.viewport,
+      userAgent: config.userAgent,
+      ...(config.proxy ? { proxy: config.proxy } : {}),
+    });
 
-  const page = await context.newPage();
-  installDialogAutoAccept(page);
+    await installLightweightRouting(context, {
+      showBrowser: config.showBrowser,
+    });
 
-  return {
-    browser,
-    context,
-    page,
-  };
+    const page = await context.newPage();
+    installDialogAutoAccept(page);
+
+    return {
+      browser,
+      context,
+      page,
+    };
+  } catch (error) {
+    if (context) await context.close().catch(() => null);
+    await browser.close().catch(() => null);
+    throw error;
+  }
 }
 
 /** 천유 상품 여러 개를 한 로그인 세션에서 처리한다. */
@@ -63,22 +73,37 @@ async function runCheonyuCartUpload(
     signal,
   } = {},
 ) {
+  const blockController = new AbortController();
+  const runSignal = signal
+    ? AbortSignal.any([signal, blockController.signal])
+    : blockController.signal;
   let browser = null;
   let context = null;
+  let blockGuard = null;
 
   try {
-    throwIfAborted(signal);
+    throwIfAborted(runSignal);
 
     const created = await createCartBrowser(config, browserType);
     browser = created.browser;
     context = created.context;
     const page = created.page;
 
+    blockGuard = installHttpBlockGuard(context, {
+      hostname: new URL(config.baseUrl).hostname,
+      label: "천유",
+      onBlocked: () => {
+        blockController.abort();
+        return browser.close();
+      },
+    });
+
     onProgress({
       stage: "cart-login",
       message: "천유닷컴에 로그인하고 있습니다.",
     });
-    await loginCheonyu(page, config);
+    await loginCheonyu(page, config, runSignal);
+    throwIfAborted(runSignal);
 
     const addResult = await addCheonyuProductsToCart(
       page,
@@ -88,10 +113,11 @@ async function runCheonyuCartUpload(
       {
         clearBefore: false,
         onProgress,
-        signal,
+        signal: runSignal,
       },
     );
     const cartHtml = await readCartHtml(page, config);
+    throwIfAborted(runSignal);
     const cartItems = parseCartHtml(cartHtml, config);
     const requestedIds = new Set(
       items.map((item) => String(item.productId)),
@@ -104,6 +130,8 @@ async function runCheonyuCartUpload(
       throw new Error("천유 장바구니에서 요청 상품을 확인하지 못했습니다.");
     }
 
+    throwIfAborted(runSignal);
+
     return {
       success: true,
       site: "cheonyu",
@@ -111,7 +139,10 @@ async function runCheonyuCartUpload(
       addResult,
       cartItems: matchingCartItems,
     };
+  } catch (error) {
+    throw blockGuard?.getError() || error;
   } finally {
+    blockGuard?.dispose();
     if (context) await context.close().catch(() => null);
     if (browser) await browser.close().catch(() => null);
   }

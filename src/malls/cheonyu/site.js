@@ -79,6 +79,10 @@ function parseLoginState(html) {
   const $ = cheerio.load(html);
   const bodyText = normalizeWhitespace($("body").text());
 
+  if (!bodyText) {
+    console.warn("[LOGIN] 천유닷컴 로그인 상태 판독 실패: body 비어 있음");
+  }
+  
   return {
     loggedIn: bodyText.includes("로그아웃"),
     bodyText: bodyText.slice(0, 500),
@@ -150,12 +154,7 @@ async function loginCheonyu(page, config, signal) {
   );
 
   await fillFirstAvailable(page, selectors.idInputs, config.accountId, "ID");
-  await fillFirstAvailable(
-    page,
-    selectors.passwordInputs,
-    config.accountPw,
-    "PW",
-  );
+  await fillFirstAvailable(page, selectors.passwordInputs, config.accountPw, "PW");
 
   let submitted = false;
 
@@ -177,10 +176,10 @@ async function loginCheonyu(page, config, signal) {
     throw new Error("천유닷컴 로그인 버튼을 찾지 못했습니다.");
   }
 
-  await sleep(1000);
   await gotoCheonyuSafely(
     page,
-    config.baseUrl,
+    // config.baseUrl,
+    "https://cheonyu.com/?countryMode=Korean",
     config,
     "로그인 확인 페이지",
     signal,

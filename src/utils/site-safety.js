@@ -17,6 +17,13 @@ const DEFAULT_RETRYABLE_HTTP_STATUS_CODES = Object.freeze([
   524,
 ]);
 
+const DEFAULT_BLOCKING_HTTP_STATUS_CODES = Object.freeze([403, 429]);
+const DEFAULT_BLOCKING_RESOURCE_TYPES = Object.freeze([
+  "document",
+  "xhr",
+  "fetch",
+]);
+
 const DEFAULT_RETRYABLE_ERROR_PATTERNS = Object.freeze([
   /timeout/i,
   /timed out/i,
@@ -120,6 +127,89 @@ function createHttpStatusError(response, label = "HTTP 요청", url = "") {
       },
     },
   );
+}
+
+/** 같은 사이트의 차단 응답을 Context 전체에서 한 번만 감지한다. */
+function installHttpBlockGuard(
+  context,
+  {
+    hostname = "",
+    label = "사이트",
+    statusCodes = DEFAULT_BLOCKING_HTTP_STATUS_CODES,
+    resourceTypes = DEFAULT_BLOCKING_RESOURCE_TYPES,
+    onBlocked,
+  } = {},
+) {
+  const expectedHostname = String(hostname || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^www\./, "");
+  const blockedStatuses = new Set(statusCodes.map(Number));
+  const watchedResourceTypes = new Set(resourceTypes.map(String));
+  let blockedError = null;
+
+  const handleResponse = (response) => {
+    if (blockedError) return;
+
+    const statusCode = Number(response?.status?.() || 0);
+    const resourceType = String(
+      response?.request?.()?.resourceType?.() || "",
+    );
+
+    if (!blockedStatuses.has(statusCode)) return;
+    if (!watchedResourceTypes.has(resourceType)) return;
+
+    let responseHostname = "";
+
+    try {
+      responseHostname = new URL(response.url()).hostname.toLowerCase();
+    } catch {
+      return;
+    }
+
+    if (
+      expectedHostname &&
+      responseHostname !== expectedHostname &&
+      !responseHostname.endsWith(`.${expectedHostname}`)
+    ) {
+      return;
+    }
+
+    blockedError = markSiteError(
+      new Error(
+        `${label}가 요청을 거부하거나 제한했습니다(HTTP ${statusCode}). ` +
+        "IP를 자동 변경하지 않고 작업을 중단합니다.",
+      ),
+      {
+        retryable: false,
+        code: "SITE_ACCESS_BLOCKED",
+        statusCode,
+        stage: `${label}-access-guard`,
+        details: {
+          statusCode,
+          resourceType,
+          url: response.url(),
+        },
+      },
+    );
+
+    try {
+      Promise.resolve(onBlocked?.(blockedError)).catch(() => null);
+    } catch {
+      /** 차단 오류가 원래 종료 원인으로 유지되도록 callback 오류는 무시한다. */
+    }
+  };
+
+  context.on("response", handleResponse);
+
+  return {
+    getError() {
+      return blockedError;
+    },
+    dispose() {
+      context.off("response", handleResponse);
+    },
+  };
 }
 
 /** 네트워크·타임아웃·일시 서버 오류인지 판정한다. */
@@ -446,6 +536,7 @@ module.exports = {
   createNonRetryableError,
   getSafetyNumber,
   gotoWithSiteRetry,
+  installHttpBlockGuard,
   isAbortError,
   isRetryableSiteError,
   markSiteError,

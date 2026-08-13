@@ -23,12 +23,15 @@ async function installLightweightRouting(
     blockedUrlFragments = DEFAULT_BLOCKED_URL_FRAGMENTS,
   } = {},
 ) {
+  // 차단할 리소스 유형을 설정한다.
+  // 브라우저를 표시할 때는 이미지·폰트·CSS를 유지하고 미디어만 차단한다.
   const blockedTypes = new Set(
     showBrowser
       ? ["media"]
       : ["image", "font", "media", "stylesheet"],
   );
 
+  // 모든 요청을 가로채어 차단 규칙을 적용한다.
   await context.route("**/*", async (route) => {
     const request = route.request();
     const type = request.resourceType();
