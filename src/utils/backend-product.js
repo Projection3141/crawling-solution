@@ -402,8 +402,23 @@ function normalizeSpecRows(rows = []) {
   return result;
 }
 
+function createCheonyuSpecs(detailItem = {}) {
+  const spec = {
+    material: normalizeText(detailItem.material) || null,
+    packagingSize: normalizeText(detailItem.packageSize) || null,
+    weight: normalizeText(detailItem.weight) || null,
+    countryofOrigin: normalizeText(detailItem.origin) || null,
+  };
+
+  return Object.values(spec).some(Boolean) ? [spec] : [];
+}
+
 /** 상세 수집에서 확보한 모든 명세를 백엔드 specs 배열로 변환한다. */
 function createSpecs(detailItem = {}) {
+  if (detailItem.sourceMall === "cheonyu") {
+    return createCheonyuSpecs(detailItem);
+  }
+
   if (Array.isArray(detailItem?.specRows)) {
     const specRows = normalizeSpecRows(detailItem.specRows);
 
@@ -491,6 +506,7 @@ function createBackendOptions(
 
     optionMap.set(internalKey, {
       id: optionId,
+      barcode: normalizeText(row?.barcode) || null,
 
       /** 기존 백엔드 name 필드는 일본어 옵션명을 사용한다. */
       name: nameJa,
@@ -699,6 +715,8 @@ if (!isDetail) {
 
     return {
       id: productId,
+      barcode: normalizeText(detailItem?.barcode) || null,
+      hsCode: null,
       sku: "",
       slug: "",
       type,

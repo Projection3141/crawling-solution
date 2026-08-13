@@ -87,7 +87,12 @@ function parseCartHtml(html, config) {
     const productNoText = normalizeProductName(
       item.find(selectors.productNumberText).first().text(),
     );
-    const productNoMatch = productNoText.match(/상품번호\[(\d+)\]/);
+    // const productNoMatch = productNoText.match(/상품번호\[(\d+)\]/);
+    const productNoMatch = productNoText.match(/상품번호\s*\[\s*(\d+)\s*\]/);
+
+    const barcodeMatch = productNoText.match(/상품번호\s*\[\s*\d+\s*\]\s*(\d{13})(?!\d)/);
+
+    const barcode = barcodeMatch?.[1] || null;
 
     if (!productId && productNoMatch) {
       productId = productNoMatch[1];
@@ -138,6 +143,7 @@ function parseCartHtml(html, config) {
       cartCheckId,
       inPIDX,
       productId,
+      barcode,
       productUrl,
       productName,
       normalizedName: productName,

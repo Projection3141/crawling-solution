@@ -37,6 +37,7 @@ const CSV_HEADERS = {
     "brandHint",
     "categoryHint",
     "optionText",
+    "barcode",
     "hasOption",
     "requestedQty",
     "maxStock",

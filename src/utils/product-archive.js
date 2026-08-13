@@ -12,6 +12,8 @@ let archiveQueue = Promise.resolve();
 
 const PRODUCT_FIELDS = [
   "id",
+  "barcode",
+  "hsCode",
   "sku",
   "slug",
   "type",
@@ -50,6 +52,7 @@ const PRODUCT_FIELDS = [
 
 const OPTION_FIELDS = [
   "id",
+  "barcode",
   "name",
   "nameKo",
   "nameJa",
@@ -75,6 +78,7 @@ const GENERAL_FIELDS = new Set([
 ]);
 
 const DETAIL_FIELDS = new Set([
+  "barcode",
   "nameKo",
   "nameJa",
   "nameEn",
@@ -156,6 +160,8 @@ function normalizeImageUrls(value) {
 function createEmptyProduct(productId) {
   return {
     id: productId,
+    barcode: null,
+    hsCode: null,
     sku: "",
     slug: "",
     type: "SINGLE",
@@ -197,6 +203,7 @@ function createEmptyProduct(productId) {
 function createEmptyOption(optionId) {
   return {
     id: optionId,
+    barcode: null,
     name: "",
     nameKo: "",
     nameJa: "",
@@ -497,7 +504,7 @@ function mergeOption(existingOption, incomingOption, stats, source) {
       normalizeText(result.nameKo) !== incomingNameKo;
 
     if (nameChanged) {
-      for (const field of ["nameKo", "nameJa", "nameEn"] ) {
+      for (const field of ["nameKo", "nameJa", "nameEn"]) {
         changed = setChangedField(
           result,
           field,
@@ -540,26 +547,32 @@ function mergeOption(existingOption, incomingOption, stats, source) {
   } else {
     const allowedFields = source === "general"
       ? [
-          "name",
-          "nameKo",
-          "nameJa",
-          "nameEn",
-          "additionalPrice",
-          "stockQuantity",
-          "status",
-        ]
+        "barcode",
+        "name",
+        "nameKo",
+        "nameJa",
+        "nameEn",
+        "additionalPrice",
+        "stockQuantity",
+        "status",
+      ]
       : [
-          "name",
-          "nameKo",
-          "nameJa",
-          "nameEn",
-          "additionalPrice",
-        ];
+        "name",
+        "nameKo",
+        "nameJa",
+        "nameEn",
+        "additionalPrice",
+        "barcode",
+      ];
 
     for (const field of allowedFields) {
       const value = incoming[field];
 
       if (["name", "nameKo", "nameJa", "nameEn", "status"].includes(field) && !hasText(value)) {
+        continue;
+      }
+
+      if (field === "barcode" && !hasText(value)) {
         continue;
       }
 

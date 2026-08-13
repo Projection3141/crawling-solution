@@ -14,7 +14,7 @@ const MALLS = Object.freeze({
     baseUrl: "https://www.cheonyu.com",
     defaultCategory: "-1",
     categoryLabel: "카테고리 IDX",
-    categoryPlaceholder: "-1 또는 천유 상품 목록 URL",
+    categoryPlaceholder: "-1(전체) 또는 천유 상품 목록 URL",
     defaultPageSize: 150,
   },
 
@@ -24,7 +24,7 @@ const MALLS = Object.freeze({
     baseUrl: "https://www.ccdome.co.kr",
     defaultCategory: "017",
     categoryLabel: "카테고리 코드",
-    categoryPlaceholder: "017 또는 과자생각 상품 목록 URL",
+    categoryPlaceholder: "017(전체) 또는 과자생각 상품 목록 URL",
     defaultPageSize: 40,
   },
 });

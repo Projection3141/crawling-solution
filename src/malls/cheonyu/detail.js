@@ -50,8 +50,8 @@ const CHEONYU_DETAIL = {
       ".pic#viewContent img, " +
       "img[src*='image3.cheonyu.com'], " +
       "img[data-src*='image3.cheonyu.com']",
-    detailSpecTable: '#productView table.info',
-    detailSpecRows: '#productView table.info tbody tr',
+    detailSpecTable: '#productView #tab_01 .info[alt="제품상세정보"] > table',
+    detailSpecRows: '#productView #tab_01 .info[alt="제품상세정보"] > table tr',
   },
 };
 
@@ -519,7 +519,7 @@ async function collectCheonyuDetails(
   page,
   products,
   config,
-  onProgress = () => {},
+  onProgress = () => { },
   signal,
 ) {
   const targets = Array.from(

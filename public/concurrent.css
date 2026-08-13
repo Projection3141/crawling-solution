@@ -1,3 +1,5 @@
+/* UI에서 각 수집 작업 카드에 적용되는 스타일 */
+
 .run-list {
   display: grid;
   gap: 18px;
