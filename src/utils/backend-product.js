@@ -715,6 +715,10 @@ if (!isDetail) {
 
     return {
       id: productId,
+      inventoryObserved: inventoryRows.some(
+        (row) => typeof row?.hasOption === "boolean",
+      ),
+      inventoryUnavailable: productUnavailable,
       barcode: normalizeText(detailItem?.barcode) || null,
       hsCode: null,
       sku: "",

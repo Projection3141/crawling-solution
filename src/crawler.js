@@ -13,6 +13,9 @@ const {
   translateResultData,
 } = require("../translate/translate");
 const {
+  createConversionSnapshot,
+} = require("../translate/convert");
+const {
   createBackendProducts,
 } = require("./utils/backend-product");
 const {
@@ -879,13 +882,27 @@ async function runCollection(config, { runId, onProgress = () => { }, signal }) 
     lowStockThreshold: Number(config.lowStockThreshold) || 10,
   });
 
+  throwIfAborted(signal);
+
+  /**
+   * Use one exchange-rate/time snapshot for every product in this run.
+   * The archive applies it after merging, so yenPrice is always derived
+   * from the final originalPrice written to the result.
+   */
+  const conversion = await createConversionSnapshot({ signal });
+
+  throwIfAborted(signal);
+
   /**
    * 일반·상세·번역 결과를 productId와 optionId 기준으로 통합한다.
    * 현재 수집에서 비어 있는 필드는 기존 archive 값을 유지한다.
    */
   const archiveUpdate = await updateProductArchive(
     backendProducts,
-    { source: config.collectionMode },
+    {
+      source: config.collectionMode,
+      conversion,
+    },
   );
   const mergedBackendProducts = archiveUpdate.currentProducts;
 
@@ -909,6 +926,9 @@ async function runCollection(config, { runId, onProgress = () => { }, signal }) 
     archiveNewProductCount: archiveUpdate.stats.newProductCount,
     archiveUpdatedProductCount: archiveUpdate.stats.updatedProductCount,
     archiveChangedFieldCount: archiveUpdate.stats.changedFieldCount,
+    wonToYenRate: conversion.rate,
+    yenToWonRate: conversion.revRate,
+    convertTime: conversion.convertTime,
     outputPath: files.resultJson,
   });
 

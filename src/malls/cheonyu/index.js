@@ -122,6 +122,14 @@ async function runCheonyu(
     const targetProducts = Array.from(
       new Map(allTargets.map((item) => [String(item.productId), item])).values(),
     );
+    const bulkResults = pageResults
+      .map((item) => item.bulkResult)
+      .filter(Boolean);
+    const unavailableProductIds = Array.from(new Set(
+      bulkResults.flatMap(
+        (result) => result.unavailableProductIds || [],
+      ).map(String),
+    ));
 
     console.log("[CHEONYU] collectionMode:", config.collectionMode);
     console.log("[CHEONYU] allProducts:", allProducts.length);
@@ -141,6 +149,7 @@ async function runCheonyu(
       cartHtml,
       inventoryItems,
       clearAfterResult,
+      coverage,
     } = await probeCheonyuCartStock(
       page,
       context,
@@ -150,6 +159,7 @@ async function runCheonyu(
         probeQty: config.cartQty || 999,
         clearAfter: config.clearCartAfter,
         popupOptionRows: allPopupOptionRows,
+        unavailableProductIds,
         onProgress: (progress) => {
           onProgress({
             ...progress,
@@ -236,6 +246,7 @@ async function runCheonyu(
       productSummaryCount: productSummaries.length,
       inventoryRowCount: inventoryItems.length,
       popupOptionRowCount: allPopupOptionRows.length,
+      cartCoverage: coverage,
       soldOutProductCount,
       clearBeforeResult,
       clearAfterResult,

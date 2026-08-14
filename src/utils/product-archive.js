@@ -2,6 +2,9 @@
 
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const {
+  convertWonToYen,
+} = require("../../translate/convert");
 
 const ARCHIVE_PATH = path.resolve(
   __dirname,
@@ -24,6 +27,8 @@ const PRODUCT_FIELDS = [
   "subcategoryId",
   "brandId",
   "originalPrice",
+  "yenPrice",
+  "convertTime",
   "salePrice",
   "discountRate",
   "currency",
@@ -172,6 +177,8 @@ function createEmptyProduct(productId) {
     subcategoryId: null,
     brandId: "",
     originalPrice: null,
+    yenPrice: null,
+    convertTime: null,
     salePrice: null,
     discountRate: null,
     currency: "KRW",
@@ -608,7 +615,16 @@ function mergeOption(existingOption, incomingOption, stats, source) {
 }
 
 /** 상품 하나를 productId 기준으로 병합한다. */
-function mergeProduct(existingProduct, incomingProduct, stats, source) {
+function mergeProduct(
+  existingProduct,
+  incomingProduct,
+  stats,
+  source,
+  conversion,
+) {
+  const inventoryObserved = incomingProduct?.inventoryObserved === true;
+  const inventoryUnavailable =
+    incomingProduct?.inventoryUnavailable === true;
   const incoming = normalizeIncomingProduct(incomingProduct);
 
   if (!incoming) {
@@ -624,6 +640,25 @@ function mergeProduct(existingProduct, incomingProduct, stats, source) {
     : createEmptyProduct(incoming.id);
   let changed = false;
 
+  /**
+   * A detail-only first collection has no general archive price yet.
+   * Fill that empty value once so yenPrice uses the same originalPrice
+   * that is materialized in the result.
+   */
+  if (
+    source === "detail" &&
+    result.originalPrice === null &&
+    Number.isFinite(Number(incoming.originalPrice)) &&
+    Number(incoming.originalPrice) > 0
+  ) {
+    changed = setChangedField(
+      result,
+      "originalPrice",
+      Number(incoming.originalPrice),
+      stats,
+    ) || changed;
+  }
+
   if (source === "translation") {
     changed = mergeTranslationProductFields(
       result,
@@ -633,6 +668,15 @@ function mergeProduct(existingProduct, incomingProduct, stats, source) {
   } else {
     for (const field of PRODUCT_FIELDS) {
       if (["id", "options"].includes(field)) {
+        continue;
+      }
+
+      if (
+        source === "general" &&
+        !inventoryObserved &&
+        !inventoryUnavailable &&
+        ["type", "stockQuantity", "stockStatus", "saleStatus"].includes(field)
+      ) {
         continue;
       }
 
@@ -675,6 +719,7 @@ function mergeProduct(existingProduct, incomingProduct, stats, source) {
   /** 일반 수집에서 SINGLE로 확인된 상품만 옵션 배열을 비운다. */
   if (
     source === "general" &&
+    inventoryObserved &&
     incoming.type === "SINGLE" &&
     Object.keys(incomingOptions).length === 0
   ) {
@@ -702,6 +747,25 @@ function mergeProduct(existingProduct, incomingProduct, stats, source) {
   result.type = Object.keys(result.options).length > 0
     ? "OPTION"
     : normalizeText(result.type) || "SINGLE";
+
+  if (conversion) {
+    changed = setChangedField(
+      result,
+      "yenPrice",
+      convertWonToYen(
+        result.originalPrice,
+        conversion.rate,
+      ),
+      stats,
+    ) || changed;
+
+    changed = setChangedField(
+      result,
+      "convertTime",
+      conversion.convertTime,
+      stats,
+    ) || changed;
+  }
 
   if (isNew) {
     stats.newProductCount += 1;
@@ -806,8 +870,26 @@ function readProductArchive() {
  */
 function updateProductArchive(products, {
   source = "general",
+  conversion = null,
 } = {}) {
   return runWithArchiveLock(async () => {
+    if (conversion) {
+      if (!/^\d{10}$/.test(normalizeText(conversion.convertTime))) {
+        throw new TypeError(
+          `Invalid convertTime: ${conversion.convertTime}`,
+        );
+      }
+
+      if (
+        !Number.isFinite(Number(conversion.rate)) ||
+        Number(conversion.rate) <= 0
+      ) {
+        throw new TypeError(
+          `Invalid won-to-yen rate: ${conversion.rate}`,
+        );
+      }
+    }
+
     const archive = await readArchiveUnlocked();
     const stats = createStats(source);
     const currentProductIds = [];
@@ -829,6 +911,7 @@ function updateProductArchive(products, {
         product,
         stats,
         source,
+        conversion,
       );
 
       archive.products[productId] = merged.product;

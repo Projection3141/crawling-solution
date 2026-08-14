@@ -13,6 +13,9 @@ const {
   toSafeConfig,
 } = require("./config");
 const { runCollection } = require("./crawler");
+const {
+  createWonToYenRateScheduler,
+} = require("../translate/convert");
 const { formatMs, getErrorMessage } = require("./utils/common");
 const { isFile } = require("./utils/files");
 
@@ -360,6 +363,8 @@ async function requestHandler(request, response) {
 /** 로컬 public 서버를 시작한다. */
 function startServer() {
   const { host, port } = resolveServerConfig();
+  const wonToYenRateScheduler =
+    createWonToYenRateScheduler();
   const server = http.createServer((request, response) => {
     requestHandler(request, response).catch((error) => {
       console.error("[SERVER]", error);
@@ -374,6 +379,11 @@ function startServer() {
 
   server.listen(port, host, () => {
     console.log(`Mall Collector UI: http://${host}:${port}`);
+    wonToYenRateScheduler.start();
+  });
+
+  server.on("close", () => {
+    wonToYenRateScheduler.stop();
   });
 
   return server;

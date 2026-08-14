@@ -8,6 +8,7 @@ const TARGETS = [
   "public",
   "scripts",
   "src",
+  "translate",
   "forge.config.js",
 ];
 

@@ -35,6 +35,9 @@ const {
 } = require("../src/cart-uploader");
 const { runCollection } = require("../src/crawler");
 const {
+    createWonToYenRateScheduler,
+} = require("../translate/convert");
+const {
     createShippingScheduler,
 } = require("../src/shipping-scheduler");
 const { loadEnvironment } = require("./environment");
@@ -102,6 +105,7 @@ let closePromptOpen = false;
 let quitAfterRun = false;
 let allowImmediateQuit = false;
 let shippingScheduler = null;
+let wonToYenRateScheduler = null;
 
 /**
  * 여러 수집 작업을 동시에 실행하기 위한 상태 저장소.
@@ -983,6 +987,21 @@ function startCollection(input) {
         );
     }
 
+    const conflictingAccountRun = findActiveRunByAccountKey(accountKey);
+
+    if (conflictingAccountRun) {
+        const accountLabel = formatAccountLabel(
+            config.mall,
+            safeInput.accountName,
+            config.accountId,
+        );
+
+        throw new Error(
+            `${accountLabel} 계정으로 이미 수집 작업이 진행 중입니다. ` +
+            "같은 계정의 장바구니를 공유하므로 다른 프록시 슬롯에서도 동시에 실행할 수 없습니다.",
+        );
+    }
+
     const conflictingProxyRun = findActiveRunByProxySlotKey(proxySlotKey);
 
     if (conflictingProxyRun) {
@@ -1586,11 +1605,15 @@ async function bootstrap() {
             },
         });
 
+    wonToYenRateScheduler =
+        createWonToYenRateScheduler();
+
     registerRendererProtocol();
     registerIpcHandlers();
     createMainWindow();
 
     shippingScheduler.start();
+    wonToYenRateScheduler.start();
 }
 
 const isSquirrelStartup = require(
@@ -1644,7 +1667,8 @@ if (isSquirrelStartup) {
         });
 
         app.on("before-quit", () => {
-            shippingScheduler?.dispose();
+            shippingScheduler?.stop();
+            wonToYenRateScheduler?.stop();
         });
 
         app.on("window-all-closed", () => {
