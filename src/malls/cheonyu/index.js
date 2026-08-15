@@ -85,7 +85,17 @@ async function runCheonyu(
       stage: "login",
       message: "천유닷컴에 로그인하고 있습니다.",
     });
-    await loginCheonyu(page, config, runSignal);
+    const verifyLoginWhilePreparingCart =
+      config.collectionMode === "general" &&
+      Boolean(config.clearCartBefore);
+    const loginResult = await loginCheonyu(
+      page,
+      config,
+      runSignal,
+      {
+        verificationTarget: verifyLoginWhilePreparingCart ? "cart" : "list",
+      },
+    );
     throwIfAborted(runSignal);
 
     let clearBeforeResult = null;
@@ -95,7 +105,12 @@ async function runCheonyu(
         stage: "preparing",
         message: "기존 장바구니를 정리하고 있습니다.",
       });
-      clearBeforeResult = await clearCartAll(page, context, config);
+      clearBeforeResult = await clearCartAll(page, context, config, {
+        cachedCartHtml:
+          loginResult?.verificationTarget === "cart"
+            ? loginResult.html
+            : null,
+      });
       throwIfAborted(runSignal);
     }
 

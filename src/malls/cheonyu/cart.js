@@ -58,10 +58,20 @@ async function readCartHtml(page, config) {
 }
 
 /** 장바구니 HTML을 옵션 상세 재고 row로 변환한다. */
-function parseCartHtml(html, config) {
+function parseCartHtml(
+  html,
+  config,
+  {
+    requireTable = false,
+  } = {},
+) {
   const $ = cheerio.load(html);
   const selectors = CHEONYU_CART.selectors;
   const items = [];
+
+  if (requireTable && $(selectors.table).length < 1) {
+    throw new Error("천유 장바구니 table을 확인하지 못했습니다.");
+  }
 
   $(selectors.row).each((_, row) => {
     const item = $(row);
@@ -224,8 +234,21 @@ async function clearCartByCartIds(context, cartIds, config) {
 }
 
 /** 현재 천유 장바구니 전체 row를 찾아 삭제한다. */
-async function clearCartAll(page, context, config) {
-  const items = parseCartHtml(await readCartHtml(page, config), config);
+async function clearCartAll(
+  page,
+  context,
+  config,
+  {
+    cachedCartHtml = null,
+  } = {},
+) {
+  const cartHtml = typeof cachedCartHtml === "string"
+    ? cachedCartHtml
+    : await readCartHtml(page, config);
+
+  const items = parseCartHtml(cartHtml, config, {
+    requireTable: true,
+  });
   const cartIds = items
     .map((item) => item.cartCheckId || item.inPIDX)
     .filter(Boolean);

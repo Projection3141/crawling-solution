@@ -30,6 +30,7 @@ const CHEONYU_SITE = {
   urls: {
     login: "/member/login.html",
     list: "/product/list.html",
+    cart: "/order/cart.html",
   },
   selectors: {
     login: {
@@ -110,7 +111,7 @@ async function gotoCheonyuSafely(
 ) {
   const attempts =
     Number(maxAttempts) ||
-    getSafetyNumber(config, "navigationRetryCount", 8, 3, 20);
+    getSafetyNumber(config, "navigationRetryCount", 4, 2, 8);
   const hardResetEvery = getSafetyNumber(
     config,
     "navigationHardResetEvery",
@@ -145,7 +146,14 @@ async function gotoCheonyuSafely(
 }
 
 /** 공통 계정 설정으로 천유닷컴에 로그인한다. */
-async function loginCheonyu(page, config, signal) {
+async function loginCheonyu(
+  page,
+  config,
+  signal,
+  {
+    verificationTarget = "list",
+  } = {},
+) {
   const selectors = CHEONYU_SITE.selectors.login;
   const loginRequestTimeoutMs = Math.max(
     5000,
@@ -240,34 +248,75 @@ async function loginCheonyu(page, config, signal) {
     throw new Error("천유닷컴 로그인 버튼을 찾지 못했습니다.");
   }
 
+  const verifyOnCart = verificationTarget === "cart";
   const listSelectors = CHEONYU_SITE.selectors.list;
-  const firstListUrl = buildListUrl(1, config);
-  const loginOrListReadySelector = [
-    selectors.logoutLink,
-    listSelectors.productCount,
-    listSelectors.productCheck,
-    listSelectors.productLink,
-    ...selectors.passwordInputs,
-  ].join(", ");
+  const verificationUrl = verifyOnCart
+    ? new URL(CHEONYU_SITE.urls.cart, config.baseUrl).toString()
+    : buildListUrl(1, config);
+  const verificationReadySelector = verifyOnCart
+    ? [
+        "#cartTable",
+        'a[href*="/member/login"]',
+        ...selectors.passwordInputs,
+      ].join(", ")
+    : [
+        selectors.logoutLink,
+        listSelectors.productCount,
+        listSelectors.productCheck,
+        listSelectors.productLink,
+        ...selectors.passwordInputs,
+      ].join(", ");
 
-  console.log("[LOGIN] 메인 페이지를 건너뛰고 전체 상품 목록으로 이동");
+  console.log(
+    verifyOnCart
+      ? "[LOGIN] 장바구니 페이지에서 로그인 확인 및 정리 준비"
+      : "[LOGIN] 메인 페이지를 건너뛰고 전체 상품 목록으로 이동",
+  );
 
   await gotoCheonyuSafely(
     page,
-    firstListUrl,
+    verificationUrl,
     config,
-    "로그인 확인 및 상품 목록",
+    verifyOnCart ? "로그인 확인 및 장바구니" : "로그인 확인 및 상품 목록",
     signal,
     {
-      readySelector: loginOrListReadySelector,
+      readySelector: verificationReadySelector,
     },
   );
 
-  if (!parseLoginState(await page.content()).loggedIn) {
-    throw new Error("천유닷컴 로그인 성공 확인에 실패했습니다.");
+  let verificationHtml;
+
+  if (verifyOnCart) {
+    if ((await page.locator(selectors.logoutLink).count()) < 1) {
+      throw new Error("천유닷컴 로그인 성공 확인에 실패했습니다.");
+    }
+
+    /** 기존 장바구니 읽기와 같은 table 확인·렌더링 안정화를 보존한다. */
+    await page.waitForSelector("#cartTable", {
+      timeout: config.navigationTimeoutMs,
+    });
+    await sleep(1500);
+
+    if ((await page.locator(selectors.logoutLink).count()) < 1) {
+      throw new Error("천유닷컴 장바구니에서 로그인 상태가 해제되었습니다.");
+    }
+
+    verificationHtml = await page.content();
+  } else {
+    verificationHtml = await page.content();
+
+    if (!parseLoginState(verificationHtml).loggedIn) {
+      throw new Error("천유닷컴 로그인 성공 확인에 실패했습니다.");
+    }
   }
 
   console.log("[LOGIN] 천유닷컴 로그인 성공");
+
+  return {
+    verificationTarget: verifyOnCart ? "cart" : "list",
+    verificationUrl,
+    html: verificationHtml,
+  };
 }
 
 /** 공통 카테고리·페이지 설정으로 천유 상품 목록 URL을 생성한다. */
@@ -811,10 +860,33 @@ async function findCheonyuProductsByIds(
   return Array.from(foundMap.values());
 }
 
-/** 현재 목록 페이지에서 대상 상품의 수량과 체크 상태를 지정한다. */
-async function markProductsForBulkCart(page, targets, config) {
-  const selectors = CHEONYU_SITE.selectors.list;
-  const requests = targets.map((item) => {
+function createCheonyuBulkRequests(targets, config) {
+  const seenProductIds = new Set();
+
+  return targets.map((item) => {
+    const productId = String(item.productId || "").trim();
+
+    if (!productId) {
+      throw createNonRetryableError(
+        "천유 일괄담기 대상의 상품번호가 비어 있습니다.",
+        {
+          code: "CHEONYU_BULK_PRODUCT_ID_INVALID",
+          stage: "cheonyu-popup",
+        },
+      );
+    }
+
+    if (seenProductIds.has(productId)) {
+      throw createNonRetryableError(
+        `천유 일괄담기 대상 상품번호가 중복됐습니다: ${productId}`,
+        {
+          code: "CHEONYU_BULK_PRODUCT_ID_DUPLICATED",
+          stage: "cheonyu-popup",
+        },
+      );
+    }
+
+    seenProductIds.add(productId);
     const cartRequests = Array.isArray(item.cartRequests)
       ? item.cartRequests
       : [];
@@ -824,7 +896,7 @@ async function markProductsForBulkCart(page, targets, config) {
     });
 
     return {
-      productId: String(item.productId),
+      productId,
       quantity: Math.max(
         1,
         Math.trunc(
@@ -838,6 +910,12 @@ async function markProductsForBulkCart(page, targets, config) {
       ),
     };
   });
+}
+
+/** 현재 목록 페이지에서 대상 상품의 수량과 체크 상태를 지정한다. */
+async function markProductsForBulkCart(page, targets, config) {
+  const selectors = CHEONYU_SITE.selectors.list;
+  const requests = createCheonyuBulkRequests(targets, config);
 
   const result = await page.evaluate(
     ({ requests, productCheck, countInput }) => {
@@ -845,6 +923,12 @@ async function markProductsForBulkCart(page, targets, config) {
         requests.map((request) => [String(request.productId), request]),
       );
       const selected = [];
+      const blocked = [];
+
+      const dispatchControlEvents = (control) => {
+        control.dispatchEvent(new Event("input", { bubbles: true }));
+        control.dispatchEvent(new Event("change", { bubbles: true }));
+      };
 
       for (const check of document.querySelectorAll(productCheck)) {
         const productId = String(check.value || "");
@@ -852,27 +936,63 @@ async function markProductsForBulkCart(page, targets, config) {
         const item = check.closest("li");
 
         if (!request) {
-          check.checked = false;
+          if (check.checked) {
+            if (!check.disabled) check.click();
+
+            if (check.checked) {
+              check.checked = false;
+              dispatchControlEvents(check);
+            }
+          }
+
           continue;
         }
 
+        if (check.disabled) {
+          blocked.push({
+            productId,
+            checkboxDisabled: true,
+          });
+          continue;
+        }
+
+        /**
+         * 매 시도마다 false -> click으로 전환해 사이트의 click/change handler가
+         * 실제 제출 목록을 다시 만들게 한다.
+         */
+        if (check.checked) check.checked = false;
+        check.click();
+
+        /** click handler가 수량 input을 교체하거나 활성화할 수 있어 다시 찾는다. */
         const input = item?.querySelector(countInput);
 
-        if (!input) {
-          check.checked = false;
+        if (!input || input.disabled) {
+          blocked.push({
+            productId,
+            countInputMissing: !input,
+            countInputDisabled: Boolean(input?.disabled),
+          });
           continue;
         }
 
         input.value = String(request.quantity);
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-        input.dispatchEvent(new Event("change", { bubbles: true }));
-        check.checked = true;
-        selected.push({ productId, quantity: request.quantity });
+        dispatchControlEvents(input);
+
+        if (check.checked) {
+          selected.push({ productId, quantity: request.quantity });
+        } else {
+          blocked.push({
+            productId,
+            checkboxRejected: true,
+          });
+        }
       }
 
       return {
+        requested: requests.length,
         checked: selected.length,
         selected,
+        blocked,
       };
     },
     {
@@ -882,11 +1002,268 @@ async function markProductsForBulkCart(page, targets, config) {
     },
   );
 
-  if (result.checked < 1) {
-    throw new Error("천유 목록에서 체크된 상품이 없습니다.");
+  return result;
+}
+
+async function readCheonyuBulkSelectionState(page, requests) {
+  const selectors = CHEONYU_SITE.selectors.list;
+
+  return page.evaluate(
+    ({ requests, productCheck, countInput, bulkButton }) => {
+      const requestMap = new Map(
+        requests.map((request) => [
+          String(request.productId),
+          String(request.quantity),
+        ]),
+      );
+      const seenCounts = new Map();
+      const effectiveSelectedIds = [];
+      const missingProductIds = [];
+      const disabledProductIds = [];
+      const missingCountInputIds = [];
+      const disabledCountInputIds = [];
+      const uncheckedProductIds = [];
+      const quantityMismatchIds = [];
+      const unexpectedCheckedIds = [];
+
+      for (const check of document.querySelectorAll(productCheck)) {
+        const productId = String(check.value || "");
+
+        if (!requestMap.has(productId)) {
+          if (check.checked) {
+            unexpectedCheckedIds.push(productId);
+          }
+
+          continue;
+        }
+
+        seenCounts.set(productId, (seenCounts.get(productId) || 0) + 1);
+        const input = check.closest("li")?.querySelector(countInput);
+        let valid = true;
+
+        if (check.disabled) {
+          disabledProductIds.push(productId);
+          valid = false;
+        }
+
+        if (!input) {
+          missingCountInputIds.push(productId);
+          valid = false;
+        } else {
+          if (input.disabled) {
+            disabledCountInputIds.push(productId);
+            valid = false;
+          }
+
+          if (String(input.value || "") !== requestMap.get(productId)) {
+            quantityMismatchIds.push(productId);
+            valid = false;
+          }
+        }
+
+        if (!check.checked) {
+          uncheckedProductIds.push(productId);
+          valid = false;
+        }
+
+        if (valid) effectiveSelectedIds.push(productId);
+      }
+
+      for (const productId of requestMap.keys()) {
+        if (!seenCounts.has(productId)) missingProductIds.push(productId);
+      }
+
+      const duplicateProductIds = Array.from(seenCounts.entries())
+        .filter(([, count]) => count !== 1)
+        .map(([productId]) => productId);
+      const isVisible = (element) => {
+        if (!element) return false;
+
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity || "1") > 0 &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      const button = Array.from(document.querySelectorAll(bulkButton)).find(
+        isVisible,
+      );
+      const bulkButtonReady = Boolean(
+        button &&
+        !button.disabled &&
+        !button.hasAttribute("disabled") &&
+        button.getAttribute("aria-disabled") !== "true",
+      );
+      const uniqueEffectiveIds = Array.from(new Set(effectiveSelectedIds));
+      const complete =
+        requestMap.size > 0 &&
+        uniqueEffectiveIds.length === requestMap.size &&
+        missingProductIds.length === 0 &&
+        duplicateProductIds.length === 0 &&
+        disabledProductIds.length === 0 &&
+        missingCountInputIds.length === 0 &&
+        disabledCountInputIds.length === 0 &&
+        uncheckedProductIds.length === 0 &&
+        quantityMismatchIds.length === 0 &&
+        unexpectedCheckedIds.length === 0 &&
+        bulkButtonReady;
+
+      return {
+        complete,
+        requestedCount: requestMap.size,
+        effectiveSelectedCount: uniqueEffectiveIds.length,
+        effectiveSelectedIds: uniqueEffectiveIds.sort(),
+        missingProductIds,
+        duplicateProductIds,
+        disabledProductIds,
+        missingCountInputIds,
+        disabledCountInputIds,
+        uncheckedProductIds,
+        quantityMismatchIds,
+        unexpectedCheckedIds,
+        bulkButtonReady,
+      };
+    },
+    {
+      requests,
+      productCheck: selectors.productCheck,
+      countInput: selectors.countInput,
+      bulkButton: selectors.bulkButton,
+    },
+  );
+}
+
+/** 모든 대상의 실제 제출 가능 상태가 일정 시간 유지된 뒤에만 진행한다. */
+async function waitForStableCheonyuBulkSelection(
+  page,
+  pageNo,
+  targets,
+  config,
+  signal,
+) {
+  const requests = createCheonyuBulkRequests(targets, config);
+  const stableMs = getSafetyNumber(
+    config,
+    "bulkSelectionStableMs",
+    1500,
+    500,
+    5000,
+  );
+  const pollMs = getSafetyNumber(
+    config,
+    "bulkSelectionPollMs",
+    100,
+    50,
+    500,
+  );
+  const configuredTimeout = getSafetyNumber(
+    config,
+    "bulkSelectionTimeoutMs",
+    12000,
+    3000,
+    30000,
+  );
+  const timeoutMs = Math.max(
+    stableMs + pollMs,
+    Math.min(
+      Number(config.navigationTimeoutMs) || configuredTimeout,
+      configuredTimeout,
+    ),
+  );
+  const deadline = Date.now() + timeoutMs;
+  let stableSince = 0;
+  let stableSignature = "";
+  let lastMarkAt = 0;
+  let lastState = null;
+  let reapplyWhenControlsReady = false;
+
+  await markProductsForBulkCart(page, targets, config);
+  lastMarkAt = Date.now();
+
+  while (Date.now() < deadline) {
+    throwIfAborted(signal);
+    lastState = await readCheonyuBulkSelectionState(page, requests);
+
+    if (lastState.complete) {
+      if (reapplyWhenControlsReady) {
+        await markProductsForBulkCart(page, targets, config);
+        lastMarkAt = Date.now();
+        reapplyWhenControlsReady = false;
+        await page.waitForTimeout(pollMs);
+        continue;
+      }
+
+      const signature = lastState.effectiveSelectedIds.join("|");
+
+      if (stableSignature !== signature) {
+        stableSignature = signature;
+        stableSince = Date.now();
+      }
+
+      if (Date.now() - stableSince >= stableMs) {
+        const finalState = await readCheonyuBulkSelectionState(page, requests);
+
+        if (finalState.complete) {
+          console.log(
+            `[BULK ${pageNo}] 상품 체크 안정화 확인 ` +
+            `${finalState.effectiveSelectedCount}/${finalState.requestedCount} ` +
+            `(${stableMs}ms 유지)`,
+          );
+
+          return finalState;
+        }
+
+        lastState = finalState;
+        stableSince = 0;
+        stableSignature = "";
+      }
+    } else {
+      stableSince = 0;
+      stableSignature = "";
+      const hasControlBlockers =
+        lastState.disabledProductIds.length > 0 ||
+        lastState.missingCountInputIds.length > 0 ||
+        lastState.disabledCountInputIds.length > 0;
+
+      if (hasControlBlockers) reapplyWhenControlsReady = true;
+
+      const canReapply =
+        lastState.uncheckedProductIds.length > 0 ||
+        lastState.quantityMismatchIds.length > 0 ||
+        lastState.unexpectedCheckedIds.length > 0;
+
+      if (
+        !hasControlBlockers &&
+        canReapply &&
+        Date.now() - lastMarkAt >= Math.max(750, pollMs * 4)
+      ) {
+        await markProductsForBulkCart(page, targets, config);
+        lastMarkAt = Date.now();
+
+        if (!hasControlBlockers) reapplyWhenControlsReady = false;
+      }
+    }
+
+    await page.waitForTimeout(pollMs);
   }
 
-  return result;
+  throw markSiteError(
+    new Error(
+      `천유 일괄담기 상품 체크가 안정되지 않았습니다: ` +
+      `${lastState?.effectiveSelectedCount || 0}/${requests.length}`,
+    ),
+    {
+      retryable: true,
+      code: "CHEONYU_BULK_SELECTION_NOT_STABLE",
+      stage: "cheonyu-popup",
+      details: lastState,
+    },
+  );
 }
 
 function splitCheonyuProductBatches(products, batchSize) {
@@ -992,7 +1369,6 @@ async function addCheonyuProductBatchesToCart(
       `${batch.length} products`,
     );
 
-    await markProductsForBulkCart(page, batch, config);
     let result;
 
     try {
@@ -1053,7 +1429,7 @@ async function addCheonyuProductBatchesToCart(
     });
 
     if (pendingBatches.length > 0) {
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(100);
     }
   }
 
@@ -1642,7 +2018,7 @@ async function waitForReadyCheonyuOptionPopup(
   );
 
   /** DOM이 생성된 직후 계산 스크립트가 끝날 짧은 안정화 시간을 둔다. */
-  await page.waitForTimeout(700);
+  await page.waitForTimeout(200);
 }
 
 /**
@@ -1678,12 +2054,6 @@ async function resetCheonyuBulkListPage(
       maxAttempts: 6,
     },
   );
-
-  if (requestedProducts.length > 0) {
-    await markProductsForBulkCart(page, requestedProducts, config);
-  }
-
-  await sleep(1500);
 }
 
 /** 일괄담기 버튼을 누르고 요청된 옵션만 안전하게 장바구니에 담는다. */
@@ -1698,9 +2068,9 @@ async function clickBulkCartAndConfirm(
   const maxAttempts = getSafetyNumber(
     config,
     "optionPopupMaxAttempts",
-    15,
-    3,
-    30,
+    5,
+    2,
+    10,
   );
   const hardResetEvery = getSafetyNumber(
     config,
@@ -1710,6 +2080,7 @@ async function clickBulkCartAndConfirm(
     10,
   );
   let lastPopupState = null;
+  let lastSelectionState = null;
   let lastError = null;
 
   try {
@@ -1758,7 +2129,9 @@ async function clickBulkCartAndConfirm(
           }
         }
 
-        const bulkButton = page.locator(selectors.bulkButton).first();
+        const bulkButton = page
+          .locator(`${selectors.bulkButton}:visible`)
+          .first();
 
         if ((await bulkButton.count()) < 1) {
           throw markSiteError(
@@ -1771,71 +2144,49 @@ async function clickBulkCartAndConfirm(
           );
         }
 
-        await page.waitForFunction(
-          ({ productCheck, countInput, requests }) => {
-            const requestMap = new Map(
-              requests.map((request) => [
-                String(request.productId),
-                String(request.quantity),
-              ]),
-            );
-            let matched = 0;
-
-            for (const check of document.querySelectorAll(productCheck)) {
-              const productId = String(check.value || "");
-              if (!requestMap.has(productId)) continue;
-
-              const input = check.closest("li")?.querySelector(countInput);
-              const quantityValue = input?.value ? String(input.value) : "";
-
-              if (check.checked && quantityValue === requestMap.get(productId)) {
-                matched += 1;
-              }
-            }
-
-            return matched === requestMap.size;
-          },
-          {
-            productCheck: selectors.productCheck,
-            countInput: selectors.countInput,
-            requests: attemptRequestedProducts.map((item) => ({
-              productId: String(item.productId || ""),
-              quantity: String(
-                Math.max(
-                  1,
-                  Math.trunc(
-                    Number(item.quantity || config.cartQty || 1) || 1,
-                  ),
-                ),
-              ),
-            })),
-          },
-          { timeout: Math.min(config.navigationTimeoutMs, 10000) },
+        lastSelectionState = await waitForStableCheonyuBulkSelection(
+          page,
+          pageNo,
+          attemptRequestedProducts,
+          config,
+          signal,
         );
 
-        await page.evaluate(
-          () =>
-            new Promise((resolve) => {
-              requestAnimationFrame(() => {
-                requestAnimationFrame(resolve);
-              });
-            }),
+        const popupWaitTimeoutMs =
+          attempt <= 5 ? 30000 : attempt <= 10 ? 45000 : 60000;
+
+        /** 실제 클릭 전에 scroll/actionability 대기를 먼저 끝낸다. */
+        await bulkButton.click({
+          trial: true,
+          timeout: config.navigationTimeoutMs,
+        });
+
+        lastSelectionState = await readCheonyuBulkSelectionState(
+          page,
+          createCheonyuBulkRequests(attemptRequestedProducts, config),
         );
 
-        await page.waitForTimeout(1200);
+        if (!lastSelectionState.complete) {
+          throw markSiteError(
+            new Error(
+              "천유 일괄담기 클릭 직전에 상품 체크 상태가 변경됐습니다.",
+            ),
+            {
+              retryable: true,
+              code: "CHEONYU_BULK_SELECTION_CHANGED_BEFORE_CLICK",
+              stage: "cheonyu-popup",
+              details: lastSelectionState,
+            },
+          );
+        }
 
         console.log(
           `[BULK ${pageNo}] 장바구니 일괄담기` +
           (attempt > 1 ? ` (${attempt}차 시도)` : ""),
         );
 
-
-        const popupWaitTimeoutMs =
-          attempt <= 5 ? 30000 : attempt <= 10 ? 45000 : 60000;
-
         await bulkButton.click({
-          timeout:
-            config.navigationTimeoutMs,
+          timeout: config.navigationTimeoutMs,
         });
 
         /**
@@ -1889,19 +2240,48 @@ async function clickBulkCartAndConfirm(
           };
         }
 
-        await waitForReadyCheonyuOptionPopup(
-          page,
-          config,
-          popupWaitTimeoutMs,
-          activeRequestedProducts.length,
-        );
+        try {
+          await waitForReadyCheonyuOptionPopup(
+            page,
+            config,
+            popupWaitTimeoutMs,
+            activeRequestedProducts.length,
+          );
+        } catch (error) {
+          const partialPopupState = await readCheonyuOptionPopupState(page)
+            .catch(() => null);
+          const visibleCount = Number(
+            partialPopupState?.visibleWrapperCount || 0,
+          );
+
+          if (
+            visibleCount > 0 &&
+            visibleCount !== activeRequestedProducts.length
+          ) {
+            throw markSiteError(
+              new Error(
+                `Cheonyu option popup coverage mismatch: ` +
+                `${visibleCount}/${activeRequestedProducts.length} products`,
+              ),
+              {
+                retryable: false,
+                code: "CHEONYU_POPUP_COVERAGE_INCOMPLETE",
+                stage: "cheonyu-popup",
+                details: {
+                  ...(partialPopupState || {}),
+                  expectedProductCount: activeRequestedProducts.length,
+                  preClickSelection: lastSelectionState,
+                },
+              },
+            );
+          }
+
+          throw error;
+        }
 
         console.log(
           `[BULK ${pageNo}] 옵션 팝업 준비 확인`
         );
-
-        await page.waitForTimeout(5000);
-
 
         const hasSetOption = await page.evaluate(
           () => typeof window.setOption === "function",
@@ -1911,6 +2291,7 @@ async function clickBulkCartAndConfirm(
           hasSetOption,
           ...(await readCheonyuOptionPopupState(page)),
           ...parsePopupHtml(await page.content()),
+          preClickSelection: lastSelectionState,
         };
 
         if (!hasSetOption) {
@@ -2157,10 +2538,10 @@ async function clickBulkCartAndConfirm(
         }
 
         console.log(
-          `[BULK ${pageNo}] 옵션 체크 상태 확인 대기 2초`,
+          `[BULK ${pageNo}] 옵션 체크 상태 확인 대기 1초`,
         );
 
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(1000);
 
         try {
           await page.evaluate(() => window.setOption());
@@ -2235,7 +2616,7 @@ async function clickBulkCartAndConfirm(
           );
         }
 
-        await sleep(1500);
+        await sleep(100);
 
         return {
           page: pageNo,
@@ -2264,9 +2645,16 @@ async function clickBulkCartAndConfirm(
         multiplier: 1.45,
         onRetry: async ({ error, nextAttempt }) => {
           lastError = error;
-          lastPopupState = await readCheonyuOptionPopupState(page).catch(
-            () => error?.details || lastPopupState,
+          const popupState = await readCheonyuOptionPopupState(page).catch(
+            () => null,
           );
+          lastPopupState = {
+            ...(popupState || lastPopupState || {}),
+            preClickSelection:
+              error?.code === "CHEONYU_BULK_SELECTION_NOT_STABLE"
+                ? error?.details || lastSelectionState
+                : lastSelectionState,
+          };
 
           console.warn(
             `[BULK ${pageNo}] 옵션 팝업 재시도 ` +
