@@ -1181,6 +1181,8 @@ async function waitForStableCheonyuBulkSelection(
   let lastMarkAt = 0;
   let lastState = null;
   let reapplyWhenControlsReady = false;
+  let disabledSignature = "";
+  let disabledSince = 0;
 
   await markProductsForBulkCart(page, targets, config);
   lastMarkAt = Date.now();
@@ -1188,6 +1190,20 @@ async function waitForStableCheonyuBulkSelection(
   while (Date.now() < deadline) {
     throwIfAborted(signal);
     lastState = await readCheonyuBulkSelectionState(page, requests);
+    const currentDisabledSignature = Array.from(
+      new Set([
+        ...(lastState.disabledProductIds || []),
+        ...(lastState.disabledCountInputIds || []),
+      ].map(String).filter(Boolean)),
+    ).sort().join("|");
+
+    if (!currentDisabledSignature) {
+      disabledSignature = "";
+      disabledSince = 0;
+    } else if (disabledSignature !== currentDisabledSignature) {
+      disabledSignature = currentDisabledSignature;
+      disabledSince = Date.now();
+    }
 
     if (lastState.complete) {
       if (reapplyWhenControlsReady) {
@@ -1250,6 +1266,71 @@ async function waitForStableCheonyuBulkSelection(
     }
 
     await page.waitForTimeout(pollMs);
+  }
+
+  const disabledProductIds = Array.from(
+    new Set([
+      ...(lastState?.disabledProductIds || []),
+      ...(lastState?.disabledCountInputIds || []),
+    ].map(String).filter(Boolean)),
+  );
+  const disabledProductIdSet = new Set(disabledProductIds);
+  const effectiveSelectedIdSet = new Set(
+    (lastState?.effectiveSelectedIds || []).map(String),
+  );
+  const unresolvedProductIds = requests
+    .map((request) => String(request.productId))
+    .filter((productId) => !effectiveSelectedIdSet.has(productId));
+  const onlyDisabledControlsAreBlocking = [
+    ...(lastState?.missingCountInputIds || []),
+    ...(lastState?.uncheckedProductIds || []),
+    ...(lastState?.quantityMismatchIds || []),
+  ].every((productId) => disabledProductIdSet.has(String(productId)));
+  const maxExcludedProductCount = getSafetyNumber(
+    config,
+    "bulkSelectionMaxExcludedCount",
+    5,
+    1,
+    10,
+  );
+  const canExcludeDisabledProducts =
+    disabledProductIds.length > 0 &&
+    disabledProductIds.length <= maxExcludedProductCount &&
+    disabledSignature === disabledProductIds.slice().sort().join("|") &&
+    disabledSince > 0 &&
+    Date.now() - disabledSince >= stableMs &&
+    unresolvedProductIds.length === disabledProductIds.length &&
+    unresolvedProductIds.every((productId) =>
+      disabledProductIdSet.has(productId),
+    ) &&
+    (lastState?.missingProductIds || []).length === 0 &&
+    (lastState?.duplicateProductIds || []).length === 0 &&
+    (lastState?.unexpectedCheckedIds || []).length === 0 &&
+    lastState?.bulkButtonReady === true &&
+    onlyDisabledControlsAreBlocking;
+
+  /**
+   * 목록 자체에서 체크박스나 수량 입력이 계속 disabled인 상품은
+   * 재시도해도 선택할 수 없다. 이 경우에만 상위 batch가 해당 상품을
+   * 장바구니 재고 대상에서 제외하고 나머지 상품을 계속 처리한다.
+   */
+  if (canExcludeDisabledProducts) {
+    throw markSiteError(
+      new Error(
+        `천유 일괄담기 대상 중 체크박스 또는 수량 입력이 비활성화된 ` +
+        `${disabledProductIds.length}개 상품이 있습니다: ` +
+        disabledProductIds.join(", "),
+      ),
+      {
+        retryable: false,
+        code: "CHEONYU_BULK_PRODUCTS_DISABLED",
+        stage: "cheonyu-popup",
+        details: {
+          ...(lastState || {}),
+          excludedProductIds: disabledProductIds,
+        },
+      },
+    );
   }
 
   throw markSiteError(
@@ -1346,6 +1427,8 @@ async function addCheonyuProductBatchesToCart(
   }));
   const batchResults = [];
   const knownUnavailableProductIds = new Set();
+  const excludedProducts = [];
+  const excludedProductIds = new Set();
   const rememberUnavailableProducts = (products) => {
     for (const product of products) {
       if (product?.unavailableInCart === true) {
@@ -1384,6 +1467,70 @@ async function addCheonyuProductBatchesToCart(
       const retryableBatch = batch.filter(
         (product) => product?.unavailableInCart !== true,
       );
+      const disabledIdSet = new Set(
+        error?.code === "CHEONYU_BULK_PRODUCTS_DISABLED"
+          ? (error?.details?.excludedProductIds || []).map(String)
+          : [],
+      );
+
+      if (disabledIdSet.size > 0) {
+        const newlyExcluded = retryableBatch.filter((product) => {
+          const productId = String(product?.productId || "");
+
+          if (!disabledIdSet.has(productId)) return false;
+
+          if (!excludedProductIds.has(productId)) {
+            excludedProductIds.add(productId);
+            excludedProducts.push({
+              page: pageNo,
+              batch: batchPath,
+              productId,
+              productName: String(product?.productName || ""),
+              reasonCode: "LIST_CONTROLS_DISABLED",
+              reason: "상품 체크박스 또는 수량 입력 비활성화",
+            });
+          }
+
+          return true;
+        });
+        const remainingProducts = retryableBatch.filter(
+          (product) => !disabledIdSet.has(String(product?.productId || "")),
+        );
+        const skippedIds = newlyExcluded.map((product) =>
+          String(product.productId),
+        );
+
+        if (skippedIds.length < 1) throw error;
+
+        console.warn(
+          `[BULK ${pageNo}] 상품 체크박스 또는 수량 입력 비활성화로 ` +
+          `${skippedIds.length}개 상품의 장바구니 재고 수집을 제외하고 ` +
+          `나머지 ${remainingProducts.length}개를 계속 수집합니다: ` +
+          skippedIds.join(", "),
+        );
+
+        /**
+         * count input이 disabled인 경우 checkbox click handler가 사이트 내부
+         * 선택 목록을 이미 갱신했을 수 있어 문서를 새로 열어 잔여 상태를 없앤다.
+         */
+        await resetCheonyuBulkListPage(
+          page,
+          pageNo,
+          config,
+          remainingProducts,
+          signal,
+        );
+
+        if (remainingProducts.length > 0) {
+          pendingBatches.unshift({
+            products: remainingProducts,
+            path: `${batchPath}.remaining`,
+          });
+        }
+
+        continue;
+      }
+
       const canSplitForIdentification =
         error?.code === "CHEONYU_POPUP_COVERAGE_INCOMPLETE" &&
         retryableBatch.length > 1;
@@ -1443,6 +1590,8 @@ async function addCheonyuProductBatchesToCart(
 
   return {
     ...mergedResult,
+    excludedProductIds: Array.from(excludedProductIds),
+    excludedProducts,
     unavailableProductIds,
     unavailablePopupResult: {
       ...mergedResult.unavailablePopupResult,
@@ -2701,6 +2850,7 @@ async function bulkAddPages(
   const allTargets = [];
   const allPopupOptionRows = [];
   const allProductsMap = new Map();
+  const allExcludedProductsMap = new Map();
   const pageResults = [];
   let previousSignature = "";
 
@@ -2719,6 +2869,7 @@ async function bulkAddPages(
     throwIfAborted(signal);
 
     const startedAt = performance.now();
+    let pageExcludedProducts = [];
     const cachedHtml = pageNo === 1 ? firstPageHtml : null;
     const { candidates, targets } = await collectListCandidates(
       page,
@@ -2773,12 +2924,33 @@ async function bulkAddPages(
         product.saleStatus = "SOLD_OUT";
       }
 
-      allTargets.push(...targets);
+      pageExcludedProducts = bulkResult.excludedProducts || [];
+
+      for (const excludedProduct of pageExcludedProducts) {
+        const productId = String(excludedProduct?.productId || "");
+
+        if (productId && !allExcludedProductsMap.has(productId)) {
+          allExcludedProductsMap.set(productId, excludedProduct);
+        }
+      }
+
+      const excludedIdSet = new Set(
+        (bulkResult.excludedProductIds || []).map(String),
+      );
+
+      /** 제외 상품은 전체 상품에는 유지하되 장바구니 coverage 대상에서만 뺀다. */
+      allTargets.push(
+        ...targets.filter(
+          (target) => !excludedIdSet.has(String(target?.productId || "")),
+        ),
+      );
       allPopupOptionRows.push(...(bulkResult.popupOptionRows || []));
       pageResults.push({
         page: pageNo,
         candidateCount: candidates.length,
         targetCount: targets.length,
+        effectiveTargetCount: targets.length - excludedIdSet.size,
+        excludedProducts: pageExcludedProducts,
         bulkResult,
         elapsedMs: +(performance.now() - startedAt).toFixed(2),
       });
@@ -2796,9 +2968,18 @@ async function bulkAddPages(
     pageRange.collectedLastPage = pageNo;
     pageRange.collectedPageCount = pageResults.length;
 
+    const pageExcludedIds = pageExcludedProducts.map((item) =>
+      String(item.productId),
+    );
+    const excludedProductCount = allExcludedProductsMap.size;
+
     onProgress({
       stage: "collecting",
-      message: `${pageNo}페이지 완료`,
+      message: pageExcludedIds.length > 0
+        ? `${pageNo}페이지 완료 · 상품 체크박스 또는 수량 입력 비활성화로 ` +
+          `${pageExcludedIds.length}개 상품(${pageExcludedIds.join(", ")})의 ` +
+          `장바구니 재고 수집을 제외하고 계속 진행합니다.`
+        : `${pageNo}페이지 완료`,
       currentPage: pageNo,
       pageRange,
       detectedTotalProductCount: pageRange.detectedTotalProductCount,
@@ -2806,6 +2987,8 @@ async function bulkAddPages(
       targetProductCount: new Set(
         allTargets.map((item) => String(item.productId)),
       ).size,
+      excludedProductCount,
+      excludedProducts: Array.from(allExcludedProductsMap.values()),
       elapsedText: formatMs(performance.now() - startedAt),
     });
 
@@ -2821,6 +3004,7 @@ async function bulkAddPages(
     allTargets,
     allPopupOptionRows,
     allProducts: Array.from(allProductsMap.values()),
+    allExcludedProducts: Array.from(allExcludedProductsMap.values()),
     pageResults,
     pageRange,
   };

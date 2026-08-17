@@ -1,12 +1,11 @@
 /** translate/translate.js */
 
-require("dotenv").config();
-
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const OpenAI = require("openai");
 const { zodTextFormat } = require("openai/helpers/zod");
 const { z } = require("zod");
+const { DEFAULT_OPENAI_MODEL } = require("../src/config");
 const {
   ARCHIVE_PATH,
   archiveToTranslationItems,
@@ -14,29 +13,35 @@ const {
   updateProductArchive,
 } = require("../src/utils/product-archive");
 
-const MODEL = process.env.OPENAI_MODEL || "gpt-5.6-luna";
 const BATCH_SIZE = 100;
 const PARALLEL_REQUESTS = 10;
 const MAX_RETRIES = 3;
 
 const OUTPUT_FILE_NAME = "result_translated.json";
 
-let openaiClient = null;
 let translationQueue = Promise.resolve();
 
-/** OpenAI 클라이언트를 필요한 시점에 생성한다. */
-function getOpenAIClient() {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY 환경변수가 설정되지 않았습니다.");
+/** main process가 전달한 실행별 OpenAI 설정을 복사한다. */
+function resolveOpenAiOptions(openAi) {
+  const source = openAi && typeof openAi === "object" ? openAi : {};
+  const apiKey = source.apiKey;
+  const model = Object.hasOwn(source, "model")
+    ? source.model
+    : DEFAULT_OPENAI_MODEL;
+
+  return Object.freeze({
+    apiKey: String(apiKey || "").trim(),
+    model: String(model || "").trim() || DEFAULT_OPENAI_MODEL,
+  });
+}
+
+/** 현재 번역 실행에서만 사용할 OpenAI 클라이언트를 생성한다. */
+function createOpenAIClient(apiKey) {
+  if (!apiKey) {
+    throw new Error("OpenAI API 키가 없습니다. 화면에서 등록한 API 키를 선택하세요.");
   }
 
-  if (!openaiClient) {
-    openaiClient = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
-  }
-
-  return openaiClient;
+  return new OpenAI({ apiKey });
 }
 
 const TranslationOption = z.object({
@@ -504,7 +509,11 @@ function createTranslationTasks(
 }
 
 /** 번역 배치 하나를 OpenAI에 요청한다. */
-async function requestTranslationBatch(batch, batchNumber, signal) {
+async function requestTranslationBatch(
+  batch,
+  batchNumber,
+  { client, model, signal },
+) {
   const requestItems = batch.map((item) => ({
     key: item.key,
     nameKo: item.nameKo,
@@ -522,8 +531,8 @@ async function requestTranslationBatch(batch, batchNumber, signal) {
     try {
       throwIfAborted(signal);
 
-      const response = await getOpenAIClient().responses.parse({
-        model: MODEL,
+      const response = await client.responses.parse({
+        model,
         store: false,
         input: [
           {
@@ -697,13 +706,16 @@ async function requestTranslationBatch(batch, batchNumber, signal) {
 }
 
 /** 상품 단위 배치를 최대 10개씩 병렬 처리한다. */
-async function translateAllTasks(tasks, { signal } = {}) {
+async function translateAllTasks(tasks, { signal, openAi } = {}) {
   throwIfAborted(signal);
 
   if (tasks.length < 1) {
     console.log("[번역 생략] 아카이브에 모든 번역이 존재합니다.");
     return [];
   }
+
+  const client = createOpenAIClient(openAi.apiKey);
+  const model = openAi.model;
 
   const batches = chunk(tasks, BATCH_SIZE);
   const waves = chunk(batches, PARALLEL_REQUESTS);
@@ -738,7 +750,11 @@ async function translateAllTasks(tasks, { signal } = {}) {
       wave.map((batch, localBatchIndex) => {
         const batchNumber = waveStartBatchIndex + localBatchIndex + 1;
 
-        return requestTranslationBatch(batch, batchNumber, signal);
+        return requestTranslationBatch(batch, batchNumber, {
+          client,
+          model,
+          signal,
+        });
       }),
     );
 
@@ -851,6 +867,7 @@ async function translateResultDataInternal(
     outputPath = "",
     signal,
     collectionMode = "general",
+    openAi,
   } = {},
 ) {
   throwIfAborted(signal);
@@ -874,6 +891,7 @@ async function translateResultDataInternal(
   );
   const translations = await translateAllTasks(tasks, {
     signal,
+    openAi,
   });
   const currentResults = createCurrentResults(
     products,
@@ -919,8 +937,12 @@ async function translateResultDataInternal(
 
 /** 동시 실행 시 archive.json이 덮어써지지 않게 순차 처리한다. */
 function translateResultData(json, options = {}) {
+  const queuedOptions = {
+    ...options,
+    openAi: resolveOpenAiOptions(options.openAi),
+  };
   const queued = translationQueue.then(() =>
-    translateResultDataInternal(json, options),
+    translateResultDataInternal(json, queuedOptions),
   );
 
   translationQueue = queued.catch(() => undefined);

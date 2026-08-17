@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { randomUUID } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
 const {
     app,
     BrowserWindow,
@@ -15,6 +15,7 @@ const {
     Menu,
     net,
     protocol,
+    safeStorage,
     session,
     shell,
 } = require("electron");
@@ -27,6 +28,8 @@ const {
 const { ensureDir, isFile } = require("../src/utils/files");
 const {
     getPublicDefaults,
+    normalizeProxyCredentials,
+    resolveOpenAiConfig,
     resolveOutputDir,
     resolveRunConfig,
 } = require("../src/config");
@@ -41,6 +44,7 @@ const {
     createShippingScheduler,
 } = require("../src/shipping-scheduler");
 const { loadEnvironment } = require("./environment");
+const { createCredentialStore } = require("./credential-store");
 
 const APP_SCHEME = "mall-collector";
 const APP_ORIGIN = `${APP_SCHEME}://app`;
@@ -64,6 +68,11 @@ const CHANNELS = Object.freeze({
     openResultDirectory: "collector:open-result-directory",
     showResultFile: "collector:show-result-file",
     openSettingsDirectory: "collector:open-settings-directory",
+    getCredentialProfiles: "collector:get-credential-profiles",
+    saveProxyProfile: "collector:save-proxy-profile",
+    deleteProxyProfile: "collector:delete-proxy-profile",
+    saveOpenAiProfile: "collector:save-openai-profile",
+    deleteOpenAiProfile: "collector:delete-openai-profile",
     stateChanged: "collector:state-changed",
 });
 
@@ -106,6 +115,7 @@ let quitAfterRun = false;
 let allowImmediateQuit = false;
 let shippingScheduler = null;
 let wonToYenRateScheduler = null;
+let credentialStore = null;
 
 /**
  * 여러 수집 작업을 동시에 실행하기 위한 상태 저장소.
@@ -287,26 +297,35 @@ function findActiveRunByAccountKey(accountKey) {
     );
 }
 
-/** 동일 천유 프록시 슬롯의 동시 실행을 막기 위한 key를 만든다. */
+/** 동일 천유 프록시 연결의 동시 실행을 막기 위한 key를 만든다. */
 function createProxySlotLockKey(config) {
     if (config?.mall !== "cheonyu") return "";
 
-    if (!config?.proxy || !config?.cheonyuProxySlot) {
+    if (!config?.proxy) {
         return "cheonyu:direct";
     }
 
-    return `cheonyu:proxy:${config.cheonyuProxySlot}`;
+    const fingerprint = createHash("sha256")
+        .update(String(config.proxy.server || ""))
+        .update("\0")
+        .update(String(config.proxy.username || ""))
+        .digest("hex")
+        .slice(0, 16);
+
+    return `cheonyu:proxy:profile:${fingerprint}`;
 }
 
 /** 천유 네트워크 잠금 key를 사용자용 이름으로 바꾼다. */
 function formatProxySlotLockLabel(proxySlotKey) {
     if (proxySlotKey === "cheonyu:direct") return "천유 직접 연결";
+    if (String(proxySlotKey || "").startsWith("cheonyu:proxy:profile:")) {
+        return "천유 등록 프록시";
+    }
 
-    const slot = String(proxySlotKey || "").split(":").at(-1);
-    return `천유 프록시 슬롯 ${slot}`;
+    return "천유 프록시";
 }
 
-/** 같은 천유 프록시 슬롯을 사용 중인 수집 작업을 찾는다. */
+/** 같은 천유 프록시 연결을 사용 중인 수집 작업을 찾는다. */
 function findActiveRunByProxySlotKey(proxySlotKey) {
     if (!proxySlotKey) return null;
 
@@ -395,8 +414,9 @@ function normalizeRunInput(input) {
 
         "detailMaxProducts",
         "detailRequestDelayMs",
-        "cheonyuProxySlot",
+        "proxyProfileId",
         "cheonyuUserAgent",
+        "openAiProfileId",
 
         "cartQty",
         "clearCartBefore",
@@ -411,6 +431,51 @@ function normalizeRunInput(input) {
             .filter((key) => Object.hasOwn(source, key))
             .map((key) => [key, source[key]]),
     );
+}
+
+function ensureCredentialStore() {
+    if (!credentialStore) {
+        throw new Error("프록시/API 키 저장소가 초기화되지 않았습니다.");
+    }
+
+    return credentialStore;
+}
+
+/** 프로필 ID를 main process 내부에서만 실제 프록시 인증정보로 변환한다. */
+function resolveProxyProfileInput(profileId) {
+    const normalizedId = String(profileId || "").trim();
+    if (!normalizedId) return {};
+
+    const profile = ensureCredentialStore().getProxy(normalizedId);
+
+    return {
+        cheonyuProxyProfileId: profile.id,
+        cheonyuProxyProfileName: profile.name,
+        cheonyuProxyServer: profile.server,
+        cheonyuProxyUsername: profile.username,
+        cheonyuProxyPassword: profile.password,
+    };
+}
+
+/** 선택된 API 키 프로필을 main process 내부 OpenAI 설정으로 고정한다. */
+function resolveOpenAiProfile(profileId) {
+    const normalizedId = String(profileId || "").trim();
+
+    if (!normalizedId) {
+        throw new Error("OpenAI API 키를 선택하세요.");
+    }
+
+    const profile = ensureCredentialStore().getOpenAiKey(normalizedId);
+
+    return {
+        profileId: profile.id,
+        profileName: profile.name,
+        config: Object.freeze(
+            resolveOpenAiConfig({
+                openaiApiKey: profile.apiKey,
+            }),
+        ),
+    };
 }
 
 
@@ -434,7 +499,8 @@ function createPublicRunRequest(config, safeInput) {
             (safeInput.localCredentialId ? "등록 계정" : ".env 계정"),
         localCredentialId: String(safeInput.localCredentialId || ""),
         proxyEnabled: Boolean(config.proxy),
-        cheonyuProxySlot: config.cheonyuProxySlot || 0,
+        proxySource: config.proxySource || "none",
+        proxyProfileName: config.proxyProfileName || "",
         executionOptions: safeInput.executionOptions || {
             runMode: "once",
         },
@@ -526,7 +592,6 @@ function getCartAccount(accounts, site) {
         accountPw,
         accountName: String(source?.accountName || ""),
         localCredentialId: String(source?.localCredentialId || ""),
-        cheonyuProxySlot: source?.cheonyuProxySlot,
     };
 }
 
@@ -618,7 +683,7 @@ async function fetchUploaderCartItems(signal) {
 }
 
 /** 장바구니용 공통 실행 설정을 생성한다. */
-function createCartRunConfig(site, account, input) {
+function createCartRunConfig(site, account, input, proxyProfileInput = {}) {
     return resolveRunConfig(
         {
             mall: site,
@@ -627,7 +692,7 @@ function createCartRunConfig(site, account, input) {
             accountPw: account.accountPw,
             accountName: account.accountName,
             localCredentialId: account.localCredentialId,
-            cheonyuProxySlot: account.cheonyuProxySlot,
+            ...(site === "cheonyu" ? proxyProfileInput : {}),
             cheonyuUserAgent: input?.cheonyuUserAgent,
             showBrowser: input?.showBrowser === true,
             pageStart: 1,
@@ -653,6 +718,7 @@ async function uploadCartItems(input) {
     const preselectedAccounts = {};
     const preselectedAccountKeys = {};
     const preselectedConfigs = {};
+    const proxyProfileInput = resolveProxyProfileInput(input?.proxyProfileId);
 
     /**
      * 1) 화면에서 선택된 계정을 먼저 정규화한다.
@@ -672,7 +738,6 @@ async function uploadCartItems(input) {
             accountPw,
             accountName: String(source?.accountName || ""),
             localCredentialId: String(source?.localCredentialId || ""),
-            cheonyuProxySlot: source?.cheonyuProxySlot,
         };
         const accountKey = createAccountLockKey(
             site,
@@ -683,7 +748,7 @@ async function uploadCartItems(input) {
         preselectedAccounts[site] = account;
         preselectedAccountKeys[site] = accountKey;
 
-        const config = createCartRunConfig(site, account, input);
+        const config = createCartRunConfig(site, account, input, proxyProfileInput);
         const proxySlotKey = createProxySlotLockKey(config);
 
         preselectedConfigs[site] = config;
@@ -834,7 +899,7 @@ async function uploadCartItems(input) {
 
             const config =
                 preselectedConfigs[site] ||
-                createCartRunConfig(site, account, input);
+                createCartRunConfig(site, account, input, proxyProfileInput);
             const proxySlotKey = createProxySlotLockKey(config);
 
             preselectedConfigs[site] = config;
@@ -892,6 +957,7 @@ async function executeCollection(run, config) {
         const result = await runCollection(config, {
             runId: run.id,
             signal: run.controller.signal,
+            openAi: run.openAi,
             onProgress: (progress) => {
                 if (!activeRuns.has(run.id)) return;
                 updateRunProgress(run.id, progress);
@@ -900,6 +966,10 @@ async function executeCollection(run, config) {
 
         const resultDirectory = path.dirname(result.files.inventory);
         const finishedAtMs = Date.now();
+        const excludedProductCount = Math.max(
+            0,
+            Number(result.payload.summary?.excludedProductCount) || 0,
+        );
 
         runResults.set(run.id, {
             files: result.files,
@@ -919,7 +989,11 @@ async function executeCollection(run, config) {
             progress: {
                 ...current?.progress,
                 stage: "completed",
-                message: "수집과 파일 저장이 완료되었습니다.",
+                message: excludedProductCount > 0
+                    ? `수집과 파일 저장이 완료되었습니다. 상품 체크박스 또는 ` +
+                      `수량 입력 비활성화로 장바구니 재고 수집에서 ` +
+                      `${excludedProductCount}개 상품을 제외했습니다.`
+                    : "수집과 파일 저장이 완료되었습니다.",
                 elapsedMs: finishedAtMs - run.startedAtMs,
                 elapsedText: formatMs(finishedAtMs - run.startedAtMs),
             },
@@ -958,9 +1032,16 @@ async function executeCollection(run, config) {
 /** 새 수집 작업을 시작하고 즉시 해당 실행 상태를 반환한다. */
 function startCollection(input) {
     const safeInput = normalizeRunInput(input);
+    const mall = String(safeInput.mall || "cheonyu").trim().toLowerCase();
+    const proxyProfileInput = mall === "cheonyu"
+        ? resolveProxyProfileInput(safeInput.proxyProfileId)
+        : {};
+    const openAiProfile = resolveOpenAiProfile(safeInput.openAiProfileId);
+    const openAi = openAiProfile.config;
     const config = resolveRunConfig(
         {
             ...safeInput,
+            ...proxyProfileInput,
             outDir: selectedOutputRoot,
         },
         process.env,
@@ -998,7 +1079,7 @@ function startCollection(input) {
 
         throw new Error(
             `${accountLabel} 계정으로 이미 수집 작업이 진행 중입니다. ` +
-            "같은 계정의 장바구니를 공유하므로 다른 프록시 슬롯에서도 동시에 실행할 수 없습니다.",
+            "같은 계정의 장바구니를 공유하므로 다른 프록시에서도 동시에 실행할 수 없습니다.",
         );
     }
 
@@ -1027,6 +1108,7 @@ function startCollection(input) {
         startedAtMs,
         accountKey,
         proxySlotKey,
+        openAi,
     };
     const runState = {
         id,
@@ -1323,6 +1405,26 @@ function registerIpcHandlers() {
         cloneForRenderer(createPublicApplicationState()),
     );
 
+    registerIpcHandler(CHANNELS.getCredentialProfiles, () =>
+        ensureCredentialStore().getSummary(),
+    );
+
+    registerIpcHandler(CHANNELS.saveProxyProfile, (payload) =>
+        ensureCredentialStore().saveProxy(payload),
+    );
+
+    registerIpcHandler(CHANNELS.deleteProxyProfile, (payload) =>
+        ensureCredentialStore().deleteProxy(payload?.id),
+    );
+
+    registerIpcHandler(CHANNELS.saveOpenAiProfile, (payload) =>
+        ensureCredentialStore().saveOpenAiKey(payload),
+    );
+
+    registerIpcHandler(CHANNELS.deleteOpenAiProfile, (payload) =>
+        ensureCredentialStore().deleteOpenAiKey(payload?.id),
+    );
+
     registerIpcHandler(CHANNELS.start, (input) =>
         startCollection(input),
     );
@@ -1581,6 +1683,12 @@ async function bootstrap() {
     Menu.setApplicationMenu(null);
 
     environmentInfo = loadEnvironment(app);
+
+    credentialStore = createCredentialStore({
+        safeStorage,
+        userDataDir: environmentInfo.userDataDir,
+        normalizeProxyCredentials,
+    });
 
     selectedOutputRoot = resolveOutputDir(
         {},

@@ -22,6 +22,40 @@ const { probeCheonyuCartStock } = require("./cart-stock");
 const { collectCheonyuDetails } = require("./detail");
 const { bulkAddPages, loginCheonyu } = require("./site");
 
+function createCheonyuCollectionWarnings(excludedProducts = []) {
+  const groups = new Map();
+
+  for (const item of excludedProducts) {
+    const page = Number(item?.page) || 0;
+    const reasonCode = String(item?.reasonCode || "LIST_CONTROLS_DISABLED");
+    const key = `${page}:${reasonCode}`;
+    const group = groups.get(key) || {
+      code: reasonCode,
+      page,
+      reason: String(
+        item?.reason || "상품 체크박스 또는 수량 입력 비활성화",
+      ),
+      productIds: [],
+    };
+    const productId = String(item?.productId || "");
+
+    if (productId && !group.productIds.includes(productId)) {
+      group.productIds.push(productId);
+    }
+
+    groups.set(key, group);
+  }
+
+  return Array.from(groups.values()).map((group) => ({
+    ...group,
+    count: group.productIds.length,
+    message:
+      `${group.page}페이지에서 ${group.reason} 상태인 ` +
+      `${group.productIds.length}개 상품(${group.productIds.join(", ")})의 ` +
+      `장바구니 재고 수집을 제외하고 나머지 상품을 수집했습니다.`,
+  }));
+}
+
 /** 천유닷컴 장바구니 기반 재고/상세 수집을 실행한다. */
 async function runCheonyu(
   config,
@@ -118,6 +152,7 @@ async function runCheonyu(
       allTargets,
       allPopupOptionRows,
       allProducts,
+      allExcludedProducts,
       pageResults,
       pageRange,
     } = await bulkAddPages(
@@ -133,6 +168,11 @@ async function runCheonyu(
     );
 
     throwIfAborted(runSignal);
+
+    const collectionWarnings = createCheonyuCollectionWarnings(
+      allExcludedProducts,
+    );
+    const excludedProductCount = allExcludedProducts.length;
 
     const targetProducts = Array.from(
       new Map(allTargets.map((item) => [String(item.productId), item])).values(),
@@ -157,6 +197,9 @@ async function runCheonyu(
       detectedTotalProductCount: pageRange.detectedTotalProductCount,
       collectedProductCount: allProducts.length,
       targetProductCount: targetProducts.length,
+      excludedProductCount,
+      excludedProducts: allExcludedProducts,
+      collectionWarnings,
       elapsedMs: performance.now() - startedAt,
     });
 
@@ -198,6 +241,9 @@ async function runCheonyu(
         detectedTotalProductCount: pageRange.detectedTotalProductCount,
         collectedProductCount: allProducts.length,
         targetProductCount: targetProducts.length,
+        excludedProductCount,
+        excludedProducts: allExcludedProducts,
+        collectionWarnings,
         productSummaryCount: productSummaries.length,
         elapsedMs: performance.now() - startedAt,
       });
@@ -258,6 +304,9 @@ async function runCheonyu(
       detectedTotalProductCount: pageRange.detectedTotalProductCount,
       collectedProductCount: allProducts.length,
       targetProductCount: targetProducts.length,
+      excludedProductCount,
+      excludedProducts: allExcludedProducts,
+      collectionWarnings,
       productSummaryCount: productSummaries.length,
       inventoryRowCount: inventoryItems.length,
       popupOptionRowCount: allPopupOptionRows.length,
@@ -269,13 +318,19 @@ async function runCheonyu(
 
     onProgress({
       stage: "completed",
-      message: "천유닷컴 수집이 완료되었습니다.",
+      message: excludedProductCount > 0
+        ? `천유닷컴 수집이 완료되었습니다. 장바구니 재고 수집에서 ` +
+          `${excludedProductCount}개 상품을 제외한 사유를 확인하세요.`
+        : "천유닷컴 수집이 완료되었습니다.",
       pageRange,
       detectedTotalProductCount: summary.detectedTotalProductCount,
       collectedProductCount: summary.collectedProductCount,
       targetProductCount: summary.targetProductCount,
       productSummaryCount: summary.productSummaryCount,
       soldOutProductCount,
+      excludedProductCount,
+      excludedProducts: allExcludedProducts,
+      collectionWarnings,
       elapsedMs,
       elapsedText: summary.elapsedText,
     });
@@ -291,6 +346,19 @@ async function runCheonyu(
       popupOptionItems: allPopupOptionRows,
       debugFiles: {
         "debug-cart.html": cartHtml,
+        ...(excludedProductCount > 0
+          ? {
+              "collection-warnings.json": JSON.stringify(
+                {
+                  excludedProductCount,
+                  excludedProducts: allExcludedProducts,
+                  collectionWarnings,
+                },
+                null,
+                2,
+              ),
+            }
+          : {}),
       },
     };
   } catch (error) {

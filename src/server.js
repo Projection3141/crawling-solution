@@ -8,6 +8,7 @@ const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const {
   getPublicDefaults,
+  resolveOpenAiConfig,
   resolveRunConfig,
   resolveServerConfig,
   toSafeConfig,
@@ -140,7 +141,7 @@ function updateJobProgress(job, patch) {
 }
 
 /** 실제 크롤러를 실행하고 job 상태를 갱신한다. */
-async function executeJob(job, config) {
+async function executeJob(job, config, openAi) {
   job.status = "running";
   job.startedAt = new Date().toISOString();
   job.startedAtMs = Date.now();
@@ -152,6 +153,7 @@ async function executeJob(job, config) {
   try {
     const result = await runCollection(config, {
       runId: job.id,
+      openAi,
       onProgress: (patch) => updateJobProgress(job, patch),
     });
 
@@ -194,6 +196,9 @@ function createJob(input) {
   }
 
   const config = resolveRunConfig(input);
+  const openAi = Object.freeze(
+    resolveOpenAiConfig(input, process.env),
+  );
   const id = `${Date.now()}-${randomUUID().slice(0, 8)}`;
   const job = {
     id,
@@ -225,7 +230,7 @@ function createJob(input) {
   activeJobId = id;
 
   /** HTTP 응답을 먼저 반환할 수 있도록 다음 event loop에서 실행한다. */
-  setImmediate(() => executeJob(job, config));
+  setImmediate(() => executeJob(job, config, openAi));
 
   return job;
 }

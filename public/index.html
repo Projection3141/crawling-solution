@@ -28,7 +28,7 @@
         <h1>쇼핑몰 상품 수집기</h1>
         <p class="description">
           모든 수집 작업과 파일 저장은 현재 PC에서 실행됩니다.
-          화면 입력이 비어 있을 때만 공통 <code>.env</code> 설정을 사용합니다.
+          프록시와 OpenAI API 키는 이 PC에 등록한 항목만 사용합니다.
         </p>
       </div>
 
@@ -69,7 +69,7 @@
           <label class="field">
             <span>쇼핑몰 사이트</span>
             <select id="mall" name="mall">
-              <option value="">.env 설정 사용</option>
+              <option value="">코드 기본값 사용</option>
             </select>
             <small id="mallHelp">지원 쇼핑몰을 선택합니다.</small>
           </label>
@@ -105,6 +105,50 @@
           </div>
 
           <label class="field">
+            <span>천유 프록시 선택</span>
+            <select id="cheonyuProxyProfileSelect" name="proxyProfileId">
+              <option value="">프록시 사용 안 함</option>
+            </select>
+            <small id="cheonyuProxyHelp">
+              이 PC에 등록한 프록시 중 하나를 선택합니다.
+            </small>
+          </label>
+
+          <div class="field">
+            <span>프록시 등록 및 관리</span>
+
+            <button id="openProxyManagerButton" type="button" class="secondary-button full-width">
+              프록시 등록 및 관리
+            </button>
+
+            <small>
+              주소와 인증정보는 Windows 보안 저장소에 암호화해 보관합니다.
+            </small>
+          </div>
+
+          <label class="field">
+            <span>OpenAI API 키 선택</span>
+            <select id="openAiProfileSelect" name="openAiProfileId">
+              <option value="">API 키 선택</option>
+            </select>
+            <small id="openAiProfileHelp">
+              번역에 사용할 등록 API 키를 선택합니다.
+            </small>
+          </label>
+
+          <div class="field">
+            <span>API 키 등록 및 관리</span>
+
+            <button id="openOpenAiManagerButton" type="button" class="secondary-button full-width">
+              API 키 등록 및 관리
+            </button>
+
+            <small>
+              실제 키는 화면, 실행 기록, 결과 파일에 표시하지 않습니다.
+            </small>
+          </div>
+
+          <label class="field">
             <span>수집 방식</span>
             <select id="collectionMode" name="collectionMode">
               <option value="general">일반 수집</option>
@@ -118,7 +162,7 @@
           <label class="field">
             <span>수집 브라우저 표시</span>
             <select id="browserMode" name="browserMode">
-              <option value="">.env 설정 사용</option>
+              <option value="">코드 기본값 사용</option>
               <option value="show">표시</option>
               <option value="hide">숨김</option>
             </select>
@@ -126,19 +170,9 @@
           </label>
 
           <label class="field">
-            <span>천유 프록시 슬롯</span>
-            <select id="cheonyuProxySlot" name="cheonyuProxySlot" disabled>
-              <option value="">설정된 프록시 없음</option>
-            </select>
-            <small id="cheonyuProxyHelp">
-              .env에 등록된 천유 프록시 슬롯만 표시됩니다.
-            </small>
-          </label>
-
-          <label class="field">
             <span>천유 브라우저 User-Agent</span>
             <input id="cheonyuUserAgent" name="cheonyuUserAgent" type="text" autocomplete="off" spellcheck="false"
-              maxlength="512" placeholder="비우면 .env 설정(기본 브라우저) 사용" aria-describedby="cheonyuUserAgentHelp"
+              maxlength="512" placeholder="비우면 코드 기본값(기본 브라우저) 사용" aria-describedby="cheonyuUserAgentHelp"
               title="Chrome/Edge에서 F12 → Console을 열고 copy(navigator.userAgent)를 입력하세요. 또는 주소창에서 chrome://version / edge://version을 열어 User Agent 항목을 확인하세요." />
             <small id="cheonyuUserAgentHelp">
               천유 수집과 천유 장바구니에만 적용됩니다. 입력칸에 커서를 올리면 찾는 방법이 표시됩니다.
@@ -278,11 +312,11 @@
         </label>
 
         <label class="field">
-          <span>천유 프록시 슬롯</span>
-          <select id="cartCheonyuProxySlot" disabled>
-            <option value="">설정된 프록시 없음</option>
+          <span>천유 프록시</span>
+          <select id="cartCheonyuProxyProfileSelect">
+            <option value="">프록시 사용 안 함</option>
           </select>
-          <small>천유 장바구니 작업에도 같은 고정 IP를 사용합니다.</small>
+          <small>위에서 등록한 프록시 중 장바구니 작업에 사용할 항목입니다.</small>
         </label>
 
         <label class="field">
@@ -424,6 +458,134 @@
         <button id="cancelAccountManagerButton" type="button" class="secondary-button">
           닫기
         </button>
+      </div>
+    </section>
+  </div>
+
+  <div id="proxyManagerModal" class="modal-overlay" role="dialog" aria-modal="true"
+    aria-labelledby="proxyManagerTitle" hidden>
+    <section class="modal-card">
+      <div class="modal-header">
+        <div>
+          <p class="section-kicker">PROXY MANAGER</p>
+          <h2 id="proxyManagerTitle">프록시 등록 및 관리</h2>
+        </div>
+
+        <button id="closeProxyManagerButton" type="button" class="icon-button" aria-label="프록시 관리 닫기">
+          ×
+        </button>
+      </div>
+
+      <p id="proxyManagerMessage" class="error-message" role="status" aria-live="polite" hidden></p>
+
+      <div class="account-manager-grid">
+        <section class="account-register-box">
+          <h3 id="proxyFormTitle">프록시 등록</h3>
+
+          <label class="field">
+            <span>등록할 이름</span>
+            <input id="proxyRegisterName" type="text" autocomplete="off" placeholder="예: 천유 프록시 1" />
+          </label>
+
+          <label class="field">
+            <span>프록시 주소</span>
+            <input id="proxyRegisterServer" type="text" autocomplete="off" spellcheck="false"
+              placeholder="예: http://host:port" />
+          </label>
+
+          <label class="field">
+            <span>아이디</span>
+            <input id="proxyRegisterUsername" type="text" autocomplete="off" spellcheck="false"
+              placeholder="인증 프록시일 때만 입력" />
+          </label>
+
+          <label class="field">
+            <span>비밀번호</span>
+            <input id="proxyRegisterPassword" type="password" autocomplete="new-password" spellcheck="false"
+              placeholder="수정할 때 비우면 기존 값 유지" />
+          </label>
+
+          <button id="saveProxyProfileButton" type="button" class="primary-button full-width">
+            등록
+          </button>
+
+          <small class="modal-help">
+            아이디와 비밀번호는 함께 입력해야 합니다. 아이디를 비우고 저장하면 인증정보를 제거합니다.
+          </small>
+        </section>
+
+        <section class="account-list-box">
+          <div class="account-list-heading">
+            <h3>등록 프록시 관리</h3>
+            <small>수정 / 삭제</small>
+          </div>
+
+          <div id="proxyProfileList" class="account-list">
+            <p class="empty-list">등록된 프록시가 없습니다.</p>
+          </div>
+        </section>
+      </div>
+
+      <div class="modal-actions">
+        <button id="cancelProxyManagerButton" type="button" class="secondary-button">닫기</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="openAiManagerModal" class="modal-overlay" role="dialog" aria-modal="true"
+    aria-labelledby="openAiManagerTitle" hidden>
+    <section class="modal-card">
+      <div class="modal-header">
+        <div>
+          <p class="section-kicker">OPENAI KEY MANAGER</p>
+          <h2 id="openAiManagerTitle">API 키 등록 및 관리</h2>
+        </div>
+
+        <button id="closeOpenAiManagerButton" type="button" class="icon-button" aria-label="API 키 관리 닫기">
+          ×
+        </button>
+      </div>
+
+      <p id="openAiManagerMessage" class="error-message" role="status" aria-live="polite" hidden></p>
+
+      <div class="account-manager-grid">
+        <section class="account-register-box">
+          <h3 id="openAiFormTitle">API 키 등록</h3>
+
+          <label class="field">
+            <span>등록할 이름</span>
+            <input id="openAiRegisterName" type="text" autocomplete="off" placeholder="예: 번역용 OpenAI" />
+          </label>
+
+          <label class="field">
+            <span>OpenAI API 키</span>
+            <input id="openAiRegisterKey" type="password" autocomplete="new-password" spellcheck="false"
+              placeholder="수정할 때 비우면 기존 값 유지" />
+          </label>
+
+          <button id="saveOpenAiProfileButton" type="button" class="primary-button full-width">
+            등록
+          </button>
+
+          <small class="modal-help">
+            API 키는 Windows 보안 저장소에 암호화해 보관하며 화면에는 끝 4자리만 표시합니다.
+          </small>
+        </section>
+
+        <section class="account-list-box">
+          <div class="account-list-heading">
+            <h3>등록 API 키 관리</h3>
+            <small>수정 / 삭제</small>
+          </div>
+
+          <div id="openAiProfileList" class="account-list">
+            <p class="empty-list">등록된 API 키가 없습니다.</p>
+          </div>
+        </section>
+      </div>
+
+      <div class="modal-actions">
+        <button id="cancelOpenAiManagerButton" type="button" class="secondary-button">닫기</button>
       </div>
     </section>
   </div>

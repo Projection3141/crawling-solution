@@ -775,7 +775,10 @@ function createTranslationInput(result, collectionMode) {
 }
 
 /** 선택한 쇼핑몰 adapter를 실행하고 공통 CSV/JSON 파일을 저장한다. */
-async function runCollection(config, { runId, onProgress = () => { }, signal }) {
+async function runCollection(
+  config,
+  { runId, onProgress = () => { }, signal, openAi },
+) {
   throwIfAborted(signal);
 
   const adapter = ADAPTERS[config.mall];
@@ -864,6 +867,7 @@ async function runCollection(config, { runId, onProgress = () => { }, signal }) 
       outputPath: translatedResultPath,
       signal,
       collectionMode: config.collectionMode,
+      openAi,
     },
   );
   const translatedData = translationResult.translatedItems;

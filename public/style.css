@@ -444,11 +444,25 @@ button:disabled {
 }
 
 .error-message,
-.success-message {
+.success-message,
+.warning-message {
   margin-bottom: 18px;
   border-radius: 10px;
   padding: 12px 14px;
   line-height: 1.5;
+}
+
+.warning-message {
+  background: #fff7e6;
+  color: var(--warning);
+}
+
+.warning-message p {
+  margin: 0;
+}
+
+.warning-message p + p {
+  margin-top: 6px;
 }
 
 .error-message {

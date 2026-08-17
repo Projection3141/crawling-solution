@@ -2,7 +2,8 @@
 
 const ACCOUNT_STORAGE_KEY = "mall-collector-accounts-v1";
 const SELECTED_ACCOUNT_STORAGE_KEY = "mall-collector-selected-account-id";
-const CHEONYU_PROXY_SLOT_STORAGE_KEY = "mall-collector-cheonyu-proxy-slot";
+const PROXY_PROFILE_STORAGE_KEY = "mall-collector-proxy-profile-id";
+const OPENAI_PROFILE_STORAGE_KEY = "mall-collector-openai-profile-id";
 const CHEONYU_USER_AGENT_STORAGE_KEY = "mall-collector-cheonyu-user-agent";
 
 const CART_ACCOUNT_STORAGE_KEYS = Object.freeze({
@@ -35,10 +36,34 @@ const elements = {
   repeatValue: document.querySelector("#repeatValue"),
   repeatUnit: document.querySelector("#repeatUnit"),
   browserMode: document.querySelector("#browserMode"),
-  cheonyuProxySlot: document.querySelector("#cheonyuProxySlot"),
+  cheonyuProxyProfileSelect: document.querySelector("#cheonyuProxyProfileSelect"),
   cheonyuProxyHelp: document.querySelector("#cheonyuProxyHelp"),
+  openProxyManagerButton: document.querySelector("#openProxyManagerButton"),
+  proxyManagerModal: document.querySelector("#proxyManagerModal"),
+  closeProxyManagerButton: document.querySelector("#closeProxyManagerButton"),
+  cancelProxyManagerButton: document.querySelector("#cancelProxyManagerButton"),
+  proxyFormTitle: document.querySelector("#proxyFormTitle"),
+  proxyRegisterName: document.querySelector("#proxyRegisterName"),
+  proxyRegisterServer: document.querySelector("#proxyRegisterServer"),
+  proxyRegisterUsername: document.querySelector("#proxyRegisterUsername"),
+  proxyRegisterPassword: document.querySelector("#proxyRegisterPassword"),
+  saveProxyProfileButton: document.querySelector("#saveProxyProfileButton"),
+  proxyProfileList: document.querySelector("#proxyProfileList"),
+  proxyManagerMessage: document.querySelector("#proxyManagerMessage"),
   cheonyuUserAgent: document.querySelector("#cheonyuUserAgent"),
   cheonyuUserAgentHelp: document.querySelector("#cheonyuUserAgentHelp"),
+  openAiProfileSelect: document.querySelector("#openAiProfileSelect"),
+  openAiProfileHelp: document.querySelector("#openAiProfileHelp"),
+  openOpenAiManagerButton: document.querySelector("#openOpenAiManagerButton"),
+  openAiManagerModal: document.querySelector("#openAiManagerModal"),
+  closeOpenAiManagerButton: document.querySelector("#closeOpenAiManagerButton"),
+  cancelOpenAiManagerButton: document.querySelector("#cancelOpenAiManagerButton"),
+  openAiFormTitle: document.querySelector("#openAiFormTitle"),
+  openAiRegisterName: document.querySelector("#openAiRegisterName"),
+  openAiRegisterKey: document.querySelector("#openAiRegisterKey"),
+  saveOpenAiProfileButton: document.querySelector("#saveOpenAiProfileButton"),
+  openAiProfileList: document.querySelector("#openAiProfileList"),
+  openAiManagerMessage: document.querySelector("#openAiManagerMessage"),
   outputDirectory: document.querySelector("#outputDirectory"),
   chooseOutputButton: document.querySelector("#chooseOutputButton"),
   openSettingsButton: document.querySelector("#openSettingsButton"),
@@ -66,8 +91,8 @@ const elements = {
 
   cartCheonyuAccountSelect:
     document.querySelector("#cartCheonyuAccountSelect"),
-  cartCheonyuProxySlot:
-    document.querySelector("#cartCheonyuProxySlot"),
+  cartCheonyuProxyProfileSelect:
+    document.querySelector("#cartCheonyuProxyProfileSelect"),
   cartCcdomeAccountSelect:
     document.querySelector("#cartCcdomeAccountSelect"),
   cartUploadButton:
@@ -79,6 +104,12 @@ const elements = {
 const state = {
   defaults: null,
   accounts: [],
+  credentialProfiles: {
+    proxies: [],
+    openAiKeys: [],
+  },
+  editingProxyProfileId: "",
+  editingOpenAiProfileId: "",
   applicationState: {
     runs: [],
     activeRunCount: 0,
@@ -161,80 +192,121 @@ function maskPassword(password) {
   return `${text.slice(0, 1)}${"*".repeat(Math.max(text.length - 2, 4))}${text.slice(-1)}`;
 }
 
-/** 비밀정보 없이 .env에 구성된 천유 프록시 슬롯만 화면에 표시한다. */
-function renderCheonyuProxySlots() {
-  const proxyDefaults = state.defaults?.proxyDefaults?.cheonyu || {};
-  const configuredSlots = Array.isArray(proxyDefaults.configuredSlots)
-    ? proxyDefaults.configuredSlots
-    : [];
-  const defaultSlot = Number(proxyDefaults.defaultSlot) || 0;
-  const selects = [
-    elements.cheonyuProxySlot,
-    elements.cartCheonyuProxySlot,
-  ].filter(Boolean);
-
-  if (configuredSlots.length < 1) {
-    for (const select of selects) {
-      select.replaceChildren();
-      const option = document.createElement("option");
-      option.value = "";
-      option.textContent = "설정된 프록시 없음";
-      select.append(option);
-      select.disabled = true;
-    }
-
-    localStorage.removeItem(CHEONYU_PROXY_SLOT_STORAGE_KEY);
-    elements.cheonyuProxyHelp.textContent =
-      ".env에 프록시를 등록하면 천유 수집에만 적용됩니다.";
-    return;
-  }
-
-  const savedSlot = Number(
-    localStorage.getItem(CHEONYU_PROXY_SLOT_STORAGE_KEY),
-  );
-  const selectedValue = configuredSlots.includes(savedSlot)
-    ? String(savedSlot)
-    : "";
-
-  for (const select of selects) {
-    select.replaceChildren();
-
-    const defaultOption = document.createElement("option");
-    defaultOption.value = "";
-    defaultOption.textContent = `.env 기본 슬롯 (${defaultSlot})`;
-    select.append(defaultOption);
-
-    for (const slot of configuredSlots) {
-      const option = document.createElement("option");
-      option.value = String(slot);
-      option.textContent = `프록시 슬롯 ${slot}`;
-      select.append(option);
-    }
-
-    select.value = selectedValue;
-    select.disabled = false;
-  }
-
-  elements.cheonyuProxyHelp.textContent =
-    "선택한 슬롯은 작업이 끝날 때까지 고정되며 자동으로 변경되지 않습니다.";
+function getProxyProfile(profileId) {
+  return state.credentialProfiles.proxies.find(
+    (profile) => profile.id === profileId,
+  ) || null;
 }
 
-/** 수집과 장바구니의 천유 프록시 슬롯 선택을 동일하게 유지한다. */
-function syncCheonyuProxySlot(source) {
-  const value = String(source?.value || "");
+function getOpenAiProfile(profileId) {
+  return state.credentialProfiles.openAiKeys.find(
+    (profile) => profile.id === profileId,
+  ) || null;
+}
+
+function setManagerMessage(element, message = "", type = "error") {
+  if (!element) return;
+
+  element.hidden = !message;
+  element.textContent = message;
+  element.className = type === "success" ? "success-message" : "error-message";
+}
+
+function isProfileUsedByRepeatPlans(fieldName, profileId) {
+  return Array.from(state.repeatPlans.values()).some(
+    (plan) => String(plan?.basePayload?.[fieldName] || "") === profileId,
+  );
+}
+
+/** 등록된 프록시를 수집·장바구니 선택 목록에 동일하게 표시한다. */
+function renderProxyProfileSelects(preferredId = null) {
+  const profiles = state.credentialProfiles.proxies;
+  const hasPreferredId = preferredId !== null && preferredId !== undefined;
+  const savedId = hasPreferredId
+    ? String(preferredId || "")
+    : localStorage.getItem(PROXY_PROFILE_STORAGE_KEY) ||
+      elements.cheonyuProxyProfileSelect?.value ||
+      "";
+  const selectedId = profiles.some((profile) => profile.id === savedId)
+    ? savedId
+    : "";
 
   for (const select of [
-    elements.cheonyuProxySlot,
-    elements.cartCheonyuProxySlot,
-  ]) {
-    if (select && !select.disabled) select.value = value;
+    elements.cheonyuProxyProfileSelect,
+    elements.cartCheonyuProxyProfileSelect,
+  ].filter(Boolean)) {
+    select.replaceChildren();
+
+    const emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.textContent = "프록시 사용 안 함";
+    select.append(emptyOption);
+
+    for (const profile of profiles) {
+      const option = document.createElement("option");
+      option.value = profile.id;
+      option.textContent = profile.name;
+      select.append(option);
+    }
+
+    select.value = selectedId;
   }
 
-  if (value) {
-    localStorage.setItem(CHEONYU_PROXY_SLOT_STORAGE_KEY, value);
+  if (selectedId) {
+    localStorage.setItem(PROXY_PROFILE_STORAGE_KEY, selectedId);
   } else {
-    localStorage.removeItem(CHEONYU_PROXY_SLOT_STORAGE_KEY);
+    localStorage.removeItem(PROXY_PROFILE_STORAGE_KEY);
   }
+
+  const selected = getProxyProfile(selectedId);
+  elements.cheonyuProxyHelp.textContent = selected
+    ? `${selected.name} 프록시를 사용합니다.`
+    : "프록시를 사용하지 않고 직접 연결합니다.";
+}
+
+/** 수집과 장바구니의 프록시 선택을 동일하게 유지한다. */
+function syncProxyProfileSelection(source) {
+  const value = String(source?.value || "");
+  renderProxyProfileSelects(value);
+}
+
+function renderOpenAiProfileSelect(preferredId = null) {
+  const profiles = state.credentialProfiles.openAiKeys;
+  const hasPreferredId = preferredId !== null && preferredId !== undefined;
+  const savedId = hasPreferredId
+    ? String(preferredId || "")
+    : localStorage.getItem(OPENAI_PROFILE_STORAGE_KEY) ||
+      elements.openAiProfileSelect?.value ||
+      "";
+  const selectedId = profiles.some((profile) => profile.id === savedId)
+    ? savedId
+    : "";
+
+  elements.openAiProfileSelect.replaceChildren();
+  const emptyOption = document.createElement("option");
+  emptyOption.value = "";
+  emptyOption.textContent = "API 키 선택";
+  elements.openAiProfileSelect.append(emptyOption);
+
+  for (const profile of profiles) {
+    const option = document.createElement("option");
+    option.value = profile.id;
+    option.textContent = `${profile.name} (${profile.keyHint})`;
+    elements.openAiProfileSelect.append(option);
+  }
+
+  elements.openAiProfileSelect.value = selectedId;
+
+  if (selectedId) {
+    localStorage.setItem(OPENAI_PROFILE_STORAGE_KEY, selectedId);
+  } else {
+    localStorage.removeItem(OPENAI_PROFILE_STORAGE_KEY);
+  }
+
+  const selected = getOpenAiProfile(selectedId);
+  elements.openAiProfileHelp.textContent = selected
+    ? `${selected.name} API 키로 번역합니다.`
+    : "번역에 사용할 API 키를 선택하세요.";
 }
 
 /** 사이트별 장바구니 계정 선택 목록을 갱신한다. */
@@ -264,7 +336,7 @@ function renderCartAccountSelects() {
 
     const emptyOption = document.createElement("option");
     emptyOption.value = "";
-    emptyOption.textContent = `${target.label} 계정 선택`;
+    emptyOption.textContent = `${target.label} 계정 선택 안 함`;
     target.select.append(emptyOption);
 
     for (const account of state.accounts) {
@@ -303,7 +375,7 @@ function renderAccountSelect() {
 
   const envOption = document.createElement("option");
   envOption.value = "";
-  envOption.textContent = ".env 계정 사용";
+  envOption.textContent = "계정 선택 안 함";
   elements.accountSelect.append(envOption);
 
   for (const account of state.accounts) {
@@ -509,6 +581,311 @@ function closeAccountManager() {
   elements.accountManagerModal.hidden = true;
 }
 
+function applyCredentialProfiles(summary, selections = {}) {
+  state.credentialProfiles = {
+    proxies: Array.isArray(summary?.proxies) ? summary.proxies : [],
+    openAiKeys: Array.isArray(summary?.openAiKeys) ? summary.openAiKeys : [],
+  };
+
+  renderProxyProfileSelects(
+    Object.hasOwn(selections, "proxyProfileId")
+      ? selections.proxyProfileId
+      : null,
+  );
+  renderOpenAiProfileSelect(
+    Object.hasOwn(selections, "openAiProfileId")
+      ? selections.openAiProfileId
+      : null,
+  );
+  renderProxyProfileList();
+  renderOpenAiProfileList();
+  updateEnvHint();
+}
+
+async function loadCredentialProfiles() {
+  const summary = await window.collectorApp.getCredentialProfiles();
+  applyCredentialProfiles(summary);
+}
+
+function resetProxyProfileForm() {
+  state.editingProxyProfileId = "";
+  elements.proxyFormTitle.textContent = "프록시 등록";
+  elements.saveProxyProfileButton.textContent = "등록";
+  elements.proxyRegisterName.value = "";
+  elements.proxyRegisterServer.value = "";
+  elements.proxyRegisterUsername.value = "";
+  elements.proxyRegisterPassword.value = "";
+}
+
+function editProxyProfile(profileId) {
+  const profile = getProxyProfile(profileId);
+  if (!profile) return;
+
+  state.editingProxyProfileId = profile.id;
+  elements.proxyFormTitle.textContent = "프록시 수정";
+  elements.saveProxyProfileButton.textContent = "수정 저장";
+  elements.proxyRegisterName.value = profile.name;
+  elements.proxyRegisterServer.value = profile.server;
+  elements.proxyRegisterUsername.value = profile.username || "";
+  elements.proxyRegisterPassword.value = "";
+  setManagerMessage(elements.proxyManagerMessage);
+  elements.proxyRegisterName.focus();
+}
+
+function renderProxyProfileList() {
+  elements.proxyProfileList.replaceChildren();
+
+  if (state.credentialProfiles.proxies.length < 1) {
+    const empty = document.createElement("p");
+    empty.className = "empty-list";
+    empty.textContent = "등록된 프록시가 없습니다.";
+    elements.proxyProfileList.append(empty);
+    return;
+  }
+
+  for (const profile of state.credentialProfiles.proxies) {
+    const item = document.createElement("article");
+    item.className = "account-item";
+
+    const info = document.createElement("div");
+    const name = document.createElement("strong");
+    const server = document.createElement("span");
+    const authentication = document.createElement("span");
+    name.textContent = profile.name;
+    server.textContent = `주소: ${profile.server}`;
+    authentication.textContent = profile.username
+      ? `인증: ${profile.username} / 비밀번호 설정됨`
+      : "인증: 사용 안 함";
+    info.append(name, server, authentication);
+
+    const actions = document.createElement("div");
+    actions.className = "account-actions";
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "secondary-button";
+    editButton.textContent = "수정";
+    editButton.addEventListener("click", () => editProxyProfile(profile.id));
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "danger-button";
+    deleteButton.textContent = "삭제";
+    deleteButton.addEventListener("click", () => deleteProxyProfile(profile.id));
+    actions.append(editButton, deleteButton);
+    item.append(info, actions);
+    elements.proxyProfileList.append(item);
+  }
+}
+
+async function saveProxyProfile() {
+  clearError();
+  clearSuccess();
+  setManagerMessage(elements.proxyManagerMessage);
+
+  const editingProfile = Boolean(state.editingProxyProfileId);
+  const previouslySelectedId = elements.cheonyuProxyProfileSelect?.value || "";
+
+  const profile = {
+    ...(state.editingProxyProfileId ? { id: state.editingProxyProfileId } : {}),
+    name: normalizeText(elements.proxyRegisterName.value),
+    server: elements.proxyRegisterServer.value.trim(),
+    username: elements.proxyRegisterUsername.value.trim(),
+  };
+  const password = String(elements.proxyRegisterPassword.value || "");
+  if (password) profile.password = password;
+
+  try {
+    const result = await window.collectorApp.saveProxyProfile(profile);
+    applyCredentialProfiles(result.summary, {
+      proxyProfileId: editingProfile
+        ? previouslySelectedId
+        : result.selectedId,
+    });
+    resetProxyProfileForm();
+    setManagerMessage(
+      elements.proxyManagerMessage,
+      "프록시 정보를 저장했습니다.",
+      "success",
+    );
+  } catch (error) {
+    setManagerMessage(elements.proxyManagerMessage, error.message);
+  }
+}
+
+async function deleteProxyProfile(profileId) {
+  const profile = getProxyProfile(profileId);
+
+  if (isProfileUsedByRepeatPlans("proxyProfileId", profileId)) {
+    setManagerMessage(
+      elements.proxyManagerMessage,
+      "반복 수집에서 사용 중인 프록시입니다. 해당 반복 수집을 먼저 중지하세요.",
+    );
+    return;
+  }
+
+  if (!profile || !window.confirm(`"${profile.name}" 프록시를 삭제하시겠습니까?`)) return;
+
+  try {
+    const summary = await window.collectorApp.deleteProxyProfile(profileId);
+    applyCredentialProfiles(summary);
+    if (state.editingProxyProfileId === profileId) resetProxyProfileForm();
+    setManagerMessage(
+      elements.proxyManagerMessage,
+      "프록시를 삭제했습니다.",
+      "success",
+    );
+  } catch (error) {
+    setManagerMessage(elements.proxyManagerMessage, error.message);
+  }
+}
+
+function openProxyManager() {
+  clearError();
+  clearSuccess();
+  setManagerMessage(elements.proxyManagerMessage);
+  elements.proxyManagerModal.hidden = false;
+  elements.proxyRegisterName.focus();
+}
+
+function closeProxyManager() {
+  elements.proxyManagerModal.hidden = true;
+  setManagerMessage(elements.proxyManagerMessage);
+  resetProxyProfileForm();
+}
+
+function resetOpenAiProfileForm() {
+  state.editingOpenAiProfileId = "";
+  elements.openAiFormTitle.textContent = "API 키 등록";
+  elements.saveOpenAiProfileButton.textContent = "등록";
+  elements.openAiRegisterName.value = "";
+  elements.openAiRegisterKey.value = "";
+}
+
+function editOpenAiProfile(profileId) {
+  const profile = getOpenAiProfile(profileId);
+  if (!profile) return;
+
+  state.editingOpenAiProfileId = profile.id;
+  elements.openAiFormTitle.textContent = "API 키 수정";
+  elements.saveOpenAiProfileButton.textContent = "수정 저장";
+  elements.openAiRegisterName.value = profile.name;
+  elements.openAiRegisterKey.value = "";
+  setManagerMessage(elements.openAiManagerMessage);
+  elements.openAiRegisterName.focus();
+}
+
+function renderOpenAiProfileList() {
+  elements.openAiProfileList.replaceChildren();
+
+  if (state.credentialProfiles.openAiKeys.length < 1) {
+    const empty = document.createElement("p");
+    empty.className = "empty-list";
+    empty.textContent = "등록된 API 키가 없습니다.";
+    elements.openAiProfileList.append(empty);
+    return;
+  }
+
+  for (const profile of state.credentialProfiles.openAiKeys) {
+    const item = document.createElement("article");
+    item.className = "account-item";
+    const info = document.createElement("div");
+    const name = document.createElement("strong");
+    const keyHint = document.createElement("span");
+    name.textContent = profile.name;
+    keyHint.textContent = `키: ${profile.keyHint}`;
+    info.append(name, keyHint);
+
+    const actions = document.createElement("div");
+    actions.className = "account-actions";
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "secondary-button";
+    editButton.textContent = "수정";
+    editButton.addEventListener("click", () => editOpenAiProfile(profile.id));
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "danger-button";
+    deleteButton.textContent = "삭제";
+    deleteButton.addEventListener("click", () => deleteOpenAiProfile(profile.id));
+    actions.append(editButton, deleteButton);
+    item.append(info, actions);
+    elements.openAiProfileList.append(item);
+  }
+}
+
+async function saveOpenAiProfile() {
+  clearError();
+  clearSuccess();
+  setManagerMessage(elements.openAiManagerMessage);
+
+  const editingProfile = Boolean(state.editingOpenAiProfileId);
+  const previouslySelectedId = elements.openAiProfileSelect?.value || "";
+
+  const profile = {
+    ...(state.editingOpenAiProfileId ? { id: state.editingOpenAiProfileId } : {}),
+    name: normalizeText(elements.openAiRegisterName.value),
+  };
+  const apiKey = elements.openAiRegisterKey.value.trim();
+  if (apiKey) profile.apiKey = apiKey;
+
+  try {
+    const result = await window.collectorApp.saveOpenAiProfile(profile);
+    applyCredentialProfiles(result.summary, {
+      openAiProfileId: editingProfile
+        ? previouslySelectedId
+        : result.selectedId,
+    });
+    resetOpenAiProfileForm();
+    setManagerMessage(
+      elements.openAiManagerMessage,
+      "OpenAI API 키를 저장했습니다.",
+      "success",
+    );
+  } catch (error) {
+    setManagerMessage(elements.openAiManagerMessage, error.message);
+  }
+}
+
+async function deleteOpenAiProfile(profileId) {
+  const profile = getOpenAiProfile(profileId);
+
+  if (isProfileUsedByRepeatPlans("openAiProfileId", profileId)) {
+    setManagerMessage(
+      elements.openAiManagerMessage,
+      "반복 수집에서 사용 중인 API 키입니다. 해당 반복 수집을 먼저 중지하세요.",
+    );
+    return;
+  }
+
+  if (!profile || !window.confirm(`"${profile.name}" API 키를 삭제하시겠습니까?`)) return;
+
+  try {
+    const summary = await window.collectorApp.deleteOpenAiProfile(profileId);
+    applyCredentialProfiles(summary);
+    if (state.editingOpenAiProfileId === profileId) resetOpenAiProfileForm();
+    setManagerMessage(
+      elements.openAiManagerMessage,
+      "OpenAI API 키를 삭제했습니다.",
+      "success",
+    );
+  } catch (error) {
+    setManagerMessage(elements.openAiManagerMessage, error.message);
+  }
+}
+
+function openOpenAiManager() {
+  clearError();
+  clearSuccess();
+  setManagerMessage(elements.openAiManagerMessage);
+  elements.openAiManagerModal.hidden = false;
+  elements.openAiRegisterName.focus();
+}
+
+function closeOpenAiManager() {
+  elements.openAiManagerModal.hidden = true;
+  setManagerMessage(elements.openAiManagerMessage);
+  resetOpenAiProfileForm();
+}
+
 /** 숫자형 입력이 비어 있지 않을 때만 payload에 추가한다. */
 function setNumberIfPresent(payload, key, input) {
   if (!input || input.value.trim() === "") return;
@@ -547,8 +924,8 @@ function formatRepeatUnit(unit) {
 /**
  * 화면 입력값으로 수집 payload를 생성한다.
  *
- * 비어 있는 값은 payload에 넣지 않으므로
- * main process의 공통 .env 설정이 다음 우선순위로 사용된다.
+ * 비어 있는 일반 설정은 코드 기본값을 사용한다.
+ * 프록시와 OpenAI API 키는 등록 프로필 ID만 전달한다.
  */
 function buildPayload() {
   const payload = {};
@@ -586,14 +963,23 @@ function buildPayload() {
   setNumberIfPresent(payload, "detailMaxProducts", elements.detailMaxProducts);
   setNumberIfPresent(payload, "detailRequestDelayMs", elements.detailRequestDelayMs);
 
-  if (elements.cheonyuProxySlot?.value) {
-    payload.cheonyuProxySlot = Number(elements.cheonyuProxySlot.value);
+  const effectiveMall =
+    elements.mall.value || state.defaults?.envDefaults?.mall || "cheonyu";
+
+  if (effectiveMall === "cheonyu" && elements.cheonyuProxyProfileSelect?.value) {
+    payload.proxyProfileId = elements.cheonyuProxyProfileSelect.value;
   }
 
   const cheonyuUserAgent = elements.cheonyuUserAgent?.value.trim();
   if (cheonyuUserAgent) {
     payload.cheonyuUserAgent = cheonyuUserAgent;
   }
+
+  if (!elements.openAiProfileSelect?.value) {
+    throw new Error("번역에 사용할 OpenAI API 키를 선택하세요.");
+  }
+
+  payload.openAiProfileId = elements.openAiProfileSelect.value;
 
   return payload;
 }
@@ -644,18 +1030,13 @@ function updateEnvHint() {
       : "환경 계정 미설정";
 
   const localAccountText = `등록 계정 ${state.accounts.length}개`;
-  const configuredProxyCount =
-    state.defaults.proxyDefaults?.cheonyu?.configuredSlots?.length || 0;
-  const proxyText = configuredProxyCount > 0
-    ? `천유 프록시 ${configuredProxyCount}개`
-    : "천유 프록시 미설정";
+  const proxyText = `등록 프록시 ${state.credentialProfiles.proxies.length}개`;
+  const openAiText = `등록 API 키 ${state.credentialProfiles.openAiKeys.length}개`;
 
   elements.envHint.textContent =
     `${loadedEnvText} · ` +
-    `기본 ${state.defaults.envDefaults.mall} · ` +
-    `PAGE_END ${state.defaults.envDefaults.pageEnd} · ` +
-    `${envAccountText} · ${proxyText} · ` +
-    localAccountText;
+    `코드 기본 ${state.defaults.envDefaults.mall} · ` +
+    `${envAccountText} · ${localAccountText} · ${proxyText} · ${openAiText}`;
 }
 
 /** 수집 시작 IPC를 요청하는 짧은 동안만 시작 버튼을 잠근다. */
@@ -901,7 +1282,14 @@ function scheduleRepeatRuns(applicationState) {
   for (const run of runs) {
     const plan = state.repeatPlans.get(run.id);
 
-    if (!plan || run.status !== "completed") continue;
+    if (!plan) continue;
+
+    if (["failed", "canceled"].includes(run.status)) {
+      clearRepeatPlan(run.id);
+      continue;
+    }
+
+    if (run.status !== "completed") continue;
     if (state.repeatTimers.has(run.id)) continue;
 
     const executionOptions =
@@ -1000,7 +1388,7 @@ function createRunCard(run) {
     `${mallLabel} · ${modeLabel} · ` +
     `${run.request?.accountName || ".env 계정"}` +
     (run.request?.proxyEnabled
-      ? ` · 프록시 슬롯 ${run.request.cheonyuProxySlot}`
+      ? ` · 프록시 ${run.request?.proxyProfileName || "등록 프로필"}`
       : "");
 
   titleWrap.append(kicker, title);
@@ -1032,6 +1420,35 @@ function createRunCard(run) {
     error.className = "error-message";
     error.textContent = run.error;
     card.append(error);
+  }
+
+  const progressExcludedProducts = Array.isArray(run.progress?.excludedProducts)
+    ? run.progress.excludedProducts
+    : [];
+  const collectionWarnings = Array.isArray(run.summary?.collectionWarnings)
+    ? run.summary.collectionWarnings
+    : Array.isArray(run.progress?.collectionWarnings)
+      ? run.progress.collectionWarnings
+      : progressExcludedProducts.map((item) => ({
+          message:
+            `${Number(item?.page) || "해당"}페이지에서 ` +
+            `${String(item?.reason || "상품 체크박스 또는 수량 입력 비활성화")} ` +
+            `상태인 상품(${String(item?.productId || "번호 미확인")})의 ` +
+            `장바구니 재고 수집을 제외하고 계속 진행합니다.`,
+        }));
+
+  if (collectionWarnings.length > 0) {
+    const warning = document.createElement("div");
+    warning.className = "warning-message";
+
+    for (const item of collectionWarnings) {
+      const line = document.createElement("p");
+      line.textContent = String(item?.message || item || "").trim();
+
+      if (line.textContent) warning.append(line);
+    }
+
+    if (warning.childElementCount > 0) card.append(warning);
   }
 
   const metrics = document.createElement("div");
@@ -1080,8 +1497,22 @@ function createRunCard(run) {
         progress.soldOutProductCount,
       ),
     ),
-    createMetricCard("소요 시간", getRunElapsedText(run)),
   );
+
+  if (run.request?.mall === "cheonyu") {
+    metrics.append(
+      createMetricCard(
+        "장바구니 재고 수집 제외 상품 수",
+        displayNumber(
+          summary.excludedProductCount ??
+          progress.excludedProductCount ??
+          0,
+        ),
+      ),
+    );
+  }
+
+  metrics.append(createMetricCard("소요 시간", getRunElapsedText(run)));
 
   card.append(metrics);
 
@@ -1253,7 +1684,6 @@ async function loadDefaults() {
   elements.cheonyuUserAgent.value =
     localStorage.getItem(CHEONYU_USER_AGENT_STORAGE_KEY) || "";
 
-  renderCheonyuProxySlots();
   updateEnvHint();
   updateMallHelp();
   updateAccountHelp();
@@ -1286,9 +1716,10 @@ async function handleSubmit(event) {
   clearSuccess();
   setSubmitting(true);
 
-  const payload = buildPayload();
+  let payload;
 
   try {
+    payload = buildPayload();
     const run = await window.collectorApp.start(payload);
 
     if (payload.executionOptions.runMode === "repeat") {
@@ -1305,6 +1736,7 @@ async function handleSubmit(event) {
     showSuccess(
       `${payload.collectionMode === "detail" ? "상세" : "일반"} 수집 실행을 추가했습니다.`,
     );
+
   } catch (error) {
     showError(error.message);
   } finally {
@@ -1388,9 +1820,6 @@ function buildCartBatchPayload() {
       accountPw: cheonyuAccount.password,
       accountName: cheonyuAccount.name,
       localCredentialId: cheonyuAccount.id,
-      cheonyuProxySlot: elements.cartCheonyuProxySlot?.value
-        ? Number(elements.cartCheonyuProxySlot.value)
-        : undefined,
     };
   }
 
@@ -1407,11 +1836,17 @@ function buildCartBatchPayload() {
     throw new Error("천유닷컴 또는 과자생각 계정을 선택하세요.");
   }
 
-  return {
+  const payload = {
     accounts,
     showBrowser: elements.browserMode.value === "show",
     cheonyuUserAgent: elements.cheonyuUserAgent?.value.trim() || undefined,
   };
+
+  if (accounts.cheonyu) {
+    payload.proxyProfileId = elements.cartCheonyuProxyProfileSelect?.value || "";
+  }
+
+  return payload;
 }
 
 /** uploader GET 응답을 받아 사이트별 실제 장바구니 작업을 실행한다. */
@@ -1501,7 +1936,7 @@ async function openSettingsDirectory() {
 
   try {
     await window.collectorApp.openSettingsDirectory();
-    showSuccess("설정 폴더를 열었습니다. .env.example을 복사해 .env로 사용할 수 있습니다.");
+    showSuccess("설정 폴더를 열었습니다. 사용자별 값을 덮어쓰려면 이 폴더에 .env를 만드세요.");
   } catch (error) {
     showError(error.message);
   }
@@ -1516,6 +1951,7 @@ async function initialize() {
   state.unsubscribe = window.collectorApp.onStateChanged(handleStateChanged);
 
   await loadDefaults();
+  await loadCredentialProfiles();
   loadAccounts();
   updateCollectionModeGuide();
   updateRunModeGuide();
@@ -1532,13 +1968,24 @@ elements.openAccountManagerButton.addEventListener("click", openAccountManager);
 elements.closeAccountManagerButton.addEventListener("click", closeAccountManager);
 elements.cancelAccountManagerButton.addEventListener("click", closeAccountManager);
 elements.registerAccountButton.addEventListener("click", registerAccount);
+elements.openProxyManagerButton.addEventListener("click", openProxyManager);
+elements.closeProxyManagerButton.addEventListener("click", closeProxyManager);
+elements.cancelProxyManagerButton.addEventListener("click", closeProxyManager);
+elements.saveProxyProfileButton.addEventListener("click", saveProxyProfile);
+elements.openOpenAiManagerButton.addEventListener("click", openOpenAiManager);
+elements.closeOpenAiManagerButton.addEventListener("click", closeOpenAiManager);
+elements.cancelOpenAiManagerButton.addEventListener("click", closeOpenAiManager);
+elements.saveOpenAiProfileButton.addEventListener("click", saveOpenAiProfile);
 elements.collectionMode.addEventListener("change", updateCollectionModeGuide);
 elements.runMode.addEventListener("change", updateRunModeGuide);
-elements.cheonyuProxySlot.addEventListener("change", (event) => {
-  syncCheonyuProxySlot(event.currentTarget);
+elements.cheonyuProxyProfileSelect.addEventListener("change", (event) => {
+  syncProxyProfileSelection(event.currentTarget);
 });
-elements.cartCheonyuProxySlot.addEventListener("change", (event) => {
-  syncCheonyuProxySlot(event.currentTarget);
+elements.cartCheonyuProxyProfileSelect.addEventListener("change", (event) => {
+  syncProxyProfileSelection(event.currentTarget);
+});
+elements.openAiProfileSelect.addEventListener("change", (event) => {
+  renderOpenAiProfileSelect(event.currentTarget.value);
 });
 elements.cheonyuUserAgent.addEventListener("change", (event) => {
   const value = event.currentTarget.value.trim();
@@ -1600,6 +2047,14 @@ elements.accountManagerModal.addEventListener("click", (event) => {
   if (event.target === elements.accountManagerModal) {
     closeAccountManager();
   }
+});
+
+elements.proxyManagerModal.addEventListener("click", (event) => {
+  if (event.target === elements.proxyManagerModal) closeProxyManager();
+});
+
+elements.openAiManagerModal.addEventListener("click", (event) => {
+  if (event.target === elements.openAiManagerModal) closeOpenAiManager();
 });
 
 window.addEventListener("beforeunload", () => {

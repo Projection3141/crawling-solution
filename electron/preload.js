@@ -15,6 +15,11 @@ const CHANNELS = Object.freeze({
   openResultDirectory: "collector:open-result-directory",
   showResultFile: "collector:show-result-file",
   openSettingsDirectory: "collector:open-settings-directory",
+  getCredentialProfiles: "collector:get-credential-profiles",
+  saveProxyProfile: "collector:save-proxy-profile",
+  deleteProxyProfile: "collector:delete-proxy-profile",
+  saveOpenAiProfile: "collector:save-openai-profile",
+  deleteOpenAiProfile: "collector:delete-openai-profile",
   stateChanged: "collector:state-changed",
 });
 
@@ -65,6 +70,15 @@ contextBridge.exposeInMainWorld(
         runId,
       }),
     openSettingsDirectory: () => invoke(CHANNELS.openSettingsDirectory),
+    getCredentialProfiles: () => invoke(CHANNELS.getCredentialProfiles),
+    saveProxyProfile: (profile) =>
+      invoke(CHANNELS.saveProxyProfile, profile),
+    deleteProxyProfile: (id) =>
+      invoke(CHANNELS.deleteProxyProfile, { id }),
+    saveOpenAiProfile: (profile) =>
+      invoke(CHANNELS.saveOpenAiProfile, profile),
+    deleteOpenAiProfile: (id) =>
+      invoke(CHANNELS.deleteOpenAiProfile, { id }),
 
     onStateChanged: (callback) => {
       if (typeof callback !== "function") {
