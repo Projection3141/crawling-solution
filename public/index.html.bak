@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="ko">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="
+        default-src 'self';
+        script-src 'self';
+        style-src 'self';
+        img-src 'self' data:;
+        connect-src 'none';
+        font-src 'self';
+        object-src 'none';
+        base-uri 'none';
+        form-action 'none';
+      " />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>쇼핑몰 상품 수집기</title>
+  <link rel="stylesheet" href="./style.css" />
+  <link rel="stylesheet" href="./concurrent.css" />
+</head>
+
+<body>
+  <main class="app-shell">
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">LOCAL DESKTOP CRAWLER</p>
+        <h1>쇼핑몰 상품 수집기</h1>
+        <p class="description">
+          모든 수집 작업과 파일 저장은 현재 PC에서 실행됩니다.
+          프록시와 OpenAI API 키는 이 PC에 등록한 항목만 사용합니다.
+        </p>
+      </div>
+
+      <div class="app-header-controls">
+        <button
+          id="shippingToggleButton"
+          type="button"
+          class="shipping-toggle-button shipping-off"
+          aria-pressed="false"
+        >
+          운송정보 서버 전송 확인 중
+        </button>
+
+        <span id="appBadge" class="app-badge">앱 정보 확인 중</span>
+      </div>
+    </header>
+
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">COLLECTION SETTINGS</p>
+          <h2>수집 설정</h2>
+        </div>
+
+        <div class="header-actions">
+          <p id="envHint" class="env-hint">
+            환경설정을 불러오는 중입니다.
+          </p>
+
+          <button id="openSettingsButton" type="button" class="text-button">
+            설정 폴더 열기
+          </button>
+        </div>
+      </div>
+
+      <form id="collectorForm" class="collector-form">
+        <div class="form-grid">
+          <label class="field">
+            <span>쇼핑몰 사이트</span>
+            <select id="mall" name="mall">
+              <option value="">코드 기본값 사용</option>
+            </select>
+            <small id="mallHelp">지원 쇼핑몰을 선택합니다.</small>
+          </label>
+
+          <label class="field">
+            <span>카테고리</span>
+            <input id="category" name="category" type="text" autocomplete="off" placeholder="비우면 전체 카테고리 사용" />
+            <small id="categoryHelp">
+              카테고리 코드 또는 상품 목록 URL을 입력할 수 있습니다.
+            </small>
+          </label>
+
+          <label class="field">
+            <span>계정 선택</span>
+            <select id="accountSelect" name="accountSelect">
+              <option value="">.env 계정 사용</option>
+            </select>
+            <small id="accountHelp">
+              등록된 계정을 선택하거나, 선택하지 않으면 공통 .env 계정을 사용합니다.
+            </small>
+          </label>
+
+          <div class="field">
+            <span>계정 등록 및 관리</span>
+
+            <button id="openAccountManagerButton" type="button" class="secondary-button full-width">
+              계정 등록 및 관리
+            </button>
+
+            <small>
+              등록 이름 변경과 삭제를 지원합니다. 비밀번호는 화면에 표시하지 않습니다.
+            </small>
+          </div>
+
+          <label class="field">
+            <span>천유 프록시 선택</span>
+            <select id="cheonyuProxyProfileSelect" name="proxyProfileId">
+              <option value="">프록시 사용 안 함</option>
+            </select>
+            <small id="cheonyuProxyHelp">
+              이 PC에 등록한 프록시 중 하나를 선택합니다.
+            </small>
+          </label>
+
+          <div class="field">
+            <span>프록시 등록 및 관리</span>
+
+            <button id="openProxyManagerButton" type="button" class="secondary-button full-width">
+              프록시 등록 및 관리
+            </button>
+
+            <small>
+              주소와 인증정보는 Windows 보안 저장소에 암호화해 보관합니다.
+            </small>
+          </div>
+
+          <label class="field">
+            <span>OpenAI API 키 선택</span>
+            <select id="openAiProfileSelect" name="openAiProfileId">
+              <option value="">API 키 선택</option>
+            </select>
+            <small id="openAiProfileHelp">
+              번역에 사용할 등록 API 키를 선택합니다.
+            </small>
+          </label>
+
+          <div class="field">
+            <span>API 키 등록 및 관리</span>
+
+            <button id="openOpenAiManagerButton" type="button" class="secondary-button full-width">
+              API 키 등록 및 관리
+            </button>
+
+            <small>
+              실제 키는 화면, 실행 기록, 결과 파일에 표시하지 않습니다.
+            </small>
+          </div>
+
+          <label class="field">
+            <span>수집 방식</span>
+            <select id="collectionMode" name="collectionMode">
+              <option value="general">일반 수집</option>
+              <option value="detail">상세 수집</option>
+            </select>
+            <small id="collectionModeHelp">
+              일반 수집은 목록과 장바구니 기반 재고 데이터를 빠르게 수집합니다.
+            </small>
+          </label>
+
+          <label class="field">
+            <span>수집 브라우저 표시</span>
+            <select id="browserMode" name="browserMode">
+              <option value="">코드 기본값 사용</option>
+              <option value="show">표시</option>
+              <option value="hide">숨김</option>
+            </select>
+            <small>표시를 선택하면 현재 PC에 Playwright 창이 열립니다.</small>
+          </label>
+
+          <label class="field">
+            <span>천유 브라우저 User-Agent</span>
+            <input id="cheonyuUserAgent" name="cheonyuUserAgent" type="text" autocomplete="off" spellcheck="false"
+              maxlength="512" placeholder="비우면 코드 기본값(기본 브라우저) 사용" aria-describedby="cheonyuUserAgentHelp"
+              title="Chrome/Edge에서 F12 → Console을 열고 copy(navigator.userAgent)를 입력하세요. 또는 주소창에서 chrome://version / edge://version을 열어 User Agent 항목을 확인하세요." />
+            <small id="cheonyuUserAgentHelp">
+              천유 수집과 천유 장바구니에만 적용됩니다. 입력칸에 커서를 올리면 찾는 방법이 표시됩니다.
+            </small>
+          </label>
+
+          <label class="field">
+            <span>실행 방식</span>
+            <select id="runMode" name="runMode">
+              <option value="once">1회 실행</option>
+              <option value="repeat">중지 전까지 반복 실행</option>
+            </select>
+            <small id="runModeHelp">
+              1회 실행은 수집 완료 후 자동 종료됩니다.
+            </small>
+          </label>
+
+          <div id="repeatSettings" class="field repeat-settings" hidden>
+            <span>반복 주기</span>
+
+            <div class="repeat-control">
+              <input id="repeatValue" name="repeatValue" type="number" min="1" step="1" value="1"
+                aria-label="반복 주기 숫자" />
+
+              <select id="repeatUnit" name="repeatUnit" aria-label="반복 주기 단위">
+                <option value="hour">시간</option>
+                <option value="day">일</option>
+                <option value="week">주</option>
+              </select>
+            </div>
+
+            <small>
+              이전 수집이 끝난 뒤 지정한 주기만큼 대기하고 다음 수집을 실행합니다.
+            </small>
+          </div>
+
+          <div class="field wide-field">
+            <span>결과 기본 폴더</span>
+
+            <div class="directory-control">
+              <input id="outputDirectory" type="text" readonly aria-label="결과 기본 폴더" />
+
+              <button id="chooseOutputButton" type="button" class="secondary-button compact">
+                폴더 선택
+              </button>
+            </div>
+
+            <small>
+              실행별 하위 폴더에 CSV와 JSON을 저장합니다.
+            </small>
+          </div>
+        </div>
+
+        <div class="collection-guide" aria-label="수집 방식별 제공 데이터 안내">
+          <article id="generalGuide" class="guide-card active">
+            <strong>일반 수집 제공 데이터</strong>
+            <p>
+              상품 ID, 상품명, 상품 URL, 목록상 품절 여부, 장바구니 옵션명,
+              옵션별 재고, 가격, 구매 가능 수량, 상품별 재고 요약을 수집합니다.
+            </p>
+          </article>
+
+          <article id="detailGuide" class="guide-card">
+            <strong>상세 수집 추가 데이터</strong>
+            <p>
+              상세페이지의 카테고리, 상품번호, 대표 바코드, 외부 박스 수량, 소비자가, 
+              상품상세정보, 상품 소개 이미지 URL을 수집합니다.
+            </p>
+          </article>
+        </div>
+
+        <details class="advanced-settings">
+          <summary>페이지 범위 및 고급 공통 설정</summary>
+
+          <div class="form-grid advanced-grid">
+            <label class="field">
+              <span>시작 페이지</span>
+              <input id="pageStart" name="pageStart" type="number" min="1" placeholder="1" />
+            </label>
+
+            <label class="field">
+              <span>종료 페이지</span>
+              <input id="pageEnd" name="pageEnd" type="number" min="0" placeholder="0" />
+              <small>
+                <strong>0</strong>이면 마지막 페이지를 자동 감지합니다.
+              </small>
+            </label>
+
+            <label class="field">
+              <span>상세 수집 최대 상품 수</span>
+              <input id="detailMaxProducts" name="detailMaxProducts" type="number" min="0" placeholder="0" />
+              <small>
+                <strong>0</strong>이면 상세 수집 대상 전체를 처리합니다.
+              </small>
+            </label>
+
+            <label class="field">
+              <span>상세 페이지 지연(ms)</span>
+              <input id="detailRequestDelayMs" name="detailRequestDelayMs" type="number" min="0" placeholder="1000" />
+              <small>천유는 입력값의 70~160%를 요청마다 적용합니다. 기본 1000ms이면 700~1600ms입니다.</small>
+            </label>
+          </div>
+        </details>
+
+        <div class="form-actions">
+          <button id="runButton" type="submit" class="primary-button">
+            수집 실행 추가
+          </button>
+
+          <p class="form-note">
+            실행 중에도 설정을 변경해 일반 수집이나 상세 수집을 추가할 수 있습니다.
+            장바구니 작업에서 사용 중인 동일 사이트·동일 계정만 시작이 제한됩니다.
+          </p>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel cart-upload-panel">
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">CART REQUEST</p>
+          <h2>장바구니 일괄 담기</h2>
+        </div>
+
+        <p class="env-hint">
+          사이트별 계정을 선택하면 uploader GET 응답을 기준으로 자동 처리합니다.
+        </p>
+      </div>
+
+      <div class="form-grid">
+        <label class="field">
+          <span>천유닷컴 계정</span>
+          <select id="cartCheonyuAccountSelect">
+            <option value="">천유닷컴 계정 선택</option>
+          </select>
+          <small>GET 응답에 천유 상품이 있을 때 사용할 로그인 계정입니다.</small>
+        </label>
+
+        <label class="field">
+          <span>천유 프록시</span>
+          <select id="cartCheonyuProxyProfileSelect">
+            <option value="">프록시 사용 안 함</option>
+          </select>
+          <small>위에서 등록한 프록시 중 장바구니 작업에 사용할 항목입니다.</small>
+        </label>
+
+        <label class="field">
+          <span>과자생각 계정</span>
+          <select id="cartCcdomeAccountSelect">
+            <option value="">과자생각 계정 선택</option>
+          </select>
+          <small>GET 응답에 과자생각 상품이 있을 때 사용할 로그인 계정입니다.</small>
+        </label>
+      </div>
+
+      <div class="form-actions">
+        <button id="cartUploadButton" type="button" class="primary-button">
+          장바구니 담기
+        </button>
+
+        <p id="cartUploadMessage" class="form-note" aria-live="polite">
+          사이트별 계정을 선택한 뒤 장바구니 담기 버튼을 누르세요.
+        </p>
+      </div>
+    </section>
+
+    <section class="panel status-panel" aria-live="polite">
+      <div class="status-header">
+        <div>
+          <p class="section-kicker">RUN STATUS</p>
+          <h2>실행 목록</h2>
+        </div>
+
+        <span id="activeRunCount" class="status-badge idle">
+          실행 중 0건 · 전체 0건
+        </span>
+      </div>
+
+      <p id="errorMessage" class="error-message" hidden></p>
+      <p id="successMessage" class="success-message" hidden></p>
+
+      <div id="runList" class="run-list">
+        <p class="empty-list">아직 실행한 수집 작업이 없습니다.</p>
+      </div>
+    </section>
+
+    <section class="panel download-panel">
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">OUTPUT FILES</p>
+          <h2>최근 완료 결과 파일</h2>
+        </div>
+
+        <div class="result-header-actions">
+          <p>각 실행 카드에서도 해당 실행의 결과 파일을 개별 저장할 수 있습니다.</p>
+
+          <button id="openResultDirectoryButton" type="button" class="secondary-button" disabled>
+            결과 폴더 열기
+          </button>
+        </div>
+      </div>
+
+      <div class="download-grid">
+        <button id="saveInventoryButton" type="button" class="download-button disabled" disabled>
+          재고 CSV 저장
+          <small>옵션별 재고 또는 판매 가능 상태</small>
+        </button>
+
+        <button id="saveSummaryButton" type="button" class="download-button disabled" disabled>
+          요약 CSV 저장
+          <small>상품 단위 재고·옵션 요약</small>
+        </button>
+
+        <button id="saveProductsButton" type="button" class="download-button disabled" disabled>
+          상품 CSV 저장
+          <small>수집한 전체 상품 목록</small>
+        </button>
+
+        <button id="saveDetailsButton" type="button" class="download-button disabled" disabled>
+          상세 CSV 저장
+          <small>상세페이지 상품 정보·이미지 URL</small>
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <div id="accountManagerModal" class="modal-overlay" role="dialog" aria-modal="true"
+    aria-labelledby="accountManagerTitle" hidden>
+    <section class="modal-card">
+      <div class="modal-header">
+        <div>
+          <p class="section-kicker">ACCOUNT MANAGER</p>
+          <h2 id="accountManagerTitle">계정 등록 및 관리</h2>
+        </div>
+
+        <button id="closeAccountManagerButton" type="button" class="icon-button" aria-label="계정 관리 닫기">
+          ×
+        </button>
+      </div>
+
+      <div class="account-manager-grid">
+        <section class="account-register-box">
+          <h3>계정 등록</h3>
+
+          <label class="field">
+            <span>등록할 이름</span>
+            <input id="accountRegisterName" type="text" autocomplete="off" placeholder="예: 천유 개발계정" />
+          </label>
+
+          <label class="field">
+            <span>ID</span>
+            <input id="accountRegisterId" type="text" autocomplete="username" placeholder="계정 ID" />
+          </label>
+
+          <label class="field">
+            <span>PW</span>
+            <input id="accountRegisterPw" type="password" autocomplete="new-password" placeholder="계정 비밀번호" />
+          </label>
+
+          <button id="registerAccountButton" type="button" class="primary-button full-width">
+            완료
+          </button>
+
+          <small class="modal-help">
+            계정 정보는 현재 PC의 로컬 저장소에만 저장됩니다.
+            운영 배포 시에는 서버 암호화 저장으로 전환하세요.
+          </small>
+        </section>
+
+        <section class="account-list-box">
+          <div class="account-list-heading">
+            <h3>등록 계정 관리</h3>
+            <small>이름 변경 / 삭제</small>
+          </div>
+
+          <div id="accountList" class="account-list">
+            <p class="empty-list">등록된 계정이 없습니다.</p>
+          </div>
+        </section>
+      </div>
+
+      <div class="modal-actions">
+        <button id="cancelAccountManagerButton" type="button" class="secondary-button">
+          닫기
+        </button>
+      </div>
+    </section>
+  </div>
+
+  <div id="proxyManagerModal" class="modal-overlay" role="dialog" aria-modal="true"
+    aria-labelledby="proxyManagerTitle" hidden>
+    <section class="modal-card">
+      <div class="modal-header">
+        <div>
+          <p class="section-kicker">PROXY MANAGER</p>
+          <h2 id="proxyManagerTitle">프록시 등록 및 관리</h2>
+        </div>
+
+        <button id="closeProxyManagerButton" type="button" class="icon-button" aria-label="프록시 관리 닫기">
+          ×
+        </button>
+      </div>
+
+      <p id="proxyManagerMessage" class="error-message" role="status" aria-live="polite" hidden></p>
+
+      <div class="account-manager-grid">
+        <section class="account-register-box">
+          <h3 id="proxyFormTitle">프록시 등록</h3>
+
+          <label class="field">
+            <span>등록할 이름</span>
+            <input id="proxyRegisterName" type="text" autocomplete="off" placeholder="예: 천유 프록시 1" />
+          </label>
+
+          <label class="field">
+            <span>프록시 주소</span>
+            <input id="proxyRegisterServer" type="text" autocomplete="off" spellcheck="false"
+              placeholder="예: http://host:port" />
+          </label>
+
+          <label class="field">
+            <span>아이디</span>
+            <input id="proxyRegisterUsername" type="text" autocomplete="off" spellcheck="false"
+              placeholder="인증 프록시일 때만 입력" />
+          </label>
+
+          <label class="field">
+            <span>비밀번호</span>
+            <input id="proxyRegisterPassword" type="password" autocomplete="new-password" spellcheck="false"
+              placeholder="수정할 때 비우면 기존 값 유지" />
+          </label>
+
+          <button id="saveProxyProfileButton" type="button" class="primary-button full-width">
+            등록
+          </button>
+
+          <small class="modal-help">
+            아이디와 비밀번호는 함께 입력해야 합니다. 아이디를 비우고 저장하면 인증정보를 제거합니다.
+          </small>
+        </section>
+
+        <section class="account-list-box">
+          <div class="account-list-heading">
+            <h3>등록 프록시 관리</h3>
+            <small>수정 / 삭제</small>
+          </div>
+
+          <div id="proxyProfileList" class="account-list">
+            <p class="empty-list">등록된 프록시가 없습니다.</p>
+          </div>
+        </section>
+      </div>
+
+      <div class="modal-actions">
+        <button id="cancelProxyManagerButton" type="button" class="secondary-button">닫기</button>
+      </div>
+    </section>
+  </div>
+
+  <div id="openAiManagerModal" class="modal-overlay" role="dialog" aria-modal="true"
+    aria-labelledby="openAiManagerTitle" hidden>
+    <section class="modal-card">
+      <div class="modal-header">
+        <div>
+          <p class="section-kicker">OPENAI KEY MANAGER</p>
+          <h2 id="openAiManagerTitle">API 키 등록 및 관리</h2>
+        </div>
+
+        <button id="closeOpenAiManagerButton" type="button" class="icon-button" aria-label="API 키 관리 닫기">
+          ×
+        </button>
+      </div>
+
+      <p id="openAiManagerMessage" class="error-message" role="status" aria-live="polite" hidden></p>
+
+      <div class="account-manager-grid">
+        <section class="account-register-box">
+          <h3 id="openAiFormTitle">API 키 등록</h3>
+
+          <label class="field">
+            <span>등록할 이름</span>
+            <input id="openAiRegisterName" type="text" autocomplete="off" placeholder="예: 번역용 OpenAI" />
+          </label>
+
+          <label class="field">
+            <span>OpenAI API 키</span>
+            <input id="openAiRegisterKey" type="password" autocomplete="new-password" spellcheck="false"
+              placeholder="수정할 때 비우면 기존 값 유지" />
+          </label>
+
+          <button id="saveOpenAiProfileButton" type="button" class="primary-button full-width">
+            등록
+          </button>
+
+          <small class="modal-help">
+            API 키는 Windows 보안 저장소에 암호화해 보관하며 화면에는 끝 4자리만 표시합니다.
+          </small>
+        </section>
+
+        <section class="account-list-box">
+          <div class="account-list-heading">
+            <h3>등록 API 키 관리</h3>
+            <small>수정 / 삭제</small>
+          </div>
+
+          <div id="openAiProfileList" class="account-list">
+            <p class="empty-list">등록된 API 키가 없습니다.</p>
+          </div>
+        </section>
+      </div>
+
+      <div class="modal-actions">
+        <button id="cancelOpenAiManagerButton" type="button" class="secondary-button">닫기</button>
+      </div>
+    </section>
+  </div>
+
+  <script src="./app.js" defer></script>
+</body>
+
+</html>

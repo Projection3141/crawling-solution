@@ -1,0 +1,1168 @@
+<!DOCTYPE html>
+
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+    <meta content="light" name="color-scheme"/>
+<title>쇼핑몰 상품 수집기 사용 설명서</title>
+<style>
+    :root {
+      --bg: #f5f7fb;
+      --paper: #ffffff;
+      --ink: #172033;
+      --muted: #657086;
+      --line: #dfe5ef;
+      --soft: #eef3fa;
+      --primary: #2457d6;
+      --primary-dark: #183f9f;
+      --accent: #0f8b71;
+      --warning: #b76900;
+      --danger: #b42318;
+      --shadow: 0 16px 40px rgba(24, 39, 75, 0.08);
+      --radius: 18px;
+      --nav-width: 268px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top right, rgba(36, 87, 214, 0.08), transparent 28rem),
+        var(--bg);
+      font-family: Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+      line-height: 1.65;
+      letter-spacing: -0.015em;
+    }
+
+    button, input { font: inherit; }
+    a { color: inherit; }
+    code, pre {
+      font-family: "Cascadia Code", Consolas, "SFMono-Regular", monospace;
+      letter-spacing: 0;
+    }
+
+    .skip-link {
+      position: fixed;
+      left: 12px;
+      top: -60px;
+      z-index: 999;
+      padding: 10px 14px;
+      border-radius: 10px;
+      background: #111827;
+      color: #fff;
+      text-decoration: none;
+    }
+    .skip-link:focus { top: 12px; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: var(--nav-width) minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      padding: 28px 20px;
+      background: #111a2d;
+      color: #e9eef9;
+      border-right: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border-radius: 13px;
+      background: linear-gradient(135deg, #5f8cff, #2457d6);
+      font-weight: 900;
+      box-shadow: 0 10px 24px rgba(36,87,214,0.38);
+    }
+    .brand strong { display: block; font-size: 15px; }
+    .brand small { display: block; color: #9facbf; font-size: 12px; }
+
+    .nav-group-title {
+      margin: 24px 10px 8px;
+      color: #71809a;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .nav-link {
+      display: block;
+      margin: 3px 0;
+      padding: 9px 11px;
+      border-radius: 10px;
+      color: #bcc6d8;
+      font-size: 13px;
+      text-decoration: none;
+      transition: 0.18s ease;
+    }
+    .nav-link:hover,
+    .nav-link.active {
+      color: #fff;
+      background: rgba(255,255,255,0.09);
+    }
+
+    .sidebar-footer {
+      margin-top: 28px;
+      padding: 14px;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 13px;
+      color: #aab6ca;
+      font-size: 11px;
+    }
+
+    .content {
+      min-width: 0;
+      padding: 40px clamp(24px, 5vw, 76px) 90px;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: 42px;
+      border: 1px solid rgba(36,87,214,0.16);
+      border-radius: 26px;
+      background: linear-gradient(135deg, #fff 0%, #f1f5ff 100%);
+      box-shadow: var(--shadow);
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -90px;
+      bottom: -150px;
+      width: 360px;
+      height: 360px;
+      border-radius: 50%;
+      border: 52px solid rgba(36,87,214,0.07);
+    }
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--primary);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+    h1 {
+      position: relative;
+      z-index: 1;
+      margin: 0;
+      font-size: clamp(30px, 4vw, 48px);
+      line-height: 1.2;
+      letter-spacing: -0.04em;
+    }
+    .hero p {
+      position: relative;
+      z-index: 1;
+      max-width: 760px;
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 16px;
+    }
+    .hero-meta {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 24px;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 11px;
+      border: 1px solid #d7e1f4;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.88);
+      color: #35425b;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      margin: 18px 0 0;
+      flex-wrap: wrap;
+    }
+    .toolbar button {
+      padding: 9px 13px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--paper);
+      color: #334155;
+      cursor: pointer;
+    }
+    .toolbar button:hover { border-color: #aebbd0; }
+
+    .section {
+      scroll-margin-top: 24px;
+      margin-top: 28px;
+      padding: 30px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--paper);
+      box-shadow: 0 8px 26px rgba(30, 51, 90, 0.045);
+    }
+    .section > :first-child { margin-top: 0; }
+    .section > :last-child { margin-bottom: 0; }
+
+    h2 {
+      margin: 0 0 18px;
+      font-size: 25px;
+      line-height: 1.35;
+      letter-spacing: -0.035em;
+    }
+    h3 {
+      margin: 28px 0 10px;
+      font-size: 18px;
+      letter-spacing: -0.025em;
+    }
+    h4 {
+      margin: 20px 0 8px;
+      font-size: 15px;
+    }
+    p { margin: 10px 0; }
+    ul, ol { padding-left: 21px; }
+    li + li { margin-top: 5px; }
+    .muted { color: var(--muted); }
+
+    .quick-grid,
+    .card-grid,
+    .two-col,
+    .three-col,
+    .four-col {
+      display: grid;
+      gap: 14px;
+    }
+    .quick-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .two-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .three-col { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .four-col { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+    .step,
+    .info-card {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--paper);
+    }
+    .step-number {
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      margin-bottom: 10px;
+      border-radius: 9px;
+      background: var(--primary);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 900;
+    }
+    .step strong,
+    .info-card strong { display: block; margin-bottom: 5px; }
+    .step p,
+    .info-card p { margin: 0; color: var(--muted); font-size: 13px; }
+
+    .callout {
+      margin: 16px 0;
+      padding: 15px 17px;
+      border-left: 4px solid var(--primary);
+      border-radius: 0 12px 12px 0;
+      background: #eff4ff;
+      color: #243553;
+    }
+    .callout.warning {
+      border-left-color: var(--warning);
+      background: #fff7e8;
+    }
+    .callout.danger {
+      border-left-color: var(--danger);
+      background: #fff0ee;
+    }
+    .callout.success {
+      border-left-color: var(--accent);
+      background: #edf9f5;
+    }
+    .callout strong { display: block; margin-bottom: 3px; }
+
+    .flow {
+      display: flex;
+      align-items: stretch;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 6px 0 10px;
+    }
+    .flow-item {
+      flex: 0 0 160px;
+      padding: 14px;
+      border: 1px solid #d7dfec;
+      border-radius: 12px;
+      background: var(--paper);
+      font-size: 13px;
+      font-weight: 750;
+      text-align: center;
+    }
+    .flow-arrow {
+      display: grid;
+      place-items: center;
+      flex: 0 0 20px;
+      color: #91a0b6;
+      font-weight: 900;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      margin: 14px 0 4px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      font-size: 13px;
+    }
+    th, td {
+      padding: 12px 13px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      background: var(--soft);
+      color: #39465c;
+      font-weight: 800;
+    }
+    tr:last-child td { border-bottom: 0; }
+    td:first-child { white-space: nowrap; }
+
+    pre {
+      margin: 14px 0;
+      padding: 16px;
+      overflow: auto;
+      border-radius: 13px;
+      background: #111827;
+      color: #dfe7f5;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    code.inline {
+      padding: 2px 6px;
+      border-radius: 6px;
+      background: var(--soft);
+      color: #26334b;
+      font-size: 0.9em;
+    }
+
+    .status-demo {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 13px;
+      align-items: center;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--paper);
+    }
+    .status-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 5px rgba(15,139,113,0.12);
+    }
+    .status-badge {
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: #eaf2ff;
+      color: var(--primary-dark);
+      font-size: 11px;
+      font-weight: 850;
+    }
+
+    .faq details {
+      margin: 9px 0;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--paper);
+    }
+    .faq summary {
+      cursor: pointer;
+      padding: 14px 16px;
+      font-weight: 800;
+    }
+    .faq details > div {
+      padding: 0 16px 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .checklist {
+      list-style: none;
+      padding: 0;
+    }
+    .checklist li {
+      position: relative;
+      padding-left: 28px;
+    }
+    .checklist li::before {
+      content: "✓";
+      position: absolute;
+      left: 0;
+      top: 0.1em;
+      display: grid;
+      place-items: center;
+      width: 19px;
+      height: 19px;
+      border-radius: 6px;
+      background: #e9f7f2;
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 950;
+    }
+
+    .footer {
+      margin-top: 30px;
+      padding: 20px 4px;
+      color: #7b879b;
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .mobile-nav-button { display: none; }
+
+    @media (max-width: 1200px) {
+      .four-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 1050px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar {
+        position: fixed;
+        z-index: 200;
+        left: 0;
+        top: 0;
+        width: min(84vw, 310px);
+        transform: translateX(-102%);
+        transition: transform 0.22s ease;
+      }
+      .sidebar.open { transform: translateX(0); }
+      .mobile-nav-button {
+        display: inline-flex;
+        position: fixed;
+        z-index: 220;
+        right: 16px;
+        bottom: 16px;
+        padding: 11px 14px;
+        border: 0;
+        border-radius: 999px;
+        background: #111827;
+        color: #fff;
+        box-shadow: var(--shadow);
+      }
+      .content { padding-top: 28px; }
+      .quick-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 720px) {
+      .content { padding: 18px 14px 60px; }
+      .hero { padding: 27px 22px; border-radius: 19px; }
+      .section { padding: 22px 18px; }
+      .quick-grid,
+      .card-grid,
+      .two-col,
+      .three-col,
+      .four-col { grid-template-columns: 1fr; }
+      table { display: block; overflow-x: auto; white-space: nowrap; }
+    }
+
+    @media print {
+      :root { --bg: #fff; }
+      body { background: #fff; }
+      .layout { display: block; }
+      .sidebar, .toolbar, .mobile-nav-button { display: none !important; }
+      .content { padding: 0; }
+      .hero, .section { box-shadow: none; break-inside: avoid; }
+      .section { border-color: #cfd6e0; }
+      .faq details { break-inside: avoid; }
+      .faq details[open] div { display: block; }
+      a { text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+<a class="skip-link" href="#main">본문으로 이동</a>
+<button class="mobile-nav-button" id="mobileNavButton" type="button">목차</button>
+<div class="layout">
+<aside aria-label="설명서 목차" class="sidebar" id="sidebar">
+<div class="brand">
+<div class="brand-mark">MC</div>
+<div>
+<strong>Mall Collector</strong>
+<small>사용 설명서</small>
+</div>
+</div>
+<div class="nav-group-title">시작하기</div>
+<a class="nav-link" href="#overview">1. 앱 개요</a>
+<a class="nav-link" href="#quick-start">2. 빠른 시작</a>
+<a class="nav-link" href="#accounts">3. 계정 관리</a>
+<div class="nav-group-title">수집 기능</div>
+<a class="nav-link" href="#collection">4. 수집 설정</a>
+<a class="nav-link" href="#modes">5. 일반·상세 수집</a>
+<a class="nav-link" href="#concurrent">6. 동시 실행</a>
+<a class="nav-link" href="#cart">7. 장바구니 자동 담기</a>
+<div class="nav-group-title">결과와 연동</div>
+<a class="nav-link" href="#outputs">8. 결과 파일</a>
+<a class="nav-link" href="#server-sync">9. 서버·운송장 전송</a>
+<a class="nav-link" href="#logs">10. 로그 확인</a>
+<div class="nav-group-title">문제 해결</div>
+<a class="nav-link" href="#troubleshooting">11. 오류 대응</a>
+<a class="nav-link" href="#security">12. 보안 주의사항</a>
+<a class="nav-link" href="#checklist">13. 운영 체크리스트</a>
+<div class="sidebar-footer">
+    기준 버전: v1.3.0<br/>
+    문서 작성일: 2026-08-17
+    </div>
+</aside>
+<main class="content" id="main">
+<header class="hero">
+<p class="eyebrow">Local Desktop Crawler Manual</p>
+<h1>쇼핑몰 상품 수집기<br/>사용 설명서</h1>
+<p>천유닷컴과 과자생각의 상품·재고·상세 정보를 수집하고, 한국어·일본어·영어 번역 데이터를 생성하며, 상품 수집 결과와 운송장 데이터를 서버로 전송하는 데스크톱 앱의 운영 절차를 정리한 문서입니다.</p>
+<div class="hero-meta">
+<span class="chip">지원 사이트: 천유닷컴, 과자생각</span>
+<span class="chip">한국어·일본어·영어 번역</span>
+<span class="chip">일반·상세 수집</span>
+<span class="chip">상세 탭 병렬 처리</span>
+<span class="chip">장바구니 일괄 처리</span>
+<span class="chip">상품·운송장 서버 POST</span>
+<span class="chip">원-엔 환율 적용</span>
+</div>
+<div class="toolbar">
+<button onclick="window.print()" type="button">인쇄 / PDF 저장</button>
+<button id="expandFaqButton" type="button">FAQ 모두 열기</button>
+<button id="topButton" type="button">맨 위로</button>
+</div>
+</header>
+<section class="section" id="overview">
+<h2>1. 앱 개요</h2>
+<p>이 앱은 Electron과 Playwright를 사용하여 현재 PC에서 쇼핑몰에 로그인하고, 상품 목록·장바구니·상세페이지 데이터를 수집합니다. </br>
+  수집 데이터는 한국어 원문을 기준으로 일본어와 영어 번역을 함께 관리하며, 상세 수집은 최대 10개의 브라우저 탭으로 병렬 처리합니다. </br>
+  결과는 실행별 폴더에 CSV와 JSON으로 저장되고 상품 및 운송장 데이터는 지정 서버로 전송됩니다.
+</p>
+<div class="quick-grid">
+<article class="info-card">
+<strong>로컬 실행</strong>
+<p>브라우저 자동화와 파일 저장이 사용자의 PC에서 수행됩니다.</p>
+</article>
+<article class="info-card">
+<strong>한·일·영 번역</strong>
+<p>기존 일본어 번역에 영어 번역을 추가하여 운송장 시스템과 데이터 형식을 통일합니다.</p>
+</article>
+<article class="info-card">
+<strong>상세 탭 병렬 수집</strong>
+<p>상세 상품 수집 시 작업을 여러 탭에 분배하여 처리 속도를 높였습니다.</p>
+</article>
+<article class="info-card">
+<strong>상품·운송장 서버 연동</strong>
+<p>수집 결과와 운송장 데이터를 각각 지정된 서버 전송 절차에 따라 POST합니다.</p>
+</article>
+</div><div class="callout success">
+<strong>2026-08-17 주요 변경사항 (v1.3.0)</strong>
+      ISP 프록시 아웃바운드 연결 및 재접속 안전장치, 영문 상세 페이지 진입 시 한국어 페이지 재접속 보정, 
+      천유 상세 수집 항목(상품바코드·옵션바코드·원산지·소재·무게·포장사이즈) 및 hscode 키 추가,
+      시간별 원엔 환율 체크(00시 아카이브) 반영, 체크 누락 소단위 재시도와 품절 예외 처리,
+      프록시/API 키 사용 방식 변경
+    </div>
+<div class="callout warning">
+<strong>운영 전 확인</strong>
+          쇼핑몰 계정의 접근 권한, 로그인 가능 여부, 네트워크 상태를 먼저 확인하세요.
+          쇼핑몰 화면 구조가 변경되면 일부 selector를 수정해야 할 수 있습니다.
+        </div>
+</section>
+<section class="section" id="quick-start">
+<h2>2. 빠른 시작</h2>
+<div class="quick-grid">
+<article class="step">
+<span class="step-number">1</span>
+<strong>앱 실행</strong>
+<p>배포된 앱을 실행하거나 프로젝트 폴더에서 <code class="inline">npm start</code>를 실행합니다.</p>
+</article>
+<article class="step">
+<span class="step-number">2</span>
+<strong>계정 등록</strong>
+<p>계정 등록 및 관리에서 사이트 로그인 계정을 저장합니다.</p>
+</article>
+<article class="step">
+<span class="step-number">3</span>
+<strong>수집 설정</strong>
+<p>사이트, 계정, 일반·상세 방식과 페이지 범위를 지정합니다.</p>
+</article>
+<article class="step">
+<span class="step-number">4</span>
+<strong>결과·전송 확인</strong>
+<p>실행 카드에서 한·일·영 번역, 저장 파일, 상품 결과 POST와 운송장 서버 응답을 확인합니다.</p>
+</article>
+</div>
+<h3>기본 실행 흐름</h3>
+<div aria-label="기본 실행 흐름" class="flow">
+<div class="flow-item">사이트·계정 선택</div>
+<div class="flow-arrow">→</div>
+<div class="flow-item">일반 / 상세 선택</div>
+<div class="flow-arrow">→</div>
+<div class="flow-item">수집 실행 추가</div>
+<div class="flow-arrow">→</div>
+<div class="flow-item">실행 카드 확인</div>
+<div class="flow-arrow">→</div>
+<div class="flow-item">CSV·JSON 저장 / 상품·운송장 POST</div>
+</div>
+</section>
+<section class="section" id="accounts">
+<h2>3. 계정 등록 및 관리</h2>
+<p>
+          수집 설정의 <strong>계정 등록 및 관리</strong> 버튼에서 등록 이름, 로그인 ID, 비밀번호를 입력합니다.
+          등록한 계정은 수집용 계정과 장바구니용 사이트별 계정 선택 목록에 함께 표시됩니다.
+        </p>
+<div class="two-col">
+<div class="info-card">
+<strong>등록 이름</strong>
+<p>화면에서 계정을 구분하기 위한 이름입니다. 예: 천유 운영계정, 과자 테스트계정</p>
+</div>
+<div class="info-card">
+<strong>ID / PW</strong>
+<p>해당 쇼핑몰의 실제 로그인 정보입니다. 잘못 입력하면 로그인 확인 단계에서 실패합니다.</p>
+</div>
+</div>
+</table>
+<div class="callout danger">
+<strong>계정 저장 주의</strong>
+          등록 계정은 현재 앱의 로컬 저장소에 보관됩니다. 공용 PC에서는 사용하지 말고,
+          운영 배포 시에는 OS 자격 증명 저장소 또는 암호화 저장 방식으로 전환하는 것이 안전합니다.
+        </div>
+</section>
+<section class="section" id="collection">
+<h2>4. 수집 설정</h2>
+<table>
+<thead>
+<tr><th>항목</th><th>설명</th><th>입력 기준</th></tr>
+</thead>
+<tbody>
+<tr><td>쇼핑몰 사이트</td><td>천유닷컴 또는 과자생각 수집 어댑터를 선택합니다.</td><td>필수. 비우면 .env 기본값</td></tr>
+<tr><td>카테고리</td><td>카테고리 코드 또는 상품 목록 URL을 지정합니다.</td><td>비우면 사이트 기본 전체 카테고리</td></tr>
+<tr><td>계정 선택</td><td>해당 수집 작업에 사용할 로그인 계정입니다.</td><td>등록 계정 또는 .env 계정</td></tr>
+<tr><td>수집 방식</td><td>일반 수집 또는 상세 수집을 선택합니다.</td><td>일반은 빠른 재고 중심, 상세는 상세페이지 추가</td></tr>
+<tr><td>브라우저 표시</td><td>Playwright 브라우저 창을 화면에 표시할지 선택합니다.</td><td>오류 확인 시 ‘표시’ 권장</td></tr>
+<tr><td>실행 방식</td><td>1회 실행 또는 지정 주기 반복 실행입니다.</td><td>반복은 이전 작업 종료 후 다음 작업 예약</td></tr>
+<tr><td>결과 기본 폴더</td><td>실행별 결과 하위 폴더가 생성될 기준 위치입니다.</td><td>폴더 선택 버튼으로 변경</td></tr>
+<tr><td>ISP 프록시</td><td>사이트 접속 경로를 아웃바운드로 분기하고 실패 시 보수적으로 안전 연결로 전환합니다.</td><td>등록 후 사용 필수</td></tr>
+<tr><td>API 키 사용 방식</td><td>환경변수 우선 순위 후 실행별 계정 설정으로 키를 선택 적용합니다.</td><td>등록 후 사용 필수</td></tr>
+</tbody>
+</table>
+<h3>고급 설정</h3>
+<div class="four-col">
+<article class="info-card">
+<strong>시작 / 종료 페이지</strong>
+<p>종료 페이지가 0이면 사이트의 마지막 페이지를 자동 감지합니다.</p>
+</article>
+<article class="info-card">
+<strong>상세 수집 최대 상품 수</strong>
+<p>0이면 상세 수집 대상 전체, 3이면 앞에서부터 최대 3개만 상세 수집합니다.</p>
+</article>
+<article class="info-card">
+<strong>상세 페이지 지연</strong>
+<p>상세페이지 사이의 대기 시간입니다. 차단·부하가 우려되면 값을 높입니다.</p>
+</article>
+</div>
+</section>
+<section class="section" id="modes">
+<h2>5. 일반 수집과 상세 수집</h2>
+<div class="two-col">
+<article class="info-card">
+<strong>일반 수집</strong>
+<p>
+      목록과 장바구니 데이터를 중심으로 상품 ID, 상품명, 판매·품절 상태, 옵션명,
+      수량, 가격, 재고 요약 등을 수집합니다. 번역 단계에서는 상품명과 옵션명을
+      일본어·영어로 함께 생성하여 결과 객체에 저장합니다.
+    </p>
+</article>
+<article class="info-card">
+<strong>상세 수집</strong>
+<p>
+      각 상품의 상세페이지의 카테고리, 상품번호, 상품바코드, 옵션바코드,
+      원산지, 소재, 무게, 포장사이즈, 박스 수량, 소비자가, 상세 정보,
+      대표·상세 이미지 URL 등을 저장합니다.
+    </p>
+</article>
+</div>
+<h3>사이트별 차이</h3>
+<table>
+<thead>
+<tr><th>사이트</th><th>일반 재고 처리</th><th>상세 이미지</th><th>장바구니</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>천유닷컴</td>
+<td>장바구니 옵션별 실제 구매 가능 수량을 확인합니다.</td>
+<td>대표 원본 이미지와 상세 이미지 URL을 분리합니다.</td>
+<td>상품과 옵션 ID를 기준으로 지정 수량을 선택합니다.</td>
+</tr>
+<tr>
+<td>과자생각</td>
+<td>목록의 판매 가능·품절 상태를 중심으로 처리합니다.</td>
+<td>상품 대표 영역과 <code class="inline">#detail</code> 상세 영역을 구분합니다.</td>
+<td>상품을 한 건씩 담고 장바구니 확인 후 다음 상품으로 진행합니다.</td>
+</tr>
+</tbody>
+</table>
+<h3>번역 필드 기준</h3>
+<table>
+<thead>
+<tr><th>필드</th><th>내용</th><th>사용 목적</th></tr>
+</thead>
+<tbody>
+<tr><td><code class="inline">nameKo</code></td><td>쇼핑몰에서 수집한 한국어 상품명</td><td>원본 데이터 및 검수 기준</td></tr>
+<tr><td><code class="inline">nameJa</code></td><td>일본어 번역 상품명</td><td>일본어 서비스와 기존 상품 데이터 연동</td></tr>
+<tr><td><code class="inline">nameEn</code></td><td>영어 번역 상품명</td><td>운송장 시스템과 영문 데이터 연동</td></tr>
+<tr><td><code class="inline">hscode</code></td><td>상품별 HS 코드</td><td>통관 및 규격 처리 기준 키</td></tr>
+</tbody>
+</table>
+<div class="callout">
+<strong>번역 처리 원칙</strong>
+      동일한 상품명은 한 번만 번역하고, 해당 상품의 옵션 목록을 함께 전달해
+      일본어와 영어 옵션명을 일괄 생성합니다. 이를 통해 번역 호출 수와 토큰 사용량을 줄입니다.
+    </div>
+
+</section>
+<section class="section" id="concurrent">
+<h2>6. 여러 수집 작업 동시 실행</h2>
+<p>수집이 진행 중이어도 다른 작업들을 추가로 수행할 수 있습니다.</p>
+<div class="status-demo">
+<span aria-hidden="true" class="status-dot"></span>
+<div>
+<strong>CCDOME · 상세 수집 · 과자 운영계정</strong>
+<div class="muted">상세페이지 8 / 20 · 실행 시간 1m 42s</div>
+</div>
+<span class="status-badge">실행 중</span>
+</div>
+<div class="callout">
+<strong>체크 누락 대응</strong>
+      상세 수집 중 체크 단계 누락이 발생해도 전체 재시도를 피하고, 누락된 대상만
+      작은 단위로 재시도합니다. 로그인 후 불필요한 대기 구간을 줄여 수집 속도를 유지합니다.
+    </div>
+<h3>실행 카드에서 가능한 작업</h3>
+<ul class="checklist">
+<li>각 작업의 사이트, 수집 방식, 계정, 진행 단계 확인</li>
+<li>특정 실행만 개별 취소</li>
+<li>완료한 실행의 결과 폴더 열기</li>
+<li>실행별 재고·요약·상품·상세 CSV 개별 저장</li>
+</ul>
+<h3>계정 단위 충돌 방지 규칙</h3>
+<table>
+<thead>
+<tr><th>상황</th><th>허용 여부</th></tr>
+</thead>
+<tbody>
+<tr><td>천유 A계정 장바구니 처리 중 → 천유 A계정 수집 시작</td><td>제한</td></tr>
+<tr><td>천유 A계정 장바구니 처리 중 → 천유 B계정 수집 시작</td><td>허용</td></tr>
+<tr><td>천유 A계정 장바구니 처리 중 → 과자 A계정 수집 시작</td><td>허용</td></tr>
+<tr><td>천유 A계정 수집 중 → 천유 A계정 장바구니 시작</td><td>제한</td></tr>
+<tr><td>서로 다른 사이트·계정의 일반/상세 수집 여러 건</td><td>허용</td></tr>
+</tbody>
+</table>
+<div class="callout success">
+  앱 전체를 잠그지 않고, 실제 로그인 세션이 충돌할 수 있는 동일 사이트 + 동일 계정 조합만 잠급니다.
+</div>
+</section>
+<section class="section" id="cart">
+<h2>7. 장바구니 자동 담기</h2>
+<p>
+          장바구니 UI에는 천유닷컴 계정, 과자생각 계정과 장바구니 담기 버튼만 표시됩니다.
+          사용자가 상품을 직접 입력하지 않고 Uploader 서버의 GET 응답 배열을 사용합니다.
+        </p>
+<h3>사용 순서</h3>
+<ol>
+<li>천유 상품이 있을 경우 사용할 천유 계정을 선택합니다.</li>
+<li>과자생각 상품이 있을 경우 사용할 과자생각 계정을 선택합니다.</li>
+<li><strong>장바구니 담기</strong> 버튼을 누릅니다.</li>
+<li>앱이 Uploader 서버에 GET 요청을 한 번 보냅니다.</li>
+<li>응답 배열을 사이트별로 분리하고, 각 사이트에 한 번 로그인합니다.</li>
+<li>천유 상품은 옵션 단위로, 과자생각 상품은 한 상품씩 순차적으로 담습니다.</li>
+<li>품절·재고 없음 항목은 해당 상품만 실패 처리하고 이어서 진행합니다.</li>
+</ol>
+<h3>GET 요청</h3>
+<pre>GET https://www.web3.io.kr/joahstore/crawling/uploader</pre>
+<h3>예상 응답 형식</h3>
+<pre>[
+  {
+    "productId": "94233",
+    "optionId": "118381",
+    "quantity": 3,
+    "site": "cheonyu"
+  },
+  {
+    "productId": "1000005285",
+    "optionId": "",
+    "quantity": 3,
+    "site": "ccdome"
+  }
+]</pre>
+<h3>내부 처리 순서</h3>
+<div class="flow">
+<div class="flow-item">GET 응답 배열</div>
+<div class="flow-arrow">→</div>
+<div class="flow-item">site 기준 분리</div>
+<div class="flow-arrow">→</div>
+<div class="flow-item">필요 계정 검증</div>
+<div class="flow-arrow">→</div>
+<div class="flow-item">사이트별 로그인</div>
+<div class="flow-arrow">→</div>
+<div class="flow-item">실제 장바구니 담기</div>
+</div>
+<div class="callout warning">
+<strong>과자생각 처리 방식</strong>
+          여러 상품을 한 번에 제출하지 않습니다. 상품 상세 이동 → 수량 입력 → 장바구니 추가 →
+          장바구니에서 해당 상품 확인 → 다음 상품 순서로 처리합니다.
+        </div>
+<div class="callout danger">
+<strong>장바구니 예외 처리</strong>
+          수량 확인 API/DOM 동기화 실패, 품절, 옵션 미매칭은 각 상품 단위로 분기 처리하고
+          해당 상품만 별도 실패 사유로 기록 후 다음 상품을 계속 진행합니다.
+        </div>
+</section>
+<section class="section" id="outputs">
+<h2>8. 결과 파일</h2>
+<p>
+          결과는 기본 출력 폴더 아래에 실행별 하위 폴더로 저장됩니다.
+          최근 완료 결과는 하단 결과 파일 영역에서, 개별 실행 결과는 실행 카드에서 저장할 수 있습니다.
+        </p>
+<table>
+<thead>
+<tr><th>파일</th><th>생성 조건</th><th>내용</th></tr>
+</thead>
+<tbody>
+<tr><td><code class="inline">inventory.csv</code></td><td>항상</td><td>옵션별 재고 또는 판매 가능 상태</td></tr>
+<tr><td><code class="inline">summary.csv</code></td><td>항상</td><td>상품 단위 재고·옵션·가격 요약</td></tr>
+<tr><td><code class="inline">products.csv</code></td><td>항상</td><td>수집한 전체 상품 목록과 한국어·일본어·영어 상품명</td></tr>
+<tr><td><code class="inline">details.csv</code></td><td>상세 수집 결과가 있을 때</td><td>상세페이지의 상품 정보, 이미지 URL, 상품바코드/옵션바코드, 원산지, 소재, 무게, 포장사이즈, hscode</td></tr>
+<tr><td><code class="inline">result.json</code></td><td>항상</td><td>수집 결과 객체와 상품·옵션별 한·일·영 번역</td></tr>
+<tr><td><code class="inline">detailResult.json</code></td><td>상세 수집 결과가 있을 때</td><td>실제 상세 수집된 상품과 상세 정보·이미지·번역 데이터를 productId key로 구성, hscode 포함</td></tr>
+</tbody>
+</table>
+<h3>JSON 저장 방식</h3>
+<p>
+          수집 중 한 줄씩 파일에 추가하지 않습니다. 수집 데이터를 메모리에 모은 후 객체를 완성하고,
+          마지막 저장 단계에서 JSON 파일 전체를 한 번에 기록합니다.
+        </p>
+<div class="callout">
+<strong>상세 수집 최대 수량과 결과 차이</strong>
+          일반 결과에는 목록에서 수집한 전체 상품이 들어갈 수 있지만,
+          <code class="inline">detailResult.json</code>에는 실제 상세페이지를 연 상품만 들어갑니다.
+         상품명과 옵션명은 nameKo, nameJa, nameEn 필드로 저장되며, 수집 항목에 barcode, origin, material, weight, packageSize, hscode가 추가됩니다.</div>
+</section>
+<section class="section" id="server-sync">
+<h2>9. 상품 결과 및 운송장 서버 전송</h2>
+<p>CSV·JSON 파일 저장이 끝나면 파일을 다시 읽지 않고 메모리에 완성된 결과 객체를 POST합니다. 실제 로컬 JSON 파일은 그대로 유지하며, 상품 결과 전송용 복사본에서만 모든 productUrl 키를 제거합니다. 가격은 수집 시점의 최신 원엔 환율로 환산된 값 기준으로 반영되고, 운송장 데이터는 한국어·일본어·영어 상품명과 옵션명을 동일한 기준으로 정리해 전송합니다.</p>
+<h3>일반 결과</h3>
+<pre>POST https://www.web3.io.kr/joahstore/crawling/uploader
+Content-Type: application/json
+
+{
+  "type": "재고",
+  "data": { /* productUrl이 제거된 result.json 데이터 */ }
+}</pre>
+<h3>상세 결과</h3>
+<pre>{
+  "type": "디테일",
+  "data": { /* productUrl이 제거된 detailResult.json 데이터 */ }
+}</pre>
+<h3>운송장 서버 전송</h3>
+<p>
+      운송장 시스템과 상품 데이터의 명칭 기준을 맞추기 위해 기존 일본어 번역값과 함께
+      영어 상품명·옵션명을 전송합니다. 전송 대상은 앱에서 정리한 운송장번호와 상품 식별값이며,
+      서버 주소와 인증값은 운영 환경 설정을 사용합니다.
+    </p>
+<div class="flow">
+<div class="flow-item">운송장 데이터 조회</div>
+<div class="flow-arrow">→</div>
+<div class="flow-item">상품·옵션 연결</div>
+<div class="flow-arrow">→</div>
+<div class="flow-item">한·일·영 명칭 적용</div>
+<div class="flow-arrow">→</div>
+<div class="flow-item">운송장 서버 POST</div>
+<div class="flow-arrow">→</div>
+<div class="flow-item">응답·실패 로그 저장</div>
+</div>
+<div class="callout">
+<strong>데이터 일관성</strong>
+      상품 수집 결과와 운송장 전송 데이터가 동일한 번역 결과를 사용하므로
+      일본어 화면, 영문 배송 정보, 백엔드 상품 데이터 사이의 명칭 불일치를 줄일 수 있습니다.
+    </div>
+
+<table>
+<thead>
+<tr><th>전송 대상</th><th>실행 조건</th><th>전송 내용</th></tr>
+</thead>
+<tbody>
+<tr><td>일반 상품 결과</td><td>일반·상세 수집 완료 시</td><td><code class="inline">type: 재고</code> 결과 1회</td></tr>
+<tr><td>상세 상품 결과</td><td>상세 수집 완료 시</td><td><code class="inline">type: 디테일</code> 결과 1회 추가</td></tr>
+<tr><td>운송장 데이터</td><td>운송장 전송 기능 실행 시</td><td>운송장번호, 상품 식별값, 한·일·영 상품명과 옵션 데이터</td></tr>
+</tbody>
+</table>
+<div class="callout warning">
+<strong>POST 실패 처리</strong>
+          서버 응답 오류 또는 요청 시간 초과가 발생하면 해당 수집 실행이 실패 상태로 표시될 수 있습니다.
+          로컬에 이미 저장된 결과 파일이 있는지 실행 폴더에서 별도로 확인하세요.
+        </div>
+</section>
+<section class="section" id="logs">
+<h2>10. 콘솔 로그 확인</h2>
+<p>장바구니와 결과 전송 상태는 Electron 실행 터미널과 Renderer 개발자 도구에서 확인합니다.</p>
+<table>
+<thead>
+<tr><th>로그</th><th>의미</th></tr>
+</thead>
+<tbody>
+<tr><td><code class="inline">[CART UPLOADER GET]</code></td><td>Uploader GET 요청을 시작한 주소</td></tr>
+<tr><td><code class="inline">[CART UPLOADER RESPONSE]</code></td><td>GET 응답으로 받은 전체 상품 배열</td></tr>
+<tr><td><code class="inline">[CART cheonyu]</code></td><td>천유 장바구니 진행 로그</td></tr>
+<tr><td><code class="inline">[CART ccdome]</code></td><td>과자생각 장바구니 진행 로그</td></tr>
+<tr><td><code class="inline">[RESULT POST] 재고 전송 시작</code></td><td>일반 결과 POST 시작</td></tr>
+<tr><td><code class="inline">[RESULT POST] 디테일 전송 시작</code></td><td>상세 결과 POST 시작</td></tr>
+<tr><td><code class="inline">[RESULT POST] ... 응답</code></td><td>서버 상태 코드와 응답 내용</td></tr>
+<tr><td><code class="inline">[RATE SYNC]</code></td><td>원엔 환율 조회/갱신, 아카이브 저장 주기 기록</td></tr>
+<tr><td><code class="inline">[LANGUAGE REDIRECT]</code></td><td>사이트 응답이 영어일 때 한국어 재접속 보정 시도 내역</td></tr>
+<tr><td><code class="inline">[RETRY DETAIL]</code></td><td>체크 미적용 상품의 소단위 재시도 결과</td></tr>
+<tr><td><code class="inline">[CART OUT OF STOCK]</code></td><td>품절 또는 수량 부족 상품의 예외 처리 결과</td></tr>
+
+<tr><td><code class="inline">[TRANSLATION]</code></td><td>상품명·옵션명의 일본어·영어 번역 진행 및 결과</td></tr>
+<tr><td><code class="inline">[DETAIL WORKER n/10]</code></td><td>상세 수집 탭별 작업 상품과 진행 상태</td></tr>
+<tr><td><code class="inline">[SHIPPING POST]</code></td><td>운송장 서버 요청 주소, 상태 코드, 응답 또는 실패 원인</td></tr>
+</tbody>
+</table>
+<h3>개발자 도구</h3>
+<ul>
+<li>개발 환경에서는 Electron 창의 개발자 도구 Console에서 Renderer 로그를 확인합니다.</li>
+<li>Playwright, 로그인, 파일 저장, GET·POST 로그는 앱을 실행한 터미널에서 확인합니다.</li>
+<li>배포판에서 개발자 도구가 비활성화되어 있다면 로그 파일 또는 터미널 실행 방식으로 확인합니다.</li>
+</ul>
+</section>
+<section class="section faq" id="troubleshooting">
+<h2>11. 문제 해결</h2>
+<details>
+<summary>“로그인 성공 확인 실패”가 표시됩니다.</summary>
+<div>
+            계정 ID/PW가 맞는지 확인하고 브라우저 표시를 ‘표시’로 변경해 실제 로그인 화면과 보안 인증 여부를 확인합니다.
+            사이트가 로그인 폼 또는 로그인 성공 문구를 변경한 경우 로그인 selector 수정이 필요합니다.
+          </div>
+</details>
+<details>
+<summary>같은 계정으로 수집 또는 장바구니를 시작할 수 없습니다.</summary>
+<div>
+            동일 사이트·동일 계정 작업이 이미 실행 중인 상태입니다. 해당 실행 카드가 끝나거나 취소된 후 다시 시도하세요.
+            다른 계정이나 다른 사이트 작업은 동시에 실행할 수 있습니다.
+          </div>
+</details>
+<details>
+<summary>Uploader GET 응답에 상품이 없다고 나옵니다.</summary>
+<div>
+            서버 주소 응답이 JSON 배열인지 확인하고, Electron 터미널의 <code class="inline">[CART UPLOADER RESPONSE]</code>
+            로그를 확인합니다. 각 항목에는 productId, optionId, quantity, site가 필요합니다.
+          </div>
+</details>
+<details>
+<summary>과자생각에서 첫 상품만 담기거나 일부 상품이 누락됩니다.</summary>
+<div>
+            최신 버전은 상품을 하나씩 처리하고 매번 장바구니에서 확인합니다. 누락 ID 오류가 표시되면 상품 상세의 수량 input,
+            장바구니 버튼 또는 장바구니 row selector가 현재 사이트 DOM과 일치하는지 확인합니다.
+          </div>
+</details>
+<details>
+<summary>앱 접속 시 영문 페이지가 먼저 열립니다.</summary>
+<div>
+            일부 네트워크 경로에서 영문 페이지가 응답하면 앱이 자동으로 한글 페이지로 재접속합니다.
+            로그의 <code class="inline">[LANGUAGE REDIRECT]</code> 항목을 확인하고,
+            사이트 언어 강제 옵션이 로그인 계정 정책과 일치하는지 점검하세요.
+          </div>
+</details>
+<details>
+<summary>상세 이미지 URL이 비어 있습니다.</summary>
+<div>
+            브라우저 표시 모드에서 상세 영역이 실제로 로드되는지 확인합니다. 과자생각은 대표 이미지 영역과
+            <code class="inline">#detail</code> 영역을 구분하며, 썸네일 경로는 제외합니다. 사이트의 lazy-load 속성 변경 여부도 확인하세요.
+          </div>
+</details>
+<details>
+<summary>POST 요청 실패 후 결과 파일이 사라졌나요?</summary>
+<div>
+            POST는 로컬 저장 이후 실행됩니다. 실행별 출력 폴더에서 result.json, detailResult.json과 CSV를 먼저 확인하세요.
+            단, 저장 단계 이전에 실패했다면 파일이 생성되지 않았을 수 있습니다.
+          </div>
+</details>
+<details>
+<summary>결과 폴더 변경이 실행 중인 작업에도 적용되나요?</summary>
+<div>
+            변경한 결과 기본 폴더는 변경 이후 새로 시작하는 실행부터 적용됩니다. 이미 실행 중인 작업은 시작 시점의 폴더 설정을 사용합니다.
+          </div>
+</details>
+<details>
+<summary>Playwright 브라우저가 열리지 않습니다.</summary>
+<div>
+            패키지 설치 상태와 Playwright 브라우저 파일을 확인하고, 소스 실행 환경에서는 의존성 설치 후 다시 시작합니다.
+            숨김 모드에서도 브라우저 프로세스는 실행되므로 터미널 오류를 확인하세요.
+          </div>
+</details>
+
+<details>
+<summary>영어 상품명 또는 영어 옵션명이 비어 있습니다.</summary>
+<div>
+        번역 요청 결과에 <code class="inline">nameEn</code> 또는 옵션별 <code class="inline">en</code> 값이 포함되었는지 확인합니다.
+        동일 상품 옵션을 묶어 번역하는 구조이므로 상품 ID와 옵션 ID가 번역 결과의 ID와 일치해야 합니다.
+      </div>
+</details>
+<details>
+<summary>일반 수집에서 특정 상품만 누락됩니다.</summary>
+<div>
+        체크 누락 항목은 소단위 재시도로 보완 처리됩니다. 재시도 후에도 실패하면
+        로그의 <code class="inline">[RETRY DETAIL]</code>와 페이지 오류를 함께 확인하세요.
+      </div>
+</details>
+<details>
+<summary>상세 수집을 10탭으로 실행한 뒤 PC가 느려집니다.</summary>
+<div>
+        브라우저 표시 모드, 이미지 로딩, PC 메모리 상태를 확인합니다. 운영 환경 성능이 낮으면
+        상세 동시 탭 수를 5개 이하로 낮추고 상세 페이지 지연 시간을 늘려 안정성을 우선합니다.
+      </div>
+</details>
+<details>
+<summary>운송장 서버 전송이 실패합니다.</summary>
+<div>
+        Electron 터미널의 <code class="inline">[SHIPPING POST]</code> 로그에서 요청 주소, 상태 코드와 응답 내용을 확인합니다.
+        운송장번호 누락, 상품 ID 연결 실패, 서버 인증값 또는 네트워크 오류 여부를 순서대로 점검합니다.
+      </div>
+</details>
+</section>
+<section class="section" id="security">
+<h2>12. 보안 및 운영 주의사항</h2>
+<ul class="checklist">
+<li>쇼핑몰 계정 비밀번호를 GET query나 결과 JSON에 포함하지 않습니다.</li>
+<li>장바구니 Uploader GET은 상품 목록만 수신하고, 계정 정보는 로컬 로그인에만 사용합니다.</li>
+<li>결과 POST에는 수집 데이터만 전송하며 productUrl은 전송용 데이터에서 제거합니다.</li>
+<li>공용 PC에서 계정 등록 기능을 사용하지 않습니다.</li>
+<li>운영 계정으로 테스트하기 전에 별도 테스트 계정으로 selector와 수량 처리를 확인합니다.</li>
+<li>반복 실행 주기는 사이트 부하와 이용정책을 고려하여 충분한 간격으로 설정합니다.</li>
+<li>ISP 프록시/API 키는 소스에 하드코딩하지 않고 환경 설정에서 관리합니다.</li>
+<li>환율 아카이브 파일은 실행 사용자 권한이 있는 경로만 접근하도록 제한합니다.</li>
+
+<li>영문 번역 데이터에는 계정 비밀번호나 서버 인증값을 포함하지 않습니다.</li>
+<li>운송장 서버 주소와 인증정보는 소스에 직접 노출하지 않고 운영 환경 설정으로 관리합니다.</li>
+<li>10탭 상세 수집 전 운영 PC의 메모리와 네트워크 상태를 확인합니다.</li>
+</ul>
+</section>
+<section class="section" id="checklist">
+<h2>13. 운영 체크리스트</h2>
+<div class="two-col">
+<div>
+<h3>실행 전</h3>
+<ul class="checklist">
+<li>인터넷 연결 확인</li>
+<li>사이트별 계정 로그인 가능 여부 확인</li>
+<li>결과 폴더의 쓰기 권한과 여유 공간 확인</li>
+<li>수집 사이트와 카테고리 확인</li>
+<li>일반·상세 수집 방식 확인</li>
+<li>페이지 범위와 상세 최대 수량 확인</li>
+<li>원엔 환율 갱신(매시) 및 일일 아카이브 저장 경로 확인</li>
+<li>영어 번역 및 운송장 서버 설정 확인</li>
+<li>상세 수집 동시 탭 수가 운영 PC 사양에 적절한지 확인</li>
+</ul>
+</div>
+<div>
+<h3>실행 후</h3>
+<ul class="checklist">
+<li>실행 카드가 완료 상태인지 확인</li>
+<li>CSV 행 수와 JSON 상품 수 확인</li>
+<li>상세 수집 시 detailResult.json 생성 확인</li>
+<li>RESULT POST 서버 응답 확인</li>
+<li>장바구니 요청 시 사이트별 실제 담긴 수량 확인</li>
+<li>오류 발생 시 실행 폴더와 콘솔 로그 보관</li>
+<li>상품·옵션의 nameEn, barcode, hscode 누락 여부 확인</li>
+<li>10개 상세 탭의 완료·실패 수 확인</li>
+<li>품절 예외 처리 건수와 재시도 완료 건수 일치 여부 확인</li>
+<li>운송장 서버 상태 코드와 응답 내용 확인</li>
+</ul>
+</div>
+</div>
+</section>
+<footer class="footer">쇼핑몰 상품 수집기 운영 설명서 · 기준 버전 2026-08-17 · v1.2.3</footer>
+</main>
+</div>
+<script>
+    (() => {
+      const sidebar = document.getElementById('sidebar');
+      const mobileNavButton = document.getElementById('mobileNavButton');
+      const navLinks = Array.from(document.querySelectorAll('.nav-link'));
+      const sections = navLinks
+        .map((link) => document.querySelector(link.getAttribute('href')))
+        .filter(Boolean);
+
+      mobileNavButton.addEventListener('click', () => {
+        sidebar.classList.toggle('open');
+      });
+
+      navLinks.forEach((link) => {
+        link.addEventListener('click', () => {
+          sidebar.classList.remove('open');
+        });
+      });
+
+      const observer = new IntersectionObserver((entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+
+        if (!visible) return;
+
+        navLinks.forEach((link) => {
+          link.classList.toggle(
+            'active',
+            link.getAttribute('href') === `#${visible.target.id}`,
+          );
+        });
+      }, {
+        rootMargin: '-20% 0px -65% 0px',
+        threshold: [0.01, 0.15, 0.4],
+      });
+
+      sections.forEach((section) => observer.observe(section));
+
+      document.getElementById('topButton').addEventListener('click', () => {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      });
+
+      let faqExpanded = false;
+      document.getElementById('expandFaqButton').addEventListener('click', (event) => {
+        faqExpanded = !faqExpanded;
+        document.querySelectorAll('.faq details').forEach((item) => {
+          item.open = faqExpanded;
+        });
+        event.currentTarget.textContent = faqExpanded ? 'FAQ 모두 닫기' : 'FAQ 모두 열기';
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,8 +1,8 @@
 {
   "name": "mall-collector-desktop",
   "productName": "Mall Collector",
-  "version": "1.2.2",
-  "description": "천유닷컴과 과자생각 상품·재고를 로컬에서 수집하는 Electron 데스크톱 앱",
+  "version": "1.3.0",
+  "description": "특정 사이트의 상품·재고를 수집하는 데스크톱 앱",
   "main": "electron/main.js",
   "private": true,
   "scripts": {

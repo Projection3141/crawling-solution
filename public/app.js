@@ -2066,6 +2066,48 @@ window.addEventListener("beforeunload", () => {
   }
 });
 
+// 사이드바 뷰 전환 기능
+function switchView(viewName) {
+  const viewMap = {
+    dashboard: "collectionView",
+    "new-collection": "collectionView",
+    runs: "runsView",
+    cart: "cartView",
+    settings: "downloadView",
+  };
+
+  const targetViewId = viewMap[viewName];
+  if (!targetViewId) return;
+
+  // 모든 뷰 섹션 숨기기
+  document.querySelectorAll(".view-section").forEach((section) => {
+    section.classList.remove("active");
+  });
+
+  // 해당 뷰 표시
+  const targetView = document.getElementById(targetViewId);
+  if (targetView) {
+    targetView.classList.add("active");
+  }
+
+  // 네비게이션 항목 활성화 상태 업데이트
+  document.querySelectorAll(".nav-item").forEach((item) => {
+    item.classList.remove("active");
+  });
+  document
+    .querySelector(`.nav-item[data-view="${viewName}"]`)
+    ?.classList.add("active");
+}
+
+// 사이드바 네비게이션 이벤트 처리
+document.querySelectorAll(".nav-item").forEach((item) => {
+  item.addEventListener("click", (event) => {
+    event.preventDefault();
+    const viewName = item.getAttribute("data-view");
+    switchView(viewName);
+  });
+});
+
 initialize().catch((error) => {
   elements.appBadge.textContent = "초기화 실패";
   showError(error.message);
