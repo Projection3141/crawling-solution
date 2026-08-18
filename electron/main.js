@@ -135,6 +135,11 @@ const runResults = new Map();
  * key 형식은 계정 ID를 우선 사용하고, ID가 없을 때만 로컬 계정 식별자를 사용한다.
  */
 const cartAccountLocks = new Map();
+/**
+ * 수집 작업에서 동일 사이트·계정 동시 실행을 제한한다.
+ */
+const collectionAccountLocks = new Map();
+
 let activeCartUpload = null;
 let latestCompletedRunId = "";
 
@@ -283,6 +288,18 @@ function lockCartAccount(accountKey, site, account) {
         site,
         accountName: String(account?.accountName || ""),
         accountId: String(account?.accountId || ""),
+    });
+}
+
+/** 수집 계정 잠금을 등록한다. */
+function lockCollectionAccount(accountKey, site, account) {
+    if (!accountKey) return;
+
+    collectionAccountLocks.set(accountKey, {
+        site,
+        accountName: String(account?.accountName || ""),
+        accountId: String(account?.accountId || ""),
+        startedAtMs: Date.now(),
     });
 }
 
@@ -1023,6 +1040,7 @@ async function executeCollection(run, config) {
             },
         });
     } finally {
+        collectionAccountLocks.delete(run.accountKey);
         activeRuns.delete(run.id);
         emitState();
         maybeQuitAfterWork();
@@ -1083,6 +1101,24 @@ function startCollection(input) {
         );
     }
 
+    if (collectionAccountLocks.has(accountKey)) {
+        const lockInfo = collectionAccountLocks.get(accountKey) || {};
+        const accountLabel = formatAccountLabel(
+            config.mall,
+            safeInput.accountName || lockInfo.accountName,
+            config.accountId || lockInfo.accountId,
+        );
+        const modeLabel =
+            safeInput.collectionMode === "detail" ? "상세 수집" : "일반 수집";
+
+        throw new Error(
+            `${accountLabel} 계정으로 이미 수집 작업이 진행 중입니다. ` +
+            `같은 계정으로 수집을 동시에 실행할 수 없어 ` +
+            `${modeLabel} 시작에 실패했습니다. ` +
+            `현재 작업이 끝난 후 다시 시도하세요.`,
+        );
+    }
+
     const conflictingProxyRun = findActiveRunByProxySlotKey(proxySlotKey);
 
     if (conflictingProxyRun) {
@@ -1127,6 +1163,11 @@ function startCollection(input) {
         files: createPublicFileState(),
         error: "",
     };
+
+    lockCollectionAccount(accountKey, config.mall, {
+        accountName: safeInput.accountName,
+        accountId: config.accountId,
+    });
 
     activeRuns.set(id, run);
     runStates.set(id, runState);
@@ -1579,8 +1620,8 @@ function hardenSessionAndWindow(window) {
 function createMainWindow() {
     mainWindow = new BrowserWindow({
         title: "쇼핑몰 상품 수집기",
-        width: 1240,
-        height: 900,
+        width: 1440,
+        height: 1080,
         minWidth: 920,
         minHeight: 720,
         show: false,
@@ -1588,6 +1629,7 @@ function createMainWindow() {
         icon: path.resolve(
             __dirname,
             "..",
+            "public",
             "assets",
             "icon.ico",
         ),

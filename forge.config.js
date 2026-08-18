@@ -17,6 +17,7 @@ module.exports = {
     executableName: "MallCollector",
     icon: path.resolve(
       __dirname,
+      "public",
       "assets",
       "icon.ico",
     ),
@@ -52,6 +53,7 @@ module.exports = {
         noMsi: true,
         setupIcon: path.resolve(
           __dirname,
+          "public",
           "assets",
           "icon.ico",
         ),

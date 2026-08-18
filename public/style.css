@@ -19,6 +19,15 @@
   --line-strong: #c5d0df;
   --code-bg: #edf2ff;
   --code-text: #2f467b;
+  --canvas: #f4f6f7;
+  --subtle: #f0f3f4;
+  --input: #ffffff;
+  --ink: #172126;
+  --ok: #257a55;
+  --warn: #9a5a00;
+  --focus: #45aab4;
+  --accent-ink: #ffffff;
+  --progress-track: #dbe3e6;
 
   --primary: #2e60f0;
   --primary-hover: #1e4dbd;
@@ -46,10 +55,12 @@
   --shadow: 0 16px 36px rgba(25, 38, 68, 0.08);
   --shadow-soft: 0 8px 18px rgba(25, 38, 68, 0.06);
   --overlay: rgba(15, 23, 42, 0.42);
+  --selected: #eaf6f7;
+  --progress: #2e60f0;
 }
 
 [data-theme="dark"] {
-  --bg: #0f172a;
+  --bg: #101416;
   --surface: #111f33;
   --surface-soft: #1a2a42;
   --surface-muted: #122039;
@@ -63,6 +74,22 @@
   --line-strong: #354a67;
   --code-bg: #1b2b45;
   --code-text: #b6d0ff;
+  --canvas: #101416;
+  --subtle: #1d2428;
+  --input: #11171a;
+  --ink: #e8ecee;
+  --muted: #98a5ab;
+  --text: #e8ecee;
+  --text-muted: #98a5ab;
+  --text-weak: #7c8ba2;
+  --ok: #55bd89;
+  --warn: #e3a94d;
+  --focus: #56bdc6;
+  --accent: #35a8b3;
+  --accent-ink: #081315;
+  --progress-track: #303b40;
+  --selected: #183236;
+  --progress: #7398ff;
 
   --primary: #7398ff;
   --primary-hover: #92afff;
@@ -89,6 +116,13 @@
   --shadow: 0 20px 44px rgba(2, 6, 23, 0.45);
   --shadow-soft: 0 10px 22px rgba(2, 6, 23, 0.45);
   --overlay: rgba(2, 6, 23, 0.65);
+  --progress: #7398ff;
+}
+
+html[data-theme="light"],
+html[data-theme="dark"] {
+  --surface-elevated: color-mix(in oklab, var(--surface) 95%, var(--line));
+  --surface-muted: color-mix(in oklab, var(--surface) 90%, var(--canvas));
 }
 
 * {
@@ -204,6 +238,10 @@ code {
     color 0.15s ease;
 }
 
+.nav-item-spaced {
+  margin-top: 10px;
+}
+
 .nav-item:hover {
   background: var(--surface-elevated);
   color: var(--primary);
@@ -246,10 +284,14 @@ code {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 24px;
-  padding: 40px;
+  gap: 18px;
+  padding: 20px;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
+}
+
+.page-header h1 {
+  font-size: 1.5rem;
 }
 
 .page-header > div:first-child {
@@ -258,6 +300,12 @@ code {
 
 .page-header > div:first-child > p {
   margin: 0;
+}
+
+.page-header .page-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 /* 콘텐츠 래퍼 (스크롤 가능) */
@@ -303,6 +351,10 @@ code {
   gap: 24px;
 }
 
+.status-header h2 {
+  margin-bottom: 10px;
+}
+
 h1,
 h2,
 h3,
@@ -332,9 +384,9 @@ h3 {
 .section-kicker {
   margin-bottom: 8px;
   color: var(--primary);
-  font-size: 0.76rem;
-  font-weight: 800;
-  letter-spacing: 0.13em;
+  font-size: 1.3rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
   text-transform: none;
 }
 
@@ -392,11 +444,11 @@ h3 {
 }
 
 .panel {
-  margin-bottom: 0;
+  margin-bottom: 10px;
   border: 1px solid color-mix(in oklab, var(--line) 85%, transparent);
-  border-radius: 20px;
+  border-radius: 10px;
   background: var(--surface);
-  padding: 28px;
+  padding: 20px;
   box-shadow: var(--shadow);
 }
 
@@ -408,6 +460,27 @@ h3 {
   align-items: flex-end;
   gap: 8px;
   text-align: right;
+}
+
+.result-control-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-actions {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-muted);
+  padding: 14px 16px;
+}
+
+.settings-actions h3 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+  letter-spacing: -0.02em;
 }
 
 .header-actions p,
@@ -619,6 +692,22 @@ select:disabled {
   background: transparent;
   padding: 4px 0;
   color: var(--primary);
+}
+
+.button {
+  min-height: 34px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 7px 12px;
+  font-weight: 680;
+}
+
+.button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .text-button:hover:not(:disabled) {
@@ -917,6 +1006,172 @@ button:disabled {
   margin-top: 18px;
 }
 
+/* 콘솔형 상단바 및 제안 스타일 보강 */
+.console-a {
+  display: grid;
+  grid-template-rows: 52px 1fr;
+  min-height: 100vh;
+}
+
+.topbar {
+  height: 52px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
+  gap: 16px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.topbar .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 760;
+  font-size: 15px;
+}
+
+.topbar .brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.topbar .brand-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.topbar .brand-mark::after {
+  content: none;
+}
+
+.topbar .brand-mark::before {
+  content: none;
+}
+
+.topbar .theme-switch,
+.top-actions,
+.row-actions {
+  display: flex;
+  align-items: center;
+}
+
+.top-actions {
+  gap: 14px;
+}
+
+.theme-switch {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--subtle);
+  padding: 2px;
+}
+
+.theme-switch button {
+  height: 28px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.theme-switch button[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+.theme-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.button.quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.console-a .app-layout {
+  min-height: 0;
+  height: calc(100vh - 52px);
+  overflow: hidden;
+}
+
+.console-a .sidebar,
+.console-a .sidebar-right {
+  overflow: auto;
+}
+
+.console-a .page-header {
+  border-top: 1px solid transparent;
+}
+
+.console-a .content-wrapper {
+  padding: 24px;
+  margin-bottom: 20px;
+  background: var(--canvas);
+  gap: 18px;
+}
+
+.console-a .main-content {
+  min-width: 0;
+}
+
+.console-a .sidebar-right {
+  width: 320px;
+  border-left: 1px solid var(--line);
+  padding: 0;
+}
+
+.console-a .right-panel {
+  position: sticky;
+  top: 0;
+  border: 0;
+  border-radius: 18px;
+  margin: 0;
+}
+
+.console-a .panel {
+  border-color: color-mix(in oklab, var(--line) 80%, transparent);
+}
+
+.console-a .panel.right-panel {
+  height: fit-content;
+}
+
+.console-a .nav-item::after {
+  content: "";
+  width: 0;
+  height: 0;
+}
+
+.console-a .nav-item.active {
+  border-color: var(--accent);
+  background: var(--selected);
+  color: var(--ink);
+}
+
+.console-a .nav-item-spaced {
+  margin-top: 12px;
+}
+
 /* 앱 상단 운송정보 자동 전송 제어 */
 .app-header-controls {
   display: flex;
@@ -1028,7 +1283,7 @@ button:disabled {
 
   .nav-item {
     min-width: fit-content;
-  }
+   }
 
   .page-header {
     flex-direction: column;
@@ -1039,7 +1294,7 @@ button:disabled {
   .page-header > div:first-child > h1 {
     font-size: 1.5rem;
   }
-
+ 
   .content-wrapper {
     flex-direction: column;
     padding: 16px;
@@ -1086,6 +1341,14 @@ button:disabled {
     max-width: 100%;
     align-items: flex-start;
     text-align: left;
+  }
+
+  .result-control-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-actions {
+    padding: 12px;
   }
 
   .app-header-controls {

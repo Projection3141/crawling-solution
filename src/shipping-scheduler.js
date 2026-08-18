@@ -477,6 +477,12 @@ function createShippingScheduler({
   let running = false;
   let timer = null;
   let stopped = false;
+  let nextRunAt = null;
+  let lastStartedAt = null;
+  let lastFinishedAt = null;
+  let lastSuccessAt = null;
+  let lastRecordCount = 0;
+  let lastError = "";
 
   function emitState(
     patch = {},
@@ -513,11 +519,11 @@ function createShippingScheduler({
     );
 
     emitState({
-      nextRunAt:
+      nextRunAt: (nextRunAt =
         new Date(
           Date.now() +
             INTERVAL_MS,
-        ).toISOString(),
+        ).toISOString()),
     });
   }
 
@@ -535,8 +541,7 @@ function createShippingScheduler({
 
     emitState({
       lastError: "",
-      startedAt:
-        new Date().toISOString(),
+      lastStartedAt: (lastStartedAt = new Date().toISOString()),
     });
 
     try {
@@ -546,10 +551,11 @@ function createShippingScheduler({
         );
 
       emitState({
+        lastError: "",
         lastSuccessAt:
-          new Date().toISOString(),
-        lastCount:
-          result.count,
+          (lastSuccessAt = new Date().toISOString()),
+        lastRecordCount:
+          (lastRecordCount = result.count),
       });
     } catch (error) {
       console.error(
@@ -564,7 +570,13 @@ function createShippingScheduler({
       });
     } finally {
       running = false;
-      emitState();
+      emitState({
+        lastFinishedAt: (lastFinishedAt = new Date().toISOString()),
+      });
+      emitState({
+        lastCount: lastRecordCount,
+        startedAt: lastStartedAt,
+      });
       scheduleNext();
     }
   }
@@ -611,6 +623,14 @@ function createShippingScheduler({
     getState: () => ({
       enabled,
       running,
+      lastStartedAt,
+      lastFinishedAt,
+      lastSuccessAt,
+      lastRecordCount,
+      lastError,
+      nextRunAt,
+      startedAt: lastStartedAt,
+      lastCount: lastRecordCount,
     }),
   };
 }

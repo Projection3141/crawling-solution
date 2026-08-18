@@ -74,9 +74,9 @@ const elements = {
   runButton: document.querySelector("#runButton"),
   mallHelp: document.querySelector("#mallHelp"),
   categoryHelp: document.querySelector("#categoryHelp"),
-  envHint: document.querySelector("#envHint"),
   appBadge: document.querySelector("#appBadge"),
   shippingToggleButton: document.querySelector("#shippingToggleButton"),
+  shippingStatusText: document.querySelector("#shippingStatusText"),
 
   activeRunCount: document.querySelector("#activeRunCount"),
   runList: document.querySelector("#runList"),
@@ -357,7 +357,6 @@ function loadAccounts() {
   renderAccountSelect();
   renderAccountList();
   renderCartAccountSelects();
-  updateEnvHint();
 }
 
 function getSelectedAccount() {
@@ -599,7 +598,6 @@ function applyCredentialProfiles(summary, selections = {}) {
   );
   renderProxyProfileList();
   renderOpenAiProfileList();
-  updateEnvHint();
 }
 
 async function loadCredentialProfiles() {
@@ -1016,29 +1014,6 @@ function updateRunModeGuide() {
     : "1회 실행은 수집 완료 후 자동 종료됩니다.";
 }
 
-function updateEnvHint() {
-  if (!state.defaults) return;
-
-  const loadedEnvText =
-    state.defaults.loadedEnvFiles.length > 0
-      ? `${state.defaults.loadedEnvFiles.length}개 .env 로드`
-      : ".env 미사용";
-
-  const envAccountText =
-    state.defaults.envDefaults.hasAccountId && state.defaults.envDefaults.hasAccountPw
-      ? "환경 계정 설정됨"
-      : "환경 계정 미설정";
-
-  const localAccountText = `등록 계정 ${state.accounts.length}개`;
-  const proxyText = `등록 프록시 ${state.credentialProfiles.proxies.length}개`;
-  const openAiText = `등록 API 키 ${state.credentialProfiles.openAiKeys.length}개`;
-
-  elements.envHint.textContent =
-    `${loadedEnvText} · ` +
-    `코드 기본 ${state.defaults.envDefaults.mall} · ` +
-    `${envAccountText} · ${localAccountText} · ${proxyText} · ${openAiText}`;
-}
-
 /** 수집 시작 IPC를 요청하는 짧은 동안만 시작 버튼을 잠근다. */
 function setSubmitting(submitting) {
   elements.runButton.disabled = submitting;
@@ -1201,6 +1176,9 @@ function renderShippingState(shipping = {}) {
   if (shipping.lastError) {
     elements.shippingToggleButton.title =
       `마지막 전송 오류: ${shipping.lastError}`;
+    if (elements.shippingStatusText) {
+      elements.shippingStatusText.textContent = "운송 자동전송 오류";
+    }
     return;
   }
 
@@ -1213,12 +1191,23 @@ function renderShippingState(shipping = {}) {
       `마지막 성공: ${successTime} · ${Number(
         shipping.lastRecordCount || 0,
       ).toLocaleString("ko-KR")}건`;
+    if (elements.shippingStatusText) {
+      elements.shippingStatusText.textContent = enabled
+        ? "운송 자동전송 동작 중"
+        : "운송 자동전송 중지";
+    }
     return;
   }
 
   elements.shippingToggleButton.title = enabled
     ? "앱 실행 직후 전송하고 이후 1시간마다 반복합니다."
     : "운송정보 자동 전송이 꺼져 있습니다.";
+
+  if (elements.shippingStatusText) {
+    elements.shippingStatusText.textContent = enabled
+      ? ""
+      : "";
+  }
 }
 
 /** 운송정보 자동 전송 ON/OFF를 변경한다. */
@@ -1678,13 +1667,12 @@ async function loadDefaults() {
   }
 
   elements.outputDirectory.value = defaults.outputDirectory;
-  elements.appBadge.textContent = `로컬 앱 v${defaults.app.version}`;
+  elements.appBadge.textContent = `v${defaults.app.version}`;
   elements.appBadge.classList.add("connected");
 
   elements.cheonyuUserAgent.value =
     localStorage.getItem(CHEONYU_USER_AGENT_STORAGE_KEY) || "";
 
-  updateEnvHint();
   updateMallHelp();
   updateAccountHelp();
 }
@@ -1998,7 +1986,10 @@ elements.cheonyuUserAgent.addEventListener("change", (event) => {
   }
 });
 elements.chooseOutputButton.addEventListener("click", chooseOutputDirectory);
-elements.openSettingsButton.addEventListener("click", openSettingsDirectory);
+elements.openSettingsButton?.addEventListener(
+  "click",
+  openSettingsDirectory,
+);
 elements.openResultDirectoryButton.addEventListener(
   "click",
   () => openResultDirectory(state.latestResultRunId),
@@ -2073,7 +2064,8 @@ function switchView(viewName) {
     "new-collection": "collectionView",
     runs: "runsView",
     cart: "cartView",
-    settings: "downloadView",
+    results: "downloadView",
+    settings: "settingsView",
   };
 
   const targetViewId = viewMap[viewName];

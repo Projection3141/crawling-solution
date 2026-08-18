@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 
-<html lang="ko">
+<html lang="ko" data-proposal="a" data-theme="light">
 <head>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1" name="viewport"/>
@@ -504,11 +504,306 @@
       .faq details[open] div { display: block; }
       a { text-decoration: none; }
     }
+
+    :root {
+      --canvas: #f4f6f7;
+      --surface: #ffffff;
+      --subtle: #f0f3f4;
+      --ok: #16a34a;
+      --input: #ffffff;
+      --line: #d9dfe2;
+      --line-strong: #c5ced2;
+      --selected: #eaf6f7;
+      --progress-track: #dbe3e6;
+      --accent-ink: #0f2c24;
+    }
+
+    html[data-theme="dark"] {
+      --canvas: #101416;
+      --surface: #171d20;
+      --subtle: #1d2428;
+      --ok: #2dd4bf;
+      --input: #11171a;
+      --line: #2d363a;
+      --line-strong: #3a464b;
+      --selected: #183236;
+      --progress-track: #303b40;
+      --ink: #e8ecee;
+      --muted: #98a5ab;
+    }
+
+    .console-a {
+      display: grid;
+      grid-template-rows: 52px 1fr;
+      min-height: 100vh;
+      background: var(--canvas);
+      color: var(--ink);
+    }
+
+    .topbar {
+      height: 52px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      gap: 16px;
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .topbar .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 760;
+      font-size: 15px;
+    }
+
+    .topbar .brand-mark {
+      width: 18px;
+      height: 18px;
+      border: 2px solid var(--accent);
+      border-radius: 4px;
+      position: relative;
+      flex: none;
+    }
+
+    .topbar .brand-mark::after {
+      content: "";
+      position: absolute;
+      inset: 4px;
+      background: var(--accent);
+    }
+
+    .top-actions,
+    .theme-switch,
+    .inline,
+    .row-actions {
+      display: flex;
+      align-items: center;
+    }
+    .top-actions { gap: 14px; }
+    .theme-switch {
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--subtle);
+      padding: 2px;
+    }
+    .theme-switch button {
+      height: 28px;
+      border: 0;
+      border-radius: 3px;
+      background: transparent;
+      color: var(--muted);
+      padding: 0 9px;
+      font-size: 12px;
+    }
+    .theme-switch button[aria-pressed="true"] {
+      background: var(--surface);
+      color: var(--ink);
+      box-shadow: 0 0 0 1px var(--line);
+    }
+
+    .status-text {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--ok);
+      flex: 0 0 auto;
+    }
+
+    .console-a .button {
+      min-height: 34px;
+      border: 1px solid var(--line-strong);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--ink);
+      padding: 7px 12px;
+      font-weight: 680;
+    }
+    .console-a .button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: var(--accent-ink);
+    }
+    .console-a .button.quiet {
+      border-color: transparent;
+      background: transparent;
+      color: var(--muted);
+    }
+
+    .console-a .layout {
+      display: grid;
+      grid-template-columns: 210px minmax(680px, 1fr) 320px;
+      min-height: calc(100vh - 52px);
+    }
+
+    .console-a .sidebar {
+      position: static;
+      top: auto;
+      height: auto;
+      background: var(--surface);
+      color: var(--ink);
+      border-right: 1px solid var(--line);
+      border-left: 0;
+      padding: 14px 10px;
+      padding-bottom: 86px;
+    }
+    .console-a .sidebar.open { transform: none; }
+    .console-a .sidebar .nav-group-title {
+      color: var(--muted);
+      font-size: 11px;
+      padding: 5px 10px;
+      margin: 10px 0;
+    }
+    .console-a .nav-link {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 34px;
+      border-radius: 4px;
+      padding: 0 10px;
+      color: var(--muted);
+      text-decoration: none;
+      border: 0;
+      font-size: 13px;
+    }
+    .console-a .nav-link:hover {
+      background: var(--subtle);
+      color: var(--ink);
+    }
+    .console-a .nav-link.active {
+      background: var(--selected);
+      color: var(--ink);
+      font-weight: 700;
+    }
+    .console-a .nav-link::after {
+      content: "";
+      display: inline-block;
+      width: 0;
+      height: 0;
+    }
+    .console-a .sidebar-footer {
+      color: var(--muted);
+      border-color: var(--line);
+    }
+
+    .console-a .content {
+      min-width: 0;
+      padding: 24px;
+      background: transparent;
+    }
+
+    .console-a .hero,
+    .console-a .section {
+      background: var(--surface);
+    }
+    .console-a .hero::after {
+      border-color: color-mix(in oklab, var(--accent) 16%, transparent);
+      border-width: 42px;
+      inset: auto;
+      right: 16px;
+      bottom: -130px;
+    }
+
+    .summary-strip {
+      display: flex;
+      border-block: 1px solid var(--line);
+      background: var(--surface);
+      margin-bottom: 18px;
+    }
+    .summary-item {
+      min-width: 145px;
+      padding: 12px 18px;
+      border-right: 1px solid var(--line);
+    }
+    .summary-item span { color: var(--muted); font-size: 11px; }
+    .summary-item strong { font-size: 18px; display: block; margin-top: 2px; }
+
+    .console-a .inspector {
+      border-left: 1px solid var(--line);
+      background: var(--surface);
+      padding: 20px;
+      overflow: auto;
+    }
+    .console-a .inspector section {
+      padding: 16px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .console-a .inspector h3 { margin-top: 0; }
+    .console-a .inspector dl {
+      display: grid;
+      grid-template-columns: 90px 1fr;
+      gap: 8px;
+      margin: 12px 0 0;
+    }
+    .console-a .inspector dt { color: var(--muted); }
+    .console-a .inspector dd { margin: 0; text-align: right; }
+
+    .console-a .mono {
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      letter-spacing: 0;
+    }
+    .row-actions { display: flex; gap: 8px; }
+    .text-danger { color: var(--danger); border-color: color-mix(in oklab, var(--danger) 38%, transparent); }
+
+    .console-a .nav-count {
+      font-size: 11px;
+      color: var(--muted);
+      margin-left: auto;
+    }
+
+    .console-a .sidebar > .sidebar-footer { display: none; }
+
+    .console-a .summary-strip,
+    .console-a .toolbar {
+      margin-top: 0 !important;
+      margin-bottom: 10px;
+    }
+
+    @media (max-width: 1180px) {
+      .console-a .layout { grid-template-columns: 180px minmax(650px, 1fr); }
+      .console-a .inspector { display: none; }
+      .sidebar.open { transform: translateX(0); }
+    }
+
+    @media (max-width: 860px) {
+      .console-a .layout {
+        grid-template-columns: 1fr;
+      }
+      .console-a .sidebar { display: none; }
+      .console-a .content { padding: 16px; }
+      .console-a .sidebar-footer { display: none; }
+    }
   </style>
 </head>
 <body>
 <a class="skip-link" href="#main">본문으로 이동</a>
 <button class="mobile-nav-button" id="mobileNavButton" type="button">목차</button>
+<div class="console-a">
+<header class="topbar">
+<div class="brand"><span class="brand-mark"></span>Mall Collector</div>
+<div class="top-actions">
+<span class="status-text"><i class="status-dot"></i>운송 자동전송 켜짐</span>
+<div class="theme-switch" aria-label="화면 테마">
+<button type="button" data-theme-choice="system" aria-pressed="true">시스템</button>
+<button type="button" data-theme-choice="light">밝게</button>
+<button type="button" data-theme-choice="dark">어둡게</button>
+</div>
+<button class="button" type="button">설정</button>
+</div>
+</header>
 <div class="layout">
 <aside aria-label="설명서 목차" class="sidebar" id="sidebar">
 <div class="brand">
@@ -540,7 +835,7 @@
     문서 작성일: 2026-08-17
     </div>
 </aside>
-<main class="content" id="main">
+<main class="content main-a" id="main">
 <header class="hero">
 <p class="eyebrow">Local Desktop Crawler Manual</p>
 <h1>쇼핑몰 상품 수집기<br/>사용 설명서</h1>
@@ -1110,6 +1405,40 @@ Content-Type: application/json
 </section>
 <footer class="footer">쇼핑몰 상품 수집기 운영 설명서 · 기준 버전 2026-08-17 · v1.2.3</footer>
 </main>
+<aside class="inspector" aria-label="요약 패널">
+<section>
+<h3>현재 실행 상태</h3>
+<dl>
+<dt>자동 전송</dt>
+<dd class="mono">ON</dd>
+<dt>기본 언어</dt>
+<dd class="mono">KOR</dd>
+<dt>환율 주기</dt>
+<dd>1시간</dd>
+</dl>
+</section>
+<section>
+<h3>핵심 갱신 사항</h3>
+<ul class="checklist">
+<li>ISP 프록시 아웃바운드 연결 및 안전장치 반영</li>
+<li>천유 상세: barcode, 원산지, 소재, 무게, 포장사이즈 수집</li>
+<li>원엔 환율 1시간 체크 및 00:00 아카이빙 반영</li>
+<li>누락 재시도 로직 고도화로 장바구니 예외 처리 강화</li>
+<li>프록시/API 키 사용 정책 설정 변경 반영</li>
+</ul>
+</section>
+<section>
+<h3>문제 진단 가이드</h3>
+<dl>
+<dt>로그</dt>
+<dd class="mono">[RATE SYNC], [LANGUAGE REDIRECT], [RETRY DETAIL]</dd>
+<dt>권장 조치</dt>
+<dd>수집 누락은 소단위 재시도 이력과 상세 로그를 먼저 확인</dd>
+<dt>주의</dt>
+<dd>품절·재고 부족은 상품 단위로 건너뛰고 이어서 진행</dd>
+</dl>
+</section>
+</aside>
 </div>
 <script>
     (() => {
@@ -1162,6 +1491,40 @@ Content-Type: application/json
         });
         event.currentTarget.textContent = faqExpanded ? 'FAQ 모두 닫기' : 'FAQ 모두 열기';
       });
+
+      const themeChoices = Array.from(document.querySelectorAll('[data-theme-choice]'));
+      const mediaTheme = window.matchMedia('(prefers-color-scheme: dark)');
+      let selectedTheme = localStorage.getItem('manualThemeChoice') || 'light';
+
+      const applyTheme = (choice) => {
+        selectedTheme = choice;
+        const effectiveTheme =
+          choice === 'dark' || (choice === 'system' && mediaTheme.matches) ? 'dark' : 'light';
+
+        document.documentElement.dataset.theme = effectiveTheme;
+        document.documentElement.dataset.themeChoice = choice;
+        localStorage.setItem('manualThemeChoice', choice);
+
+        themeChoices.forEach((button) => {
+          const isCurrent = button.dataset.themeChoice === selectedTheme;
+          button.setAttribute('aria-pressed', isCurrent ? 'true' : 'false');
+        });
+      };
+
+      themeChoices.forEach((button) => {
+        button.addEventListener('click', () => applyTheme(button.dataset.themeChoice));
+      });
+
+      mediaTheme.addEventListener('change', () => {
+        if (document.documentElement.dataset.themeChoice === 'system') {
+          applyTheme('system');
+        }
+      });
+
+      if (!['system', 'light', 'dark'].includes(selectedTheme)) {
+        selectedTheme = 'system';
+      }
+      applyTheme(selectedTheme);
     })();
   </script>
 </body>
