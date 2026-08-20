@@ -33,8 +33,13 @@ const elements = {
   runMode: document.querySelector("#runMode"),
   runModeHelp: document.querySelector("#runModeHelp"),
   repeatSettings: document.querySelector("#repeatSettings"),
+  repeatScheduleType: document.querySelector("#repeatScheduleType"),
+  repeatIntervalControl: document.querySelector("#repeatIntervalControl"),
   repeatValue: document.querySelector("#repeatValue"),
   repeatUnit: document.querySelector("#repeatUnit"),
+  repeatTimeControl: document.querySelector("#repeatTimeControl"),
+  repeatTime: document.querySelector("#repeatTime"),
+  repeatScheduleHelp: document.querySelector("#repeatScheduleHelp"),
   browserMode: document.querySelector("#browserMode"),
   cheonyuProxyProfileSelect: document.querySelector("#cheonyuProxyProfileSelect"),
   cheonyuProxyHelp: document.querySelector("#cheonyuProxyHelp"),
@@ -892,28 +897,65 @@ function setNumberIfPresent(payload, key, input) {
 
 function getExecutionOptions() {
   const runMode = elements.runMode.value === "repeat" ? "repeat" : "once";
-  const repeatUnit = ["hour", "day", "week"].includes(elements.repeatUnit.value)
+  const repeatScheduleType = elements.repeatScheduleType.value === "dailyTime"
+    ? "dailyTime"
+    : "interval";
+  const repeatUnit = ["minute", "hour", "day", "week"].includes(
+    elements.repeatUnit.value,
+  )
     ? elements.repeatUnit.value
     : "hour";
   const repeatValue = Math.max(1, Math.trunc(Number(elements.repeatValue.value || 1)));
+  const repeatTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(elements.repeatTime.value)
+    ? elements.repeatTime.value
+    : "09:00";
 
   return {
     runMode,
+    repeatScheduleType,
     repeatUnit,
     repeatValue,
+    repeatTime,
   };
 }
 
 function getRepeatIntervalMs(options) {
   const value = Math.max(1, Number(options.repeatValue || 1));
 
+  if (options.repeatUnit === "minute") return value * 60 * 1000;
   if (options.repeatUnit === "day") return value * 24 * 60 * 60 * 1000;
   if (options.repeatUnit === "week") return value * 7 * 24 * 60 * 60 * 1000;
 
   return value * 60 * 60 * 1000;
 }
 
+/** 반복 방식에 따라 현재 시점 이후의 정확한 다음 실행 시각을 계산한다. */
+function getNextRepeatRunAt(options, fromMs = Date.now()) {
+  if (options.repeatScheduleType === "dailyTime") {
+    const [hour, minute] = String(options.repeatTime || "09:00")
+      .split(":")
+      .map(Number);
+    const nextRunAt = new Date(fromMs);
+
+    nextRunAt.setHours(
+      Number.isInteger(hour) ? hour : 9,
+      Number.isInteger(minute) ? minute : 0,
+      0,
+      0,
+    );
+
+    if (nextRunAt.getTime() <= fromMs) {
+      nextRunAt.setDate(nextRunAt.getDate() + 1);
+    }
+
+    return nextRunAt;
+  }
+
+  return new Date(fromMs + getRepeatIntervalMs(options));
+}
+
 function formatRepeatUnit(unit) {
+  if (unit === "minute") return "분";
   if (unit === "day") return "일";
   if (unit === "week") return "주";
   return "시간";
@@ -1010,8 +1052,20 @@ function updateRunModeGuide() {
 
   elements.repeatSettings.hidden = !isRepeat;
   elements.runModeHelp.textContent = isRepeat
-    ? "수집 완료 후 지정한 주기만큼 대기하고 다시 실행합니다."
+    ? "수집이 성공하거나 실패해도 중지 전까지 다음 실행을 계속 예약합니다."
     : "1회 실행은 수집 완료 후 자동 종료됩니다.";
+
+  updateRepeatScheduleGuide();
+}
+
+function updateRepeatScheduleGuide() {
+  const usesDailyTime = elements.repeatScheduleType.value === "dailyTime";
+
+  elements.repeatIntervalControl.hidden = usesDailyTime;
+  elements.repeatTimeControl.hidden = !usesDailyTime;
+  elements.repeatScheduleHelp.textContent = usesDailyTime
+    ? "매일 선택한 시각에 실행합니다. 수집 중 해당 시각이 지나면 다음 날 실행합니다."
+    : "이전 수집이 끝난 뒤 지정한 주기만큼 대기하고 다음 수집을 실행합니다.";
 }
 
 /** 수집 시작 IPC를 요청하는 짧은 동안만 시작 버튼을 잠근다. */
@@ -1262,7 +1316,7 @@ function clearAllRepeatPlans() {
   state.repeatPlans.clear();
 }
 
-/** 완료된 반복 실행별로 다음 실행을 예약한다. */
+/** 성공 또는 실패로 끝난 반복 실행별로 다음 실행을 예약한다. */
 function scheduleRepeatRuns(applicationState) {
   const runs = Array.isArray(applicationState?.runs)
     ? applicationState.runs
@@ -1273,33 +1327,34 @@ function scheduleRepeatRuns(applicationState) {
 
     if (!plan) continue;
 
-    if (["failed", "canceled"].includes(run.status)) {
+    if (run.status === "canceled") {
       clearRepeatPlan(run.id);
       continue;
     }
 
-    if (run.status !== "completed") continue;
+    if (!["completed", "failed"].includes(run.status)) continue;
     if (state.repeatTimers.has(run.id)) continue;
 
     const executionOptions =
       plan.basePayload.executionOptions || {
+        repeatScheduleType: "interval",
         repeatValue: 1,
         repeatUnit: "hour",
       };
-    const intervalMs = getRepeatIntervalMs(executionOptions);
-    const nextRunAt = new Date(Date.now() + intervalMs);
+    const nextRunAt = getNextRepeatRunAt(executionOptions);
+    const delayMs = Math.max(0, nextRunAt.getTime() - Date.now());
 
     plan.nextRunAt = nextRunAt.toISOString();
 
     const timerId = window.setTimeout(async () => {
       state.repeatTimers.delete(run.id);
-      state.repeatPlans.delete(run.id);
 
       try {
         const nextRun = await window.collectorApp.start({
           ...plan.basePayload,
         });
 
+        state.repeatPlans.delete(run.id);
         state.repeatPlans.set(nextRun.id, {
           basePayload: {
             ...plan.basePayload,
@@ -1309,9 +1364,14 @@ function scheduleRepeatRuns(applicationState) {
 
         handleStateChanged(await window.collectorApp.getState());
       } catch (error) {
-        showError(`반복 수집 실행 실패: ${error.message}`);
+        plan.nextRunAt = null;
+        showError(
+          `반복 수집 실행 요청 실패: ${error.message} 다음 일정은 유지됩니다.`,
+        );
+        scheduleRepeatRuns(applicationState);
+        renderRunList(state.applicationState);
       }
-    }, intervalMs);
+    }, delayMs);
 
     state.repeatTimers.set(run.id, timerId);
   }
@@ -1966,6 +2026,7 @@ elements.cancelOpenAiManagerButton.addEventListener("click", closeOpenAiManager)
 elements.saveOpenAiProfileButton.addEventListener("click", saveOpenAiProfile);
 elements.collectionMode.addEventListener("change", updateCollectionModeGuide);
 elements.runMode.addEventListener("change", updateRunModeGuide);
+elements.repeatScheduleType.addEventListener("change", updateRepeatScheduleGuide);
 elements.cheonyuProxyProfileSelect.addEventListener("change", (event) => {
   syncProxyProfileSelection(event.currentTarget);
 });

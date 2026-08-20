@@ -189,20 +189,31 @@
                   </label>
 
                   <div id="repeatSettings" class="field repeat-settings" hidden>
-                    <span>반복 주기</span>
+                    <span>반복 일정</span>
 
-                    <div class="repeat-control">
+                    <select id="repeatScheduleType" name="repeatScheduleType" aria-label="반복 실행 방식">
+                      <option value="interval">일정 주기마다 실행</option>
+                      <option value="dailyTime">매일 일정 시각에 실행</option>
+                    </select>
+
+                    <div id="repeatIntervalControl" class="repeat-control">
                       <input id="repeatValue" name="repeatValue" type="number" min="1" step="1" value="1"
                         aria-label="반복 주기 숫자" />
 
                       <select id="repeatUnit" name="repeatUnit" aria-label="반복 주기 단위">
+                        <option value="minute">분</option>
                         <option value="hour">시간</option>
                         <option value="day">일</option>
                         <option value="week">주</option>
                       </select>
                     </div>
 
-                    <small>
+                    <div id="repeatTimeControl" class="repeat-control" hidden>
+                      <input id="repeatTime" name="repeatTime" type="time" value="09:00"
+                        aria-label="매일 반복 실행 시각" />
+                    </div>
+
+                    <small id="repeatScheduleHelp">
                       이전 수집이 끝난 뒤 지정한 주기만큼 대기하고 다음 수집을 실행합니다.
                     </small>
                   </div>
