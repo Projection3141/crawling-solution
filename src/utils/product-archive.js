@@ -72,10 +72,6 @@ const GENERAL_FIELDS = new Set([
   "nameKo",
   "nameJa",
   "nameEn",
-  "originalPrice",
-  "salePrice",
-  "discountRate",
-  "currency",
   "saleStatus",
   "stockQuantity",
   "lowStockThreshold",
@@ -90,6 +86,10 @@ const DETAIL_FIELDS = new Set([
   "categoryId",
   "subcategoryId",
   "brandId",
+  "originalPrice",
+  "salePrice",
+  "discountRate",
+  "currency",
   "imageUrls",
   "thumbnailUrl",
   "descriptionKo",
@@ -417,8 +417,7 @@ function canUpdateProductField(source, field, value) {
       return value !== undefined;
     }
 
-    /** 일반 수집의 카테고리는 기존 상세값이 없을 때만 보조로 사용한다. */
-    return field === "categoryId" && hasText(value);
+    return false;
   }
 
   if (source === "detail") {
@@ -559,7 +558,6 @@ function mergeOption(existingOption, incomingOption, stats, source) {
         "nameKo",
         "nameJa",
         "nameEn",
-        "additionalPrice",
         "stockQuantity",
         "status",
       ]

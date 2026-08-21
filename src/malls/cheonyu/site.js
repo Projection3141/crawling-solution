@@ -376,7 +376,7 @@ async function loginCheonyu(
     await page.waitForSelector("#cartTable", {
       timeout: config.navigationTimeoutMs,
     });
-    await sleep(1500);
+    await sleep(config.collectionMode === "general" ? 300 : 1500);
 
     if ((await page.locator(selectors.logoutLink).count()) < 1) {
       throw new Error("천유닷컴 장바구니에서 로그인 상태가 해제되었습니다.");
@@ -753,6 +753,7 @@ async function resolvePageRange(page, config, signal) {
 function parseListHtml(html, pageNo, config) {
   const $ = cheerio.load(html);
   const selectors = CHEONYU_SITE.selectors.list;
+  const collectDetailFields = config.collectionMode === "detail";
   const candidates = [];
 
   $(selectors.productCheck).each((index, check) => {
@@ -770,7 +771,9 @@ function parseListHtml(html, pageNo, config) {
     const productUrl = href
       ? new URL(href, config.baseUrl).toString()
       : "";
-    const packageInfo = parsePackageInfo(productName);
+    const packageInfo = collectDetailFields
+      ? parsePackageInfo(productName)
+      : null;
     const isSoldOut =
       item.find(selectors.soldOut).length > 0 ||
       item.closest(selectors.soldOut).length > 0;
@@ -796,14 +799,16 @@ function parseListHtml(html, pageNo, config) {
         item.find(selectors.maxStockInput).first().attr("value") || "",
       listPorderMinus:
         item.find(selectors.porderMinusInput).first().attr("value") || "",
-      brandHint: inferBrand(productName),
-      categoryHint: inferCategory(productName),
-      packageQty: packageInfo.packageQty,
-      packageUnit: packageInfo.packageUnit,
-      packageText: packageInfo.packageText,
+      ...(collectDetailFields
+        ? {
+            brandHint: inferBrand(productName),
+            categoryHint: inferCategory(productName),
+            packageQty: packageInfo.packageQty,
+            packageUnit: packageInfo.packageUnit,
+            packageText: packageInfo.packageText,
+          }
+        : {}),
       saleStatus: cartAddable ? "ON_SALE" : "SOLD_OUT",
-      price: "",
-      priceText: "",
     });
   });
 
@@ -1232,8 +1237,8 @@ async function waitForStableCheonyuBulkSelection(
   const stableMs = getSafetyNumber(
     config,
     "bulkSelectionStableMs",
-    1000,
-    500,
+    config.collectionMode === "general" ? 500 : 1000,
+    config.collectionMode === "general" ? 300 : 500,
     3000,
   );
   // 폴링 간격
@@ -1500,7 +1505,7 @@ async function addCheonyuProductBatchesToCart(
   const batchSize = getSafetyNumber(
     config,
     "bulkCartBatchSize",
-    50,
+    config.collectionMode === "general" ? 75 : 50,
     5,
     80,
   );
@@ -1508,7 +1513,18 @@ async function addCheonyuProductBatchesToCart(
   const pendingBatches = initialBatches.map((products, index) => ({
     products,
     path: String(index + 1),
+    deferredAttempt: 0,
   }));
+  const deferredBatches = [];
+  const deferredProductIds = new Set();
+  const maxDeferredAttempts = getSafetyNumber(
+    config,
+    "bulkPartialPopupRetryCount",
+    2,
+    1,
+    5,
+  );
+  let deferredRound = 0;
   const batchResults = [];
   const knownUnavailableProductIds = new Set();
   const excludedProducts = [];
@@ -1595,9 +1611,35 @@ async function addCheonyuProductBatchesToCart(
     }
   };
 
-  while (pendingBatches.length > 0) {
+  while (pendingBatches.length > 0 || deferredBatches.length > 0) {
     throwIfAborted(signal);
-    const { products: queuedBatch, path: batchPath } = pendingBatches.shift();
+
+    if (pendingBatches.length < 1) {
+      deferredRound += 1;
+      const retryEntries = deferredBatches.splice(0);
+      const retryProducts = retryEntries.flatMap((entry) => entry.products);
+      deferredProductIds.clear();
+      logCheonyuWarn(
+        `[BULK ${pageNo}] 페이지 최초 배치 완료 · 팝업 누락 ${retryProducts.length}개만 재시도합니다. (${deferredRound}/${maxDeferredAttempts})`,
+      );
+      await resetCheonyuBulkListPage(
+        page,
+        pageNo,
+        config,
+        retryProducts,
+        signal,
+      );
+      pendingBatches.push(...retryEntries);
+    }
+
+    const {
+      products: queuedBatch,
+      path: batchPath,
+      deferredAttempt = 0,
+    } = pendingBatches.shift();
+    for (const product of queuedBatch) {
+      deferredProductIds.delete(String(product?.productId || ""));
+    }
     rememberUnavailableProducts(queuedBatch);
     const batch = queuedBatch.filter(
       (product) => product?.unavailableInCart !== true,
@@ -1840,6 +1882,33 @@ async function addCheonyuProductBatchesToCart(
         `[BULK ${pageNo}] popup product identification failed for ` +
         `${retryableBatch.length} products; retrying as ${left.length} + ` +
         `${right.length}.`,
+        {
+          batchPath,
+          identificationStage:
+            error?.details?.identificationStage || "unknown",
+          expectedProductIds:
+            error?.details?.expectedProductIds ||
+            retryableBatch.map((product) => String(product.productId)),
+          parsedProductIds: error?.details?.parsedProductIds || [],
+          missingPopupProductIds:
+            error?.details?.missingPopupProductIds || [],
+          unexpectedPopupProductIds:
+            error?.details?.unexpectedPopupProductIds || [],
+          popupMatchDiagnostics:
+            error?.details?.popupMatchDiagnostics || [],
+          popupCounts: error?.details?.popupState
+            ? {
+                visibleWrapperCount:
+                  error.details.popupState.visibleWrapperCount,
+                optionTableCount: error.details.popupState.optionTableCount,
+                optionRowCount: error.details.popupState.optionRowCount,
+                completeRowCount: error.details.popupState.completeRowCount,
+                selectableRowCount:
+                  error.details.popupState.selectableRowCount,
+              }
+            : null,
+          timings: error?.details?.timings || null,
+        },
       );
 
       await closeCheonyuOptionPopup(page);
@@ -1848,6 +1917,44 @@ async function addCheonyuProductBatchesToCart(
         { products: right, path: `${batchPath}.2` },
       );
       continue;
+    }
+
+    const missingPopupProductIds = Array.from(
+      new Set((result?.missingPopupProductIds || []).map((value) => String(value))),
+    );
+    const missingPopupProductIdSet = new Set(missingPopupProductIds);
+    const missingPopupProducts = batch.filter((product) =>
+      missingPopupProductIdSet.has(String(product.productId)),
+    );
+
+    if (missingPopupProducts.length > 0) {
+      if (deferredAttempt < maxDeferredAttempts) {
+        const retryProducts = missingPopupProducts.filter((product) => {
+          const productId = String(product.productId);
+          if (deferredProductIds.has(productId)) {
+            return false;
+          }
+          deferredProductIds.add(productId);
+          return true;
+        });
+        if (retryProducts.length > 0) {
+          deferredBatches.push({
+            products: retryProducts,
+            path: `${batchPath}.deferred${deferredAttempt + 1}`,
+            deferredAttempt: deferredAttempt + 1,
+          });
+        }
+      } else {
+        addExcludedProducts(
+          missingPopupProducts,
+          batchPath,
+          "CHEONYU_POPUP_PARTIAL_DEFERRED_FAILED",
+          `페이지 완료 후 누락 상품만 ${maxDeferredAttempts}회 재시도했지만 팝업에 생성되지 않았습니다.`,
+        );
+        logCheonyuWarn(
+          `[BULK ${pageNo}] 팝업 누락 ${missingPopupProducts.length}개 재시도 한도 초과 · 제외 후 계속 진행: ${missingPopupProductIds.join(", ")}`,
+        );
+      }
     }
 
     rememberUnavailableProducts(batch);
@@ -1863,7 +1970,9 @@ async function addCheonyuProductBatchesToCart(
     });
 
     if (pendingBatches.length > 0) {
-      await page.waitForTimeout(100);
+    await page.waitForTimeout(
+      config.collectionMode === "general" ? 25 : 100,
+    );
     }
   }
 
@@ -2108,6 +2217,16 @@ async function parseAndPreparePopupOptions(
             optionIndex,
             productId: requestProduct?.productId || "",
             productMatchMode,
+            comparableSubjectText,
+            explicitProductIds: Array.from(explicitProductIds),
+            explicitMatchProductIds: explicitMatches.map(
+              (request) => request.productId,
+            ),
+            exactNameMatchProductIds: exactNameMatches.map(
+              (request) => request.productId,
+            ),
+            requestedProductCount: requests.length,
+            visibleBlockCount: blocks.length,
             productName: requestProduct?.productName || subjectText,
             cartGroupId,
             subjectText,
@@ -2155,6 +2274,8 @@ async function parseAndPreparePopupOptions(
 /** 현재 화면에 표시된 천유 옵션 팝업 상태를 수집한다. */
 async function readCheonyuOptionPopupState(page) {
   return page.evaluate(() => {
+    const normalize = (value) =>
+      String(value || "").replace(/\s+/g, " ").trim();
     const isVisible = (element) => {
       if (!element) return false;
 
@@ -2203,6 +2324,58 @@ async function readCheonyuOptionPopupState(page) {
 
       return Boolean(checkbox) && !checkbox.disabled && maxStock > 0;
     });
+    const blockDiagnostics = blocks.map((block, productIndex) => {
+      const table = block.querySelector("table#opSelectedList");
+      const subjectElement =
+        block.querySelector(".subject > p, .subject p") ||
+        block.querySelector("p.subject") ||
+        block.querySelector(".m_pdt_list_name") ||
+        block.querySelector(".subject");
+      const identityInputs = Array.from(block.querySelectorAll("input"))
+        .map((input) => ({
+          name: input.getAttribute("name") || "",
+          id: input.getAttribute("id") || "",
+          value: normalize(input.getAttribute("value")),
+        }))
+        .filter((input) =>
+          /qidx|product|idxpop/i.test(`${input.name} ${input.id}`),
+        )
+        .slice(0, 12);
+      const productLinks = Array.from(block.querySelectorAll("a[href]"))
+        .map((link) => link.getAttribute("href") || "")
+        .filter((href) => /[?&]qIDX=\d+/i.test(href))
+        .slice(0, 5);
+      const imageSources = Array.from(
+        block.querySelectorAll(".product_info figure img[src], img[src]"),
+      )
+        .map((image) => image.getAttribute("src") || "")
+        .filter(Boolean)
+        .slice(0, 5);
+
+      return {
+        productIndex,
+        subjectText: normalize(subjectElement?.innerText),
+        cartGroupId: table?.querySelector("input#inIDXPOP")?.value || "",
+        optionRowCount:
+          table?.querySelectorAll("tr#inOptionTR").length || 0,
+        identityInputs,
+        productLinks,
+        imageSources,
+      };
+    });
+    const recentAjaxResources = performance
+      .getEntriesByType("resource")
+      .filter((entry) =>
+        ["fetch", "xmlhttprequest"].includes(entry.initiatorType),
+      )
+      .slice(-12)
+      .map((entry) => ({
+        url: String(entry.name || ""),
+        initiatorType: entry.initiatorType,
+        durationMs: Number(entry.duration || 0).toFixed(1),
+        transferSize: Number(entry.transferSize || 0),
+        responseBodySize: Number(entry.decodedBodySize || 0),
+      }));
 
     return {
       visibleWrapperCount: blocks.length,
@@ -2210,6 +2383,8 @@ async function readCheonyuOptionPopupState(page) {
       optionRowCount: rows.length,
       completeRowCount: completeRows.length,
       selectableRowCount: selectableRows.length,
+      blockDiagnostics,
+      recentAjaxResources,
     };
   });
 }
@@ -2401,60 +2576,93 @@ async function waitForReadyCheonyuOptionPopup(
     Number(config.optionPopupWaitTimeoutMs) ||
     Number(config.navigationTimeoutMs) ||
     60000;
-  const timeout = Math.max(15000, Math.min(configuredTimeout, 120000));
+  const timeout =
+    config.collectionMode === "general"
+      ? getSafetyNumber(config, "optionPopupPartialWaitMs", 2000, 500, 5000)
+      : Math.max(15000, Math.min(configuredTimeout, 120000));
+  let timedOutWithPartialPopup = false;
 
-  await page.waitForFunction(
-    (expectedCount) => {
-      const isVisible = (element) => {
-        if (!element) return false;
+  try {
+    await page.waitForFunction(
+      (expectedCount) => {
+        const isVisible = (element) => {
+          if (!element) return false;
 
-        const style = window.getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-
-        return (
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          Number(style.opacity || "1") > 0 &&
-          rect.width > 0 &&
-          rect.height > 0
-        );
-      };
-
-      const blocks = Array.from(
-        document.querySelectorAll(".many_add"),
-      ).filter(isVisible);
-
-      if (blocks.length !== expectedCount) return false;
-
-      return blocks.every((block) => {
-        const table = block.querySelector("table#opSelectedList");
-        if (!table) return false;
-
-        const rows = Array.from(table.querySelectorAll("tr#inOptionTR"));
-        if (rows.length < 1) return false;
-
-        const allRowsComplete = rows.every((row) => {
-          const checkbox = row.querySelector("input#optionCHKPOP");
-          const maxStock = row.querySelector("input#inOPMaxStock");
-          const countInput = row.querySelector("input#inOPcount");
+          const style = window.getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
 
           return (
-            Boolean(checkbox) &&
-            Boolean(maxStock) &&
-            String(maxStock.value ?? "").trim() !== "" &&
-            Boolean(countInput)
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            Number(style.opacity || "1") > 0 &&
+            rect.width > 0 &&
+            rect.height > 0
           );
-        });
+        };
 
-        return allRowsComplete;
-      });
-    },
-    expectedProductCount,
-    { timeout },
-  );
+        const blocks = Array.from(
+          document.querySelectorAll(".many_add"),
+        ).filter(isVisible);
+
+        if (blocks.length !== expectedCount) return false;
+
+        return blocks.every((block) => {
+          const table = block.querySelector("table#opSelectedList");
+          if (!table) return false;
+
+          const rows = Array.from(table.querySelectorAll("tr#inOptionTR"));
+          if (rows.length < 1) return false;
+
+          const allRowsComplete = rows.every((row) => {
+            const checkbox = row.querySelector("input#optionCHKPOP");
+            const maxStock = row.querySelector("input#inOPMaxStock");
+            const countInput = row.querySelector("input#inOPcount");
+
+            return (
+              Boolean(checkbox) &&
+              Boolean(maxStock) &&
+              String(maxStock.value ?? "").trim() !== "" &&
+              Boolean(countInput)
+            );
+          });
+
+          return allRowsComplete;
+        });
+      },
+      expectedProductCount,
+      { timeout },
+    );
+  } catch (error) {
+    if (config.collectionMode !== "general") {
+      throw error;
+    }
+
+    const partialState = await readCheonyuOptionPopupState(page);
+    const hasUsablePartialPopup =
+      partialState.visibleWrapperCount > 0 &&
+      partialState.optionTableCount === partialState.visibleWrapperCount &&
+      partialState.optionRowCount > 0 &&
+      partialState.completeRowCount === partialState.optionRowCount;
+
+    if (!hasUsablePartialPopup) {
+      throw error;
+    }
+
+    timedOutWithPartialPopup = true;
+  }
 
   /** DOM이 생성된 직후 계산 스크립트가 끝날 짧은 안정화 시간을 둔다. */
-  await page.waitForTimeout(200);
+  await page.waitForTimeout(
+    config.collectionMode === "general" ? 50 : 200,
+  );
+
+  const popupState = await readCheonyuOptionPopupState(page);
+  return {
+    ...popupState,
+    completeCoverage: popupState.visibleWrapperCount === expectedProductCount,
+    timedOutWithPartialPopup,
+    waitLimitMs: timeout,
+  };
 }
 
 /**
@@ -2522,6 +2730,7 @@ async function clickBulkCartAndConfirm(
   try {
     return await withSiteRetry(
       async ({ attempt }) => {
+        const attemptStartedAt = performance.now();
         const previouslyUnavailableProductIds = requestedProducts
           .filter((product) => product?.unavailableInCart === true)
           .map((product) => String(product.productId));
@@ -2623,6 +2832,7 @@ async function clickBulkCartAndConfirm(
           config,
           signal,
         );
+        const selectionStableAt = performance.now();
 
         const popupWaitTimeoutMs =
           attempt <= 5 ? 30000 : attempt <= 10 ? 45000 : 60000;
@@ -2657,9 +2867,12 @@ async function clickBulkCartAndConfirm(
             (attempt > 1 ? ` (${attempt}차 시도)` : ""),
           );
 
+        const clickStartedAt = performance.now();
+
         await bulkButton.click({
           timeout: config.navigationTimeoutMs,
         });
+        const clickCompletedAt = performance.now();
 
         /**
          * 목록에서는 판매 중으로 표시되지만
@@ -2712,43 +2925,20 @@ async function clickBulkCartAndConfirm(
           };
         }
 
-        try {
-          await waitForReadyCheonyuOptionPopup(
-            page,
-            config,
-            popupWaitTimeoutMs,
-            activeRequestedProducts.length,
-          );
-        } catch (error) {
-          const partialPopupState = await readCheonyuOptionPopupState(page)
-            .catch(() => null);
-          const visibleCount = Number(
-            partialPopupState?.visibleWrapperCount || 0,
-          );
+        const popupReadiness = await waitForReadyCheonyuOptionPopup(
+          page,
+          config,
+          popupWaitTimeoutMs,
+          activeRequestedProducts.length,
+        );
 
-          if (
-            visibleCount > 0 &&
-            visibleCount !== activeRequestedProducts.length
-          ) {
-            throw markSiteError(
-              new Error(
-                `Cheonyu option popup coverage mismatch: ` +
-                `${visibleCount}/${activeRequestedProducts.length} products`,
-              ),
-              {
-                retryable: false,
-                code: "CHEONYU_POPUP_COVERAGE_INCOMPLETE",
-                stage: "cheonyu-popup",
-                details: {
-                  ...(partialPopupState || {}),
-                  expectedProductCount: activeRequestedProducts.length,
-                  preClickSelection: lastSelectionState,
-                },
-              },
-            );
-          }
-
-          throw error;
+        if (!popupReadiness.completeCoverage) {
+          logCheonyuWarn(
+            `[BULK ${pageNo}] 팝업 2초 부분 생성 ` +
+              `${popupReadiness.visibleWrapperCount}/` +
+              `${activeRequestedProducts.length} · 정상 상품은 처리하고 ` +
+              `누락 상품만 페이지 완료 후 재시도합니다.`,
+          );
         }
 
         logCheonyuSuccess(
@@ -2759,11 +2949,26 @@ async function clickBulkCartAndConfirm(
           () => typeof window.setOption === "function",
         );
 
+        const popupRuntimeState = await readCheonyuOptionPopupState(page);
         lastPopupState = {
           hasSetOption,
-          ...(await readCheonyuOptionPopupState(page)),
-          ...parsePopupHtml(await page.content()),
+          visibleWrapperCount: popupRuntimeState.visibleWrapperCount,
+          optionTableCount: popupRuntimeState.optionTableCount,
+          optionRowCount: popupRuntimeState.optionRowCount,
+          completeRowCount: popupRuntimeState.completeRowCount,
+          selectableRowCount: popupRuntimeState.selectableRowCount,
           preClickSelection: lastSelectionState,
+        };
+        const popupReadyAt = performance.now();
+        const popupTimings = {
+          selectionElapsedMs: +(
+            selectionStableAt - attemptStartedAt
+          ).toFixed(1),
+          clickElapsedMs: +(clickCompletedAt - clickStartedAt).toFixed(1),
+          popupReadyElapsedMs: +(
+            popupReadyAt - clickCompletedAt
+          ).toFixed(1),
+          totalElapsedMs: +(popupReadyAt - attemptStartedAt).toFixed(1),
         };
 
         if (!hasSetOption) {
@@ -2808,6 +3013,10 @@ async function clickBulkCartAndConfirm(
             productIndex: row.productIndex,
             productId: String(row.productId || ""),
             productMatchMode: row.productMatchMode || "unresolved",
+            comparableSubjectText: row.comparableSubjectText || "",
+            explicitProductIds: row.explicitProductIds || [],
+            explicitMatchProductIds: row.explicitMatchProductIds || [],
+            exactNameMatchProductIds: row.exactNameMatchProductIds || [],
             subjectText: row.subjectText || "",
             cartGroupId: row.cartGroupId || "",
             optionRowCount: 0,
@@ -2819,11 +3028,58 @@ async function clickBulkCartAndConfirm(
         const popupMatchDiagnostics = Array.from(
           popupMatchDiagnosticMap.values(),
         );
-
-        if (
+        const matchModeCounts = popupMatchDiagnostics.reduce(
+          (counts, diagnostic) => {
+            const mode = diagnostic.productMatchMode || "unresolved";
+            counts[mode] = (counts[mode] || 0) + 1;
+            return counts;
+          },
+          {},
+        );
+        const identificationFailed =
           missingPopupProductIds.length > 0 ||
-          unexpectedPopupProductIds.length > 0
-        ) {
+          unexpectedPopupProductIds.length > 0;
+        if (identificationFailed) {
+          const unresolvedDiagnostics = popupMatchDiagnostics
+            .filter(
+              (diagnostic) =>
+                diagnostic.productMatchMode === "unresolved" ||
+                !diagnostic.productId,
+            )
+            .slice(0, 10);
+
+          logCheonyuWarn(
+            `[BULK ${pageNo}] 팝업 상품 식별 불일치 ` +
+              `${parsedProductIds.size}/${expectedProductIds.length}`,
+            {
+              attempt,
+              missingPopupProductIds,
+              unexpectedPopupProductIds,
+              matchModeCounts,
+              unresolvedDiagnostics,
+              popupCounts: {
+                visibleWrapperCount: lastPopupState.visibleWrapperCount,
+                optionTableCount: lastPopupState.optionTableCount,
+                optionRowCount: lastPopupState.optionRowCount,
+                completeRowCount: lastPopupState.completeRowCount,
+                selectableRowCount: lastPopupState.selectableRowCount,
+              },
+              recentAjaxResources:
+                popupRuntimeState.recentAjaxResources?.slice(-5) || [],
+              timings: popupTimings,
+            },
+          );
+        } else {
+          logCheonyuSuccess(
+            `[BULK ${pageNo}] 팝업 식별 ${parsedProductIds.size}/` +
+              `${expectedProductIds.length} · 옵션행 ` +
+              `${lastPopupState.selectableRowCount}/` +
+              `${lastPopupState.optionRowCount} · ` +
+              `${popupTimings.totalElapsedMs}ms`,
+          );
+        }
+
+        if (unexpectedPopupProductIds.length > 0) {
           throw markSiteError(
             new Error(
               `Cheonyu option popup coverage mismatch: ` +
@@ -2834,17 +3090,30 @@ async function clickBulkCartAndConfirm(
               code: "CHEONYU_POPUP_COVERAGE_INCOMPLETE",
               stage: "cheonyu-popup",
               details: {
+                identificationStage: "popup-product-mapping",
                 expectedProductIds,
                 parsedProductIds: Array.from(parsedProductIds),
                 missingPopupProductIds,
                 unexpectedPopupProductIds,
-                popupMatchDiagnostics,
+                popupMatchDiagnostics: popupMatchDiagnostics
+                  .filter(
+                    (diagnostic) =>
+                      diagnostic.productMatchMode === "unresolved" ||
+                      !diagnostic.productId,
+                  )
+                  .slice(0, 10),
+                matchModeCounts,
+                popupState: lastPopupState,
+                timings: popupTimings,
               },
             },
           );
         }
 
-        const optionUnavailableProductIds = activeRequestedProducts
+        const loadedRequestedProducts = activeRequestedProducts.filter(
+          (product) => parsedProductIds.has(String(product.productId)),
+        );
+        const optionUnavailableProductIds = loadedRequestedProducts
           .filter(
             (product) =>
               !Array.isArray(product.cartRequests) ||
@@ -2876,7 +3145,7 @@ async function clickBulkCartAndConfirm(
           }
         }
 
-        const selectableRequestedProducts = activeRequestedProducts.filter(
+        const selectableRequestedProducts = loadedRequestedProducts.filter(
           (product) =>
             !unavailableProductIds.has(String(product.productId)),
         );
@@ -2889,10 +3158,17 @@ async function clickBulkCartAndConfirm(
           await closeCheonyuOptionPopup(page);
           return {
             page: pageNo,
-            mode: "all-options-unavailable",
+            mode:
+              loadedRequestedProducts.length < 1
+                ? "partial-popup-empty"
+                : "all-options-unavailable",
             popupState: lastPopupState,
             popupOptionRows,
             selectedCount: 0,
+            missingPopupProductIds,
+            loadedProductIds: loadedRequestedProducts.map((product) =>
+              String(product.productId),
+            ),
             unavailablePopupResult: combinedUnavailablePopupResult,
             unavailableProductIds: Array.from(unavailableProductIds),
             attempt,
@@ -3009,11 +3285,9 @@ async function clickBulkCartAndConfirm(
           );
         }
 
-        logCheonyuSuccess(
-          `[BULK ${pageNo}] 옵션 체크 상태 확인 대기 1초`,
+        await page.waitForTimeout(
+          config.collectionMode === "general" ? 200 : 1000,
         );
-
-        await page.waitForTimeout(1000);
 
         try {
           await page.evaluate(() => window.setOption());
@@ -3088,7 +3362,7 @@ async function clickBulkCartAndConfirm(
           );
         }
 
-        await sleep(100);
+        await sleep(config.collectionMode === "general" ? 25 : 100);
 
         return {
           page: pageNo,
@@ -3096,6 +3370,10 @@ async function clickBulkCartAndConfirm(
           popupState: lastPopupState,
           popupOptionRows,
           selectedCount,
+          missingPopupProductIds,
+          loadedProductIds: loadedRequestedProducts.map((product) =>
+            String(product.productId),
+          ),
           unavailablePopupResult: combinedUnavailablePopupResult,
           unavailableProductIds:
             Array.from(unavailableProductIds),
@@ -3131,7 +3409,20 @@ async function clickBulkCartAndConfirm(
             logCheonyuWarn(
               `[BULK ${pageNo}] 옵션 팝업 재시도 ` +
               `${nextAttempt}/${maxAttempts}`,
-              lastPopupState,
+              {
+                code: error?.code || "UNKNOWN",
+                missingProductIds:
+                  error?.details?.missingPopupProductIds ||
+                  error?.details?.missingProductIds ||
+                  [],
+                popupCounts: {
+                  visibleWrapperCount: lastPopupState.visibleWrapperCount,
+                  optionTableCount: lastPopupState.optionTableCount,
+                  optionRowCount: lastPopupState.optionRowCount,
+                  completeRowCount: lastPopupState.completeRowCount,
+                  selectableRowCount: lastPopupState.selectableRowCount,
+                },
+              },
             );
         },
       },
@@ -3380,7 +3671,11 @@ async function bulkAddPages(
       elapsedText: formatMs(performance.now() - startedAt),
     });
 
-    if (config.requestDelayMs > 0 && pageNo < pageRange.pageEnd) {
+    if (
+      config.collectionMode !== "general" &&
+      config.requestDelayMs > 0 &&
+      pageNo < pageRange.pageEnd
+    ) {
       await sleep(config.requestDelayMs);
       throwIfAborted(signal);
     }

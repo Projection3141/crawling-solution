@@ -517,7 +517,9 @@ function createBackendOptions(
       nameEn,
 
       additionalPrice:
-        toNullableNumber(row?.addPrice) ?? 0,
+        collectionMode === "detail"
+          ? toNullableNumber(row?.addPrice) ?? 0
+          : undefined,
       stockQuantity,
       status: getSaleStatus(
         stockStatus,
@@ -536,6 +538,10 @@ function getOriginalPrice(
   productItem,
   detailItem,
 ) {
+  if (collectionMode !== "detail") {
+    return null;
+  }
+
   const firstInventoryPrice = inventoryRows
     .map((item) => toNullableNumber(item?.onePrice))
     .find((value) => value !== null && value > 0);
@@ -544,24 +550,14 @@ function getOriginalPrice(
     detailItem,
     ["총 상품금액", "상품금액", "판매가", "총 합계금액"],
   );
-  const candidates =
-    collectionMode === "detail"
-      ? [
-          detailItem.originalPrice,
-          detailItem.salePrice,
-          detailSalePrice,
-          detailItem.consumerPrice,
-          firstInventoryPrice,
-          productItem.price,
-        ]
-      : [
-          firstInventoryPrice,
-          productItem.price,
-          detailItem.originalPrice,
-          detailItem.salePrice,
-          detailSalePrice,
-          detailItem.consumerPrice,
-        ];
+  const candidates = [
+    detailItem.originalPrice,
+    detailItem.salePrice,
+    detailSalePrice,
+    detailItem.consumerPrice,
+    firstInventoryPrice,
+    productItem.price,
+  ];
 
   for (const candidate of candidates) {
     const number = toPriceNumber(candidate);
@@ -727,20 +723,21 @@ if (!isDetail) {
       nameKo,
       nameJa,
       nameEn,
-      categoryId: getLastCategory(
-        detailItem,
-        productItem,
-      ),
+      categoryId: isDetail
+        ? getLastCategory(detailItem, productItem)
+        : "",
       subcategoryId: null,
 
       /** 상세 수집에서 확보한 brandHint 값을 백엔드 brandId로 전달한다. */
-      brandId: normalizeText(
-        detailItem?.brandId ||
-          detailItem?.brandHint ||
-          findDetailSpecValue(detailItem, ["브랜드"]) ||
-          productItem?.brandHint ||
-          detailItem?.brandCode,
-      ),
+      brandId: isDetail
+        ? normalizeText(
+            detailItem?.brandId ||
+              detailItem?.brandHint ||
+              findDetailSpecValue(detailItem, ["브랜드"]) ||
+              productItem?.brandHint ||
+              detailItem?.brandCode,
+          )
+        : "",
 
       originalPrice: getOriginalPrice(
         collectionMode,

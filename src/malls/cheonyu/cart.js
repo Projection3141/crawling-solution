@@ -53,7 +53,7 @@ async function readCartHtml(page, config) {
     })
     .catch(() => null);
 
-  await sleep(1500);
+  await sleep(config.collectionMode === "general" ? 350 : 1500);
   return page.content();
 }
 
@@ -67,6 +67,7 @@ function parseCartHtml(
 ) {
   const $ = cheerio.load(html);
   const selectors = CHEONYU_CART.selectors;
+  const collectDetailFields = config.collectionMode === "detail";
   const items = [];
 
   if (requireTable && $(selectors.table).length < 1) {
@@ -127,20 +128,24 @@ function parseCartHtml(
     );
     const porderMinus =
       item.find(selectors.porderMinus).first().attr("value") || "";
-    const onePrice = toNumber(
-      item.find(selectors.onePrice).first().attr("value"),
-    );
-    const boxPrice = toNumber(
-      item.find(selectors.boxPrice).first().attr("value"),
-    );
-    const effectivePrice = normalizeEffectivePrice(onePrice, boxPrice);
+    const onePrice = collectDetailFields
+      ? toNumber(item.find(selectors.onePrice).first().attr("value"))
+      : null;
+    const boxPrice = collectDetailFields
+      ? toNumber(item.find(selectors.boxPrice).first().attr("value"))
+      : null;
+    const effectivePrice = collectDetailFields
+      ? normalizeEffectivePrice(onePrice, boxPrice)
+      : null;
     const msg = normalizeProductName(
       item.find(selectors.message).first().text(),
     );
     const stockLimited =
       msg.includes("주문가능하신 상품") ||
       (requestedQty > 0 && maxStock > 0 && requestedQty > maxStock);
-    const packageInfo = parsePackageInfo(productName);
+    const packageInfo = collectDetailFields
+      ? parsePackageInfo(productName)
+      : null;
     const stockStatus = normalizeStockStatus({
       maxStock,
       stockLimited,
@@ -157,8 +162,6 @@ function parseCartHtml(
       productUrl,
       productName,
       normalizedName: productName,
-      brandHint: inferBrand(productName),
-      categoryHint: inferCategory(productName),
       optionText,
       hasOption: optionText.length > 0,
       optionId: "0",
@@ -168,13 +171,19 @@ function parseCartHtml(
       stockStatus,
       stockLimited,
       porderMinus,
-      onePrice,
-      boxPrice,
-      effectivePrice,
-      hasBoxDiscount: boxPrice > 0 && boxPrice < onePrice,
-      packageQty: packageInfo.packageQty,
-      packageUnit: packageInfo.packageUnit,
-      packageText: packageInfo.packageText,
+      ...(collectDetailFields
+        ? {
+            brandHint: inferBrand(productName),
+            categoryHint: inferCategory(productName),
+            onePrice,
+            boxPrice,
+            effectivePrice,
+            hasBoxDiscount: boxPrice > 0 && boxPrice < onePrice,
+            packageQty: packageInfo.packageQty,
+            packageUnit: packageInfo.packageUnit,
+            packageText: packageInfo.packageText,
+          }
+        : {}),
       isSoldOut: stockStatus === "OUT_OF_STOCK",
       msg,
       rawProductNoText: productNoText,
@@ -227,7 +236,7 @@ async function clearCartByCartIds(context, cartIds, config) {
       text: (await response.text()).slice(0, 300),
     });
 
-    await sleep(500);
+    await sleep(config.collectionMode === "general" ? 100 : 500);
   }
 
   return results;

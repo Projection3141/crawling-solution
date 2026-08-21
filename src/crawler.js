@@ -834,42 +834,46 @@ async function runCollection(
   }
   
 
-  /** 실행 결과 폴더에 번역 결과 원본을 별도 저장한다. */
-  const translatedResultPath = path.resolve(
-    files.runDir,
-    "result_translated.json",
-  );
-  
+  const isDetailCollection = config.collectionMode === "detail";
+  const translatedResultPath = isDetailCollection
+    ? path.resolve(files.runDir, "result_translated.json")
+    : null;
+  let translationResult = {
+    translatedItems: [],
+    skippedOptions: [],
+  };
 
-  const translationInput = createTranslationInput(
-    result,
-    config.collectionMode,
-  );
+  if (isDetailCollection) {
+    const translationInput = createTranslationInput(
+      result,
+      config.collectionMode,
+    );
 
+    onProgress({
+      stage: "translating",
+      message: "상품명과 옵션명을 번역하고 있습니다.",
+      pageRange: result.summary.pageRange,
+      detectedTotalProductCount: result.summary.detectedTotalProductCount,
+      collectedProductCount: result.summary.collectedProductCount,
+      targetProductCount: result.summary.targetProductCount,
+      productSummaryCount: result.summary.productSummaryCount,
+      soldOutProductCount: result.summary.soldOutProductCount,
+      elapsedMs: result.summary.elapsedMs,
+    });
 
-  onProgress({
-    stage: "translating",
-    message: "상품명과 옵션명을 번역하고 있습니다.",
-    pageRange: result.summary.pageRange,
-    detectedTotalProductCount: result.summary.detectedTotalProductCount,
-    collectedProductCount: result.summary.collectedProductCount,
-    targetProductCount: result.summary.targetProductCount,
-    productSummaryCount: result.summary.productSummaryCount,
-    soldOutProductCount: result.summary.soldOutProductCount,
-    elapsedMs: result.summary.elapsedMs,
-  });
+    throwIfAborted(signal);
 
-  throwIfAborted(signal);
+    translationResult = await translateResultData(
+      translationInput,
+      {
+        outputPath: translatedResultPath,
+        signal,
+        collectionMode: config.collectionMode,
+        openAi,
+      },
+    );
+  }
 
-  const translationResult = await translateResultData(
-    translationInput,
-    {
-      outputPath: translatedResultPath,
-      signal,
-      collectionMode: config.collectionMode,
-      openAi,
-    },
-  );
   const translatedData = translationResult.translatedItems;
 
   // ---1차 검수 완---
@@ -893,7 +897,9 @@ async function runCollection(
    * The archive applies it after merging, so yenPrice is always derived
    * from the final originalPrice written to the result.
    */
-  const conversion = await createConversionSnapshot({ signal });
+  const conversion = isDetailCollection
+    ? await createConversionSnapshot({ signal })
+    : null;
 
   throwIfAborted(signal);
 
@@ -930,9 +936,9 @@ async function runCollection(
     archiveNewProductCount: archiveUpdate.stats.newProductCount,
     archiveUpdatedProductCount: archiveUpdate.stats.updatedProductCount,
     archiveChangedFieldCount: archiveUpdate.stats.changedFieldCount,
-    wonToYenRate: conversion.rate,
-    yenToWonRate: conversion.revRate,
-    convertTime: conversion.convertTime,
+    wonToYenRate: conversion?.rate ?? null,
+    yenToWonRate: conversion?.revRate ?? null,
+    convertTime: conversion?.convertTime ?? null,
     outputPath: files.resultJson,
   });
 
