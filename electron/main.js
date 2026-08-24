@@ -474,6 +474,36 @@ function resolveProxyProfileInput(profileId) {
     };
 }
 
+/** 선택 프로필부터 등록 순서대로 순환할 천유 프록시 목록을 만든다. */
+function resolveProxyRotationInput(profileId) {
+    const selected = resolveProxyProfileInput(profileId);
+
+    if (!selected.cheonyuProxyProfileId) return selected;
+
+    const profiles = ensureCredentialStore().getProxies();
+    const startIndex = profiles.findIndex(
+        (profile) => profile.id === selected.cheonyuProxyProfileId,
+    );
+
+    if (startIndex < 0) return selected;
+
+    const orderedProfiles = [
+        ...profiles.slice(startIndex),
+        ...profiles.slice(0, startIndex),
+    ];
+
+    return {
+        ...selected,
+        cheonyuProxyRotation: orderedProfiles.map((profile) => ({
+            profileId: profile.id,
+            profileName: profile.name,
+            server: profile.server,
+            username: profile.username,
+            password: profile.password,
+        })),
+    };
+}
+
 /** 선택된 API 키 프로필을 main process 내부 OpenAI 설정으로 고정한다. */
 function resolveOpenAiProfile(profileId) {
     const normalizedId = String(profileId || "").trim();
@@ -1052,7 +1082,7 @@ function startCollection(input) {
     const safeInput = normalizeRunInput(input);
     const mall = String(safeInput.mall || "cheonyu").trim().toLowerCase();
     const proxyProfileInput = mall === "cheonyu"
-        ? resolveProxyProfileInput(safeInput.proxyProfileId)
+        ? resolveProxyRotationInput(safeInput.proxyProfileId)
         : {};
     const openAiProfile = resolveOpenAiProfile(safeInput.openAiProfileId);
     const openAi = openAiProfile.config;
@@ -1488,6 +1518,12 @@ function registerIpcHandlers() {
         async (payload) => {
             if (!shippingScheduler) {
                 throw new Error("운송정보 전송기가 초기화되지 않았습니다.");
+            }
+
+            if (typeof payload?.collectionUploadEnabled === "boolean") {
+                return shippingScheduler.setCollectionUploadEnabled(
+                    payload.collectionUploadEnabled,
+                );
             }
 
             return shippingScheduler.setEnabled(

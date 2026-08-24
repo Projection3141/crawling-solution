@@ -60,10 +60,13 @@ const SUPPORTED_PROXY_PROTOCOLS = new Set([
 
 /** 프록시 주소를 Playwright가 지원하는 형식으로 검증한다. */
 function normalizeProxyServer(value, label = "천유 프록시") {
-  const server = String(value || "").trim();
+  const rawServer = String(value || "").trim();
+  const server = /^[a-z][a-z\d+.-]*:\/\//i.test(rawServer)
+    ? rawServer
+    : `http://${rawServer}`;
   let url;
 
-  if (server.length > 2048 || /[\r\n\0]/.test(server)) {
+  if (!rawServer || server.length > 2048 || /[\r\n\0]/.test(server)) {
     throw new Error(`${label} 주소 형식이 올바르지 않습니다.`);
   }
 
@@ -72,7 +75,8 @@ function normalizeProxyServer(value, label = "천유 프록시") {
   } catch {
     throw new Error(
       `${label} 주소가 올바르지 않습니다. ` +
-      "http://호스트:포트 형식으로 설정하세요.",
+      "유효한 호스트 또는 IP와 포트를 확인하세요. " +
+      "프로토콜을 생략하면 http://가 자동 적용됩니다.",
     );
   }
 
@@ -173,6 +177,28 @@ function resolveCheonyuProxy(input, _env, mall) {
       "선택한 천유 프록시",
     ),
   };
+}
+
+/** main process에서 전달한 등록 프록시 순환 목록을 검증한다. */
+function resolveCheonyuProxyRotation(input, mall) {
+  if (mall !== "cheonyu" || !Array.isArray(input?.cheonyuProxyRotation)) {
+    return [];
+  }
+
+  return input.cheonyuProxyRotation
+    .filter((item) => item && item.server)
+    .map((item, index) => ({
+      proxyProfileId: String(item.profileId || ""),
+      proxyProfileName: String(item.profileName || `프록시 ${index + 1}`),
+      proxy: normalizeProxyCredentials(
+        {
+          server: item.server,
+          username: item.username,
+          password: item.password,
+        },
+        `천유 순환 프록시 ${index + 1}`,
+      ),
+    }));
 }
 
 function pickValue(input, inputKey, env, envKey, fallback) {
@@ -451,6 +477,7 @@ function resolveRunConfig(
     proxyProfileId: cheonyuProxy.proxyProfileId || "",
     proxyProfileName: cheonyuProxy.proxyProfileName || "",
     proxy: cheonyuProxy.proxy,
+    proxyRotation: resolveCheonyuProxyRotation(input, mall),
     baseOutDir: resolveOutputDir(input, env, defaultOutputDir),
   };
 }

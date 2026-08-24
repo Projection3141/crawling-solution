@@ -1,5 +1,12 @@
 const path = require("node:path");
 const { chromium } = require("playwright");
+const {
+  archiveToProductArray,
+  readProductArchive,
+} = require("./utils/product-archive");
+const {
+  postResultJson,
+} = require("./utils/result-uploader");
 
 const SOURCE_BASE_URL =
   "https://www.kseoms.com/cs_partner/xhr/getGridData";
@@ -262,6 +269,24 @@ async function uploadShippingRecords(
   }
 }
 
+/** 현재 통합 상품 아카이브 전체를 업로더에 POST한다. */
+async function uploadProductArchive() {
+  const archive =
+    await readProductArchive();
+  const archiveProducts =
+    archiveToProductArray(archive);
+  const archiveResponse =
+    await postResultJson(
+      "아카이브",
+      archiveProducts,
+    );
+
+  return {
+    archiveCount: archiveProducts.length,
+    archiveResponse,
+  };
+}
+
 /**
  * 세션이 없으면 표시된 브라우저에서 사용자의 로그인을 기다린다.
  *
@@ -349,6 +374,9 @@ async function ensureLoggedIn(
 /** 운송정보를 한 번 GET하고 POST한다. */
 async function collectAndUploadOnce(
   profileDirectory,
+  {
+    uploadArchive = true,
+  } = {},
 ) {
   const {
     startDate,
@@ -402,30 +430,67 @@ async function collectAndUploadOnce(
      * 첨부 코드와 동일하게 로그인된 context.request로
      * sourceUrl을 GET한다.
      */
-    const gridData =
-      await fetchGridData(
-        context,
-        sourceUrl,
-      );
+    let shippingRecords = [];
+    let lastFetchError = null;
+    let fetchAttempt = 0;
 
-    const shippingRecords =
-      extractShippingRecords(
-        gridData,
-      );
+    while (shippingRecords.length < 1) {
+      fetchAttempt += 1;
+
+      try {
+        if (fetchAttempt > 1) {
+          console.warn(
+            `[WARN] [SHIPPING AUTH] 로그인 세션 재확인 ${fetchAttempt - 1}회 · ` +
+              "재로그인을 진행합니다.",
+          );
+          await ensureLoggedIn(
+            page,
+            sourceUrl,
+          );
+        }
+
+        const gridData =
+          await fetchGridData(
+            context,
+            sourceUrl,
+          );
+
+        shippingRecords =
+          extractShippingRecords(
+            gridData,
+          );
+
+        if (shippingRecords.length > 0) {
+          if (fetchAttempt > 1) {
+            console.log(
+              `[SUCCESS] [SHIPPING AUTH] 재로그인 후 운송정보 ` +
+                `${shippingRecords.length}건을 다시 확인했습니다.`,
+            );
+          }
+          lastFetchError = null;
+          break;
+        }
+
+        lastFetchError = new Error(
+          "응답에서 id와 mft_itemName을 가진 운송정보를 찾지 못했습니다.",
+        );
+      } catch (error) {
+        lastFetchError = error;
+      }
+
+      if (shippingRecords.length < 1) {
+        console.warn(
+          `[WARN] [SHIPPING AUTH] 운송정보 재조회 실패 · 5초 후 다시 로그인합니다: ` +
+            `${lastFetchError?.message || lastFetchError || "유효 데이터 없음"}`,
+        );
+        await page.waitForTimeout(5000);
+      }
+    }
 
     console.log(
       `[SHIPPING EXTRACT] ` +
         `${shippingRecords.length}건`,
     );
-
-    if (
-      shippingRecords.length ===
-      0
-    ) {
-      throw new Error(
-        "응답에서 id와 mft_itemName을 가진 운송정보를 찾지 못했습니다.",
-      );
-    }
 
     /**
      * JSON 파일은 만들지 않고 추출 배열을 그대로 POST한다.
@@ -435,9 +500,19 @@ async function collectAndUploadOnce(
         shippingRecords,
       );
 
+    const archiveUpload = uploadArchive
+      ? await uploadProductArchive()
+      : {
+          archiveCount: 0,
+          archiveResponse: null,
+        };
+
     console.log(
       `[SHIPPING UPLOAD] ` +
-        `${shippingRecords.length}건 서버 전송 완료`,
+        `${shippingRecords.length}건 서버 전송 완료 · ` +
+        (uploadArchive
+          ? `아카이브 ${archiveUpload.archiveCount}개 전송 완료`
+          : "수집정보 전송 OFF"),
     );
 
     if (
@@ -454,6 +529,10 @@ async function collectAndUploadOnce(
         shippingRecords.length,
       response:
         uploadResult,
+      archiveCount:
+        archiveUpload.archiveCount,
+      archiveResponse:
+        archiveUpload.archiveResponse,
     };
   } finally {
     await context.close();
@@ -473,7 +552,8 @@ function createShippingScheduler({
       profileDirectory,
     );
 
-  let enabled = true;
+  let enabled = false;
+  let collectionUploadEnabled = true;
   let running = false;
   let timer = null;
   let stopped = false;
@@ -489,6 +569,7 @@ function createShippingScheduler({
   ) {
     onStateChanged({
       enabled,
+      collectionUploadEnabled,
       running,
       ...patch,
     });
@@ -506,7 +587,7 @@ function createShippingScheduler({
 
     if (
       stopped ||
-      !enabled
+      (!enabled && !collectionUploadEnabled)
     ) {
       return;
     }
@@ -530,7 +611,7 @@ function createShippingScheduler({
   async function runOnce() {
     if (
       stopped ||
-      !enabled ||
+      (!enabled && !collectionUploadEnabled) ||
       running
     ) {
       return;
@@ -545,10 +626,18 @@ function createShippingScheduler({
     });
 
     try {
-      const result =
-        await collectAndUploadOnce(
-          resolvedProfileDirectory,
-        );
+      const result = enabled
+        ? await collectAndUploadOnce(
+            resolvedProfileDirectory,
+            {
+              uploadArchive: collectionUploadEnabled,
+            },
+          )
+        : {
+            count: 0,
+            response: null,
+            ...(await uploadProductArchive()),
+          };
 
       emitState({
         lastError: "",
@@ -596,13 +685,31 @@ function createShippingScheduler({
        * OFF에서 ON으로 바꾸면 즉시 한 번 실행한다.
        */
       void runOnce();
+    } else if (collectionUploadEnabled) {
+      scheduleNext();
+    }
+  }
+
+  function setCollectionUploadEnabled(
+    nextEnabled,
+  ) {
+    collectionUploadEnabled =
+      nextEnabled === true;
+
+    clearTimer();
+    emitState();
+
+    if (collectionUploadEnabled) {
+      void runOnce();
+    } else if (enabled) {
+      scheduleNext();
     }
   }
 
   function start() {
     stopped = false;
 
-    if (enabled) {
+    if (enabled || collectionUploadEnabled) {
       /**
        * Electron 앱이 켜지면 즉시 한 번 실행한다.
        */
@@ -619,9 +726,11 @@ function createShippingScheduler({
     start,
     stop,
     setEnabled,
+    setCollectionUploadEnabled,
     runOnce,
     getState: () => ({
       enabled,
+      collectionUploadEnabled,
       running,
       lastStartedAt,
       lastFinishedAt,

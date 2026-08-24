@@ -16,6 +16,7 @@ const {
   buildAvailabilityInventory,
   buildAvailabilitySummaries,
 } = require("../../utils/inventory");
+const { createNetworkUsageTracker } = require("../../utils/network-usage");
 const { collectCcdomeDetails } = require("./detail");
 const { collectCcdomeProducts, loginCcdome } = require("./site");
 
@@ -33,6 +34,12 @@ async function runCcdome(
   let browser = null;
   let context = null;
   let releaseAbort = () => { };
+  const networkUsageTracker = createNetworkUsageTracker({
+    label: "과자생각 수집",
+  });
+  const directUsage = {
+    proxyProfileName: "직접 연결",
+  };
   const ensureNotAborted = () => throwIfAborted(signal);
 
   try {
@@ -52,12 +59,14 @@ async function runCcdome(
       viewport: config.viewport,
       userAgent: config.userAgent,
     });
+    await networkUsageTracker.trackContext(context, directUsage);
 
     await installLightweightRouting(context, {
       showBrowser: config.showBrowser,
     });
 
     const page = await context.newPage();
+    await networkUsageTracker.trackPage(page, directUsage);
 
     installDialogAutoAccept(page);
 
@@ -206,6 +215,7 @@ async function runCcdome(
     releaseAbort();
     if (context) await context.close().catch(() => null);
     if (browser) await browser.close().catch(() => null);
+    await networkUsageTracker.finishAndLog();
   }
 }
 

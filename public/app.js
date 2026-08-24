@@ -82,6 +82,8 @@ const elements = {
   appBadge: document.querySelector("#appBadge"),
   shippingToggleButton: document.querySelector("#shippingToggleButton"),
   shippingStatusText: document.querySelector("#shippingStatusText"),
+  collectionUploadToggleButton: document.querySelector("#collectionUploadToggleButton"),
+  collectionUploadStatusText: document.querySelector("#collectionUploadStatusText"),
 
   activeRunCount: document.querySelector("#activeRunCount"),
   runList: document.querySelector("#runList"),
@@ -125,6 +127,7 @@ const state = {
     },
     shipping: {
       enabled: false,
+      collectionUploadEnabled: true,
       running: false,
       lastError: "",
       lastRecordCount: 0,
@@ -136,6 +139,7 @@ const state = {
   latestResultRunId: "",
   repeatPlans: new Map(),
   repeatTimers: new Map(),
+  repeatLaunching: new Set(),
 };
 
 const RUNNING_STATUSES = new Set([
@@ -265,7 +269,7 @@ function renderProxyProfileSelects(preferredId = null) {
 
   const selected = getProxyProfile(selectedId);
   elements.cheonyuProxyHelp.textContent = selected
-    ? `${selected.name} 프록시를 사용합니다.`
+    ? `${selected.name}부터 시작해 천유 10페이지마다 다음 등록 프록시로 변경합니다.`
     : "프록시를 사용하지 않고 직접 연결합니다.";
 }
 
@@ -1219,7 +1223,7 @@ function renderShippingState(shipping = {}) {
     String(enabled),
   );
 
-  if (running) {
+  if (running && enabled) {
     elements.shippingToggleButton.textContent =
       "운송정보 서버 전송 중...";
   } else {
@@ -1264,6 +1268,67 @@ function renderShippingState(shipping = {}) {
   }
 }
 
+/** 수집정보 아카이브 자동 전송 ON/OFF 상태를 표시한다. */
+function renderCollectionUploadState(shipping = {}) {
+  if (!elements.collectionUploadToggleButton) return;
+
+  const enabled = shipping.collectionUploadEnabled !== false;
+  const running = shipping.running === true;
+
+  elements.collectionUploadToggleButton.classList.toggle(
+    "enabled",
+    enabled,
+  );
+  elements.collectionUploadToggleButton.classList.toggle(
+    "shipping-off",
+    !enabled,
+  );
+  elements.collectionUploadToggleButton.setAttribute(
+    "aria-pressed",
+    String(enabled),
+  );
+  elements.collectionUploadToggleButton.textContent = running && enabled
+    ? "수집정보 서버 전송 중..."
+    : `수집정보 서버 전송 ${enabled ? "ON" : "OFF"}`;
+  elements.collectionUploadToggleButton.title = enabled
+    ? "앱 실행 직후 전송하고 이후 1시간마다 아카이브를 전송합니다."
+    : "수집정보 자동 전송이 꺼져 있습니다.";
+
+  if (elements.collectionUploadStatusText) {
+    elements.collectionUploadStatusText.textContent = enabled
+      ? "수집정보 자동전송 동작 중"
+      : "수집정보 자동전송 중지";
+  }
+}
+
+/** 수집정보 아카이브 자동 전송 ON/OFF를 변경한다. */
+async function toggleCollectionUploadEnabled() {
+  clearError();
+  clearSuccess();
+
+  const currentEnabled =
+    state.applicationState?.shipping?.collectionUploadEnabled !== false;
+  const nextEnabled = !currentEnabled;
+
+  elements.collectionUploadToggleButton.disabled = true;
+
+  try {
+    await window.collectorApp.setCollectionUploadEnabled(
+      nextEnabled,
+    );
+    handleStateChanged(
+      await window.collectorApp.getState(),
+    );
+    showSuccess(
+      `수집정보 서버 전송을 ${nextEnabled ? "켰습니다" : "껐습니다"}.`,
+    );
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    elements.collectionUploadToggleButton.disabled = false;
+  }
+}
+
 /** 운송정보 자동 전송 ON/OFF를 변경한다. */
 async function toggleShippingEnabled() {
   clearError();
@@ -1303,6 +1368,7 @@ function clearRepeatPlan(runId) {
     state.repeatTimers.delete(runId);
   }
 
+  state.repeatLaunching.delete(runId);
   state.repeatPlans.delete(runId);
 }
 
@@ -1313,6 +1379,7 @@ function clearAllRepeatPlans() {
   }
 
   state.repeatTimers.clear();
+  state.repeatLaunching.clear();
   state.repeatPlans.clear();
 }
 
@@ -1333,7 +1400,10 @@ function scheduleRepeatRuns(applicationState) {
     }
 
     if (!["completed", "failed"].includes(run.status)) continue;
-    if (state.repeatTimers.has(run.id)) continue;
+    if (
+      state.repeatTimers.has(run.id) ||
+      state.repeatLaunching.has(run.id)
+    ) continue;
 
     const executionOptions =
       plan.basePayload.executionOptions || {
@@ -1347,9 +1417,12 @@ function scheduleRepeatRuns(applicationState) {
     plan.nextRunAt = nextRunAt.toISOString();
 
     const timerId = window.setTimeout(async () => {
-      state.repeatTimers.delete(run.id);
+      state.repeatLaunching.add(run.id);
+      let launchError = null;
 
       try {
+        if (state.repeatPlans.get(run.id) !== plan) return;
+
         const nextRun = await window.collectorApp.start({
           ...plan.basePayload,
         });
@@ -1364,11 +1437,18 @@ function scheduleRepeatRuns(applicationState) {
 
         handleStateChanged(await window.collectorApp.getState());
       } catch (error) {
+        launchError = error;
         plan.nextRunAt = null;
         showError(
           `반복 수집 실행 요청 실패: ${error.message} 다음 일정은 유지됩니다.`,
         );
-        scheduleRepeatRuns(applicationState);
+      } finally {
+        state.repeatTimers.delete(run.id);
+        state.repeatLaunching.delete(run.id);
+      }
+
+      if (launchError) {
+        scheduleRepeatRuns(state.applicationState);
         renderRunList(state.applicationState);
       }
     }, delayMs);
@@ -1694,6 +1774,7 @@ function handleStateChanged(applicationState) {
 
   renderRunList(state.applicationState);
   renderShippingState(state.applicationState.shipping);
+  renderCollectionUploadState(state.applicationState.shipping);
   scheduleRepeatRuns(state.applicationState);
 }
 
@@ -2079,6 +2160,10 @@ elements.cartUploadButton.addEventListener(
 elements.shippingToggleButton.addEventListener(
   "click",
   toggleShippingEnabled,
+);
+elements.collectionUploadToggleButton.addEventListener(
+  "click",
+  toggleCollectionUploadEnabled,
 );
 
 elements.cartCheonyuAccountSelect.addEventListener("change", () => {

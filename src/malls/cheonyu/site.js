@@ -3471,6 +3471,7 @@ async function bulkAddPages(
   {
     maxProductCount = 0,
     skipProductIds = [],
+    rotatePage = null,
   } = {},
 ) {
   throwIfAborted(signal);
@@ -3509,6 +3510,34 @@ async function bulkAddPages(
     pageNo += 1
   ) {
     throwIfAborted(signal);
+
+    // 페이지 범위 시작 이후에는 4분 대기 후 수집을 진행한다.
+    if (pageNo > pageRange.pageStart) {
+      onProgress({
+        stage: "waiting",
+        message: `${pageNo - 1}페이지 완료 · 다음 ${pageNo}페이지 수집 전 4분 대기`,
+        currentPage: pageNo - 1,
+        pageRange,
+      });
+      await page.waitForTimeout(4 * 60 * 1000);
+      throwIfAborted(signal);
+    }
+
+    const pageOffset = pageNo - pageRange.pageStart;
+    if (
+      typeof rotatePage === "function" &&
+      pageOffset >= 0 &&
+      pageOffset % 10 === 0
+    ) {
+      page = await rotatePage({
+        currentPage: page,
+        pageNo,
+        pageRange,
+        rotationIndex: Math.floor(pageOffset / 10),
+        forceRestart: pageOffset > 0,
+      });
+      throwIfAborted(signal);
+    }
 
     const startedAt = performance.now();
     const pageHealthBefore = await readCheonyuPageRuntimeSnapshot(page).catch(() => null);

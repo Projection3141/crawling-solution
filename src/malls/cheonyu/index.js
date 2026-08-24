@@ -13,6 +13,7 @@ const {
   throwIfAborted,
 } = require("../../utils/common");
 const { installHttpBlockGuard, replacePage } = require("../../utils/site-safety");
+const { createNetworkUsageTracker } = require("../../utils/network-usage");
 const { buildProductSummaries } = require("../../utils/inventory");
 const { clearCartAll } = require("./cart");
 const { probeCheonyuCartStock } = require("./cart-stock");
@@ -284,6 +285,18 @@ async function runCheonyu(
   const cycleHealthHistory = [];
   const maintenanceHistory = [];
   let page = null;
+  const networkUsageTracker = createNetworkUsageTracker({
+    label: "천유 수집",
+  });
+  const initialProxyUsage = {
+    proxyProfileId: config.proxyProfileId,
+    proxyProfileName: config.proxyProfileName,
+    proxy: config.proxy,
+  };
+  const proxyRotation = Array.isArray(config.proxyRotation)
+    ? config.proxyRotation.filter((item) => item?.proxy)
+    : [];
+  let currentProxyRotationIndex = 0;
 
   const clearClientCaches = async (targetPage) => {
     await targetPage.evaluate(() => {
@@ -342,6 +355,82 @@ async function runCheonyu(
     }
   };
 
+  const rotateCheonyuProxyPage = async ({
+    currentPage,
+    pageNo,
+    rotationIndex,
+    forceRestart = false,
+  }) => {
+    if (proxyRotation.length < 1) return currentPage;
+
+    const nextIndex = rotationIndex % proxyRotation.length;
+    const nextProxy = proxyRotation[nextIndex];
+
+    if (!forceRestart && nextIndex === currentProxyRotationIndex) {
+      return currentPage;
+    }
+
+    throwIfAborted(runSignal);
+    onProgress({
+      stage: "proxy-rotation",
+      message:
+        `${pageNo}페이지부터 시작 프록시 기준 ${rotationIndex + 1}번째 구간 · ` +
+        `${nextProxy.proxyProfileName}으로 변경 후 브라우저 세션을 재실행합니다.`,
+      currentPage: pageNo,
+      proxyProfileName: nextProxy.proxyProfileName,
+    });
+    logCheonyuInfo(
+      `[PROXY] ${pageNo}페이지부터 ${nextProxy.proxyProfileName} 사용 ` +
+        `(${nextIndex + 1}/${proxyRotation.length})`,
+    );
+
+    await Promise.resolve(blockGuard?.dispose?.()).catch(() => null);
+    await context?.close().catch(() => null);
+
+    context = await browser.newContext({
+      viewport: config.viewport,
+      userAgent: config.userAgent,
+      proxy: nextProxy.proxy,
+    });
+    await networkUsageTracker.trackContext(context, nextProxy);
+    blockGuard = installHttpBlockGuard(context, {
+      hostname: new URL(config.baseUrl).hostname,
+      label: "천유",
+      onBlocked: (error) => {
+        blockController.abort();
+        onProgress({
+          stage: "blocked",
+          message: error.message,
+        });
+      },
+    });
+    await installLightweightRouting(context, {
+      showBrowser: config.showBrowser,
+    });
+    page = await context.newPage();
+    await networkUsageTracker.trackPage(page, nextProxy);
+    installDialogAutoAccept(page);
+    await loginCheonyu(
+      page,
+      config,
+      runSignal,
+      {
+        verificationTarget: "list",
+      },
+    );
+    currentProxyRotationIndex = nextIndex;
+    maintenanceHistory.push({
+      pageNo,
+      action: "rotateProxyContext",
+      proxyProfileId: nextProxy.proxyProfileId,
+      proxyProfileName: nextProxy.proxyProfileName,
+      rotationIndex,
+      at: new Date().toISOString(),
+    });
+
+    return page;
+  };
+
   try {
     throwIfAborted(runSignal);
     onProgress({
@@ -360,6 +449,7 @@ async function runCheonyu(
       userAgent: config.userAgent,
       ...(config.proxy ? { proxy: config.proxy } : {}),
     });
+    await networkUsageTracker.trackContext(context, initialProxyUsage);
 
     blockGuard = installHttpBlockGuard(context, {
       hostname: new URL(config.baseUrl).hostname,
@@ -378,6 +468,7 @@ async function runCheonyu(
     });
 
     page = await context.newPage();
+    await networkUsageTracker.trackPage(page, initialProxyUsage);
 
     installDialogAutoAccept(page);
 
@@ -464,6 +555,10 @@ async function runCheonyu(
         {
           maxProductCount: requestCount,
           skipProductIds: Array.from(seenProductIds),
+          rotatePage:
+            proxyRotation.length > 0
+              ? rotateCheonyuProxyPage
+              : null,
         },
       );
       const cycleElapsedMs = performance.now() - cycleStartAt;
@@ -892,6 +987,7 @@ async function runCheonyu(
     releaseAbort();
     if (context) await context.close().catch(() => null);
     if (browser) await browser.close().catch(() => null);
+    await networkUsageTracker.finishAndLog();
   }
 }
 

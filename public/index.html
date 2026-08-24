@@ -83,6 +83,13 @@
               aria-pressed="false">
               운송정보 서버 전송 확인 중
             </button>
+
+            <span id="collectionUploadStatusText" class="status-text">수집정보 서버 전송 확인 중</span>
+
+            <button id="collectionUploadToggleButton" type="button" class="shipping-toggle-button enabled"
+              aria-pressed="true">
+              수집정보 서버 전송 ON
+            </button>
           </div>
         </header>
 
@@ -126,12 +133,12 @@
                   </label>
 
                   <label class="field">
-                    <span>프록시 선택</span>
+                    <span>시작 프록시 설정</span>
                     <select id="cheonyuProxyProfileSelect" name="proxyProfileId">
                       <option value="">프록시 사용 안 함</option>
                     </select>
                     <small id="cheonyuProxyHelp">
-                      이 PC에 등록한 프록시 중 하나를 선택합니다.
+                      선택한 프록시부터 시작해 천유 10페이지마다 다음 등록 프록시로 변경합니다.
                     </small>
                   </label>
 

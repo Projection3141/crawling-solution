@@ -239,6 +239,7 @@ function createCredentialStore({ safeStorage, userDataDir, normalizeProxyCredent
     filePath,
     getSummary: () => createSummary(),
     getProxy: (id) => getProfile("proxies", id, "프록시"),
+    getProxies: () => readData().proxies.map((profile) => ({ ...profile })),
     getOpenAiKey: (id) => getProfile("openAiKeys", id, "OpenAI API 키"),
     saveProxy,
     saveOpenAiKey,

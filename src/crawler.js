@@ -27,10 +27,6 @@ const ADAPTERS = {
   ccdome: require("./malls/ccdome"),
 };
 
-const RESULT_UPLOAD_URL =
-  "https://www.web3.io.kr/joahstore/crawling/uploader";
-const RESULT_UPLOAD_TIMEOUT_MS = 30000;
-
 const CSV_HEADERS = {
   inventory: [
     "sourceMall",
@@ -526,159 +522,6 @@ function createDetailResultObject(
   return result;
 }
 
-/**
- * POST 전송 데이터에서 productUrl 키만 재귀적으로 제거한다.
- * 원본 result/detailResult 객체는 변경하지 않는다.
- */
-function removeProductUrlDeep(value) {
-  if (Array.isArray(value)) {
-    return value.map((item) => removeProductUrlDeep(item));
-  }
-
-  if (!value || typeof value !== "object") {
-    return value;
-  }
-
-  const result = {};
-
-  for (const [key, childValue] of Object.entries(value)) {
-    if (key === "productUrl") continue;
-
-    result[key] = removeProductUrlDeep(childValue);
-  }
-
-  return result;
-}
-
-/** 응답 본문을 JSON 우선으로 변환하고, 실패하면 문자열로 반환한다. */
-function parseUploadResponseText(text) {
-  if (!text) return null;
-
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-
-/**
- * 메모리에 완성된 결과 JSON을 uploader 서버에 한 번에 POST한다.
- *
- * body:
- * {
- *   type: "재고" | "디테일",
- *   data: productUrl이 제거된 JSON 객체
- * }
- */
-async function postResultJson(
-  type,
-  data,
-  {
-    signal,
-    translatedData = null,
-  } = {},
-) {
-  throwIfAborted(signal);
-
-  if (typeof fetch !== "function") {
-    throw new Error(
-      "현재 Node.js 환경에서 fetch를 사용할 수 없습니다. Node.js 18 이상이 필요합니다.",
-    );
-  }
-
-  const controller = new AbortController();
-  let timedOut = false;
-
-  const timeoutId = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, RESULT_UPLOAD_TIMEOUT_MS);
-
-  const abortFromParent = () => {
-    controller.abort();
-  };
-
-  signal?.addEventListener("abort", abortFromParent, {
-    once: true,
-  });
-
-  const body = {
-    type,
-    data: removeProductUrlDeep(data),
-
-    /**
-     * 기존 type/data 계약은 유지하고,
-     * 재고 POST에 번역 결과 JSON을 함께 전달한다.
-     */
-    ...(translatedData !== null
-      ? {
-        translatedData:
-          removeProductUrlDeep(
-            translatedData,
-          ),
-      }
-      : {}),
-  };
-
-  try {
-    console.log(`[RESULT POST] ${type} 전송 시작`, {
-      url: RESULT_UPLOAD_URL,
-      type,
-    });
-
-    const response = await fetch(RESULT_UPLOAD_URL, {
-      method: "POST",
-      headers: {
-        Accept: "application/json, text/plain, */*",
-        "Content-Type": "application/json; charset=UTF-8",
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-
-    const responseText = await response.text();
-    const responseData = parseUploadResponseText(responseText);
-
-    console.log(`[RESULT POST] ${type} 응답`, {
-      status: response.status,
-      ok: response.ok,
-      data: responseData,
-    });
-
-    if (!response.ok) {
-      const message =
-        responseData && typeof responseData === "object"
-          ? responseData.message || responseData.error
-          : responseData;
-
-      throw new Error(
-        message || `${type} 결과 POST 실패: HTTP ${response.status}`,
-      );
-    }
-
-    return {
-      type,
-      status: response.status,
-      response: responseData,
-    };
-  } catch (error) {
-    if (signal?.aborted) {
-      throwIfAborted(signal);
-    }
-
-    if (timedOut || error?.name === "AbortError") {
-      throw new Error(
-        `${type} 결과 POST 요청 시간이 ${RESULT_UPLOAD_TIMEOUT_MS}ms를 초과했습니다.`,
-      );
-    }
-
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
-    signal?.removeEventListener("abort", abortFromParent);
-  }
-}
-
 /** 번역 입력에 사용할 상품·옵션 row를 생성한다. */
 function createTranslationInput(result, collectionMode) {
   const inventoryItems = Array.isArray(result.inventoryItems)
@@ -943,11 +786,11 @@ async function runCollection(
   });
 
   onProgress({
-    stage: "uploading",
+    stage: "archiving",
     message:
       config.collectionMode === "detail"
-        ? "상세 상품 데이터를 서버에 전송하고 있습니다."
-        : "일반 상품 데이터를 서버에 전송하고 있습니다.",
+        ? "상세 상품 아카이빙과 파일 저장을 완료했습니다."
+        : "일반 상품 아카이빙과 파일 저장을 완료했습니다.",
     pageRange: result.summary.pageRange,
     detectedTotalProductCount: result.summary.detectedTotalProductCount,
     collectedProductCount: result.summary.collectedProductCount,
@@ -957,26 +800,10 @@ async function runCollection(
     elapsedMs: result.summary.elapsedMs,
   });
 
-  throwIfAborted(signal);
-
-  const uploadType =
-    config.collectionMode === "detail"
-      ? "디테일"
-      : "재고";
-  const uploadResult = await postResultJson(
-    uploadType,
-    mergedBackendProducts,
-    { signal },
-  );
   const uploads = {
-    inventory:
-      config.collectionMode === "general"
-        ? uploadResult
-        : null,
-    detail:
-      config.collectionMode === "detail"
-        ? uploadResult
-        : null,
+    inventory: null,
+    detail: null,
+    deferredToShippingScheduler: true,
   };
 
   return {

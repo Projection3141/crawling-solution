@@ -54,6 +54,10 @@ contextBridge.exposeInMainWorld(
       invoke(CHANNELS.setShippingEnabled, {
         enabled: enabled === true,
       }),
+    setCollectionUploadEnabled: (enabled) =>
+      invoke(CHANNELS.setShippingEnabled, {
+        collectionUploadEnabled: enabled === true,
+      }),
     chooseOutputDirectory: () => invoke(CHANNELS.chooseOutputDirectory),
     saveResultFile: (fileType, runId = "") =>
       invoke(CHANNELS.saveResultFile, {
