@@ -517,7 +517,12 @@ async function replacePage(
   const nextPage = await context.newPage();
 
   if (typeof setupPage === "function") {
-    await setupPage(nextPage);
+    try {
+      await setupPage(nextPage);
+    } catch (error) {
+      await nextPage.close().catch(() => null);
+      throw error;
+    }
   }
 
   if (closeOldPage) {

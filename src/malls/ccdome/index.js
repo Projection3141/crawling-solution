@@ -5,7 +5,8 @@ const { chromium } = require("playwright");
 const {
   bindAbortToBrowser,
   installDialogAutoAccept,
-  installLightweightRouting,
+  getLightweightLaunchArgs,
+  installLightweightNetworkPolicy,
 } = require("../../utils/browser");
 const {
   formatMs,
@@ -51,6 +52,7 @@ async function runCcdome(
 
     browser = await browserType.launch({
       headless: config.headless,
+      args: getLightweightLaunchArgs({ showBrowser: config.showBrowser }),
     });
     releaseAbort = bindAbortToBrowser(signal, browser);
     ensureNotAborted();
@@ -61,7 +63,7 @@ async function runCcdome(
     });
     await networkUsageTracker.trackContext(context, directUsage);
 
-    await installLightweightRouting(context, {
+    await installLightweightNetworkPolicy(context, {
       showBrowser: config.showBrowser,
     });
 

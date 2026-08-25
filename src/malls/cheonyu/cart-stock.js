@@ -17,9 +17,6 @@ const {
   addProductsFromListPagesToCart,
   findCheonyuProductsByIds,
 } = require("./site");
-const {
-  markSiteError,
-} = require("../../utils/site-safety");
 
 /** 동일 상품의 옵션 요청을 상품 단위로 묶는다. */
 function groupCheonyuRequestsByProduct(items) {
@@ -50,8 +47,20 @@ function normalizeCoverageText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
+/** 팝업과 장바구니에서 다르게 표현되는 옵션 구분자·괄호를 같은 키로 맞춘다. */
+function normalizeCoverageOptionText(value) {
+  return normalizeCoverageText(value)
+    .normalize("NFKC")
+    .replace(/[／｜＞]/g, (token) => ({ "／": "/", "｜": "|", "＞": ">" })[token])
+    .replace(/\s*[\/|>]\s*/g, " ")
+    .replace(/[\[\](){}【】]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
 function createCartOptionMatchKey(productId, optionText) {
-  return `${normalizeCoverageText(productId)}::${normalizeCoverageText(optionText) || "0"}`;
+  return `${normalizeCoverageText(productId)}::${normalizeCoverageOptionText(optionText) || "0"}`;
 }
 
 function createCoverageRowKey(row) {
@@ -62,8 +71,13 @@ function createCoverageRowKey(row) {
   }
 
   const optionId = normalizeCoverageText(row?.optionId);
-  const optionText = normalizeCoverageText(row?.optionText);
-  const optionIdentity = optionText || (optionId ? `ID:${optionId}` : "UNKNOWN");
+  const optionText = normalizeCoverageOptionText(row?.optionText);
+  const hasStableOptionId = optionId && optionId !== "0";
+  const optionIdentity = hasStableOptionId
+    ? `ID:${optionId}`
+    : optionText
+      ? `TEXT:${optionText}`
+      : "UNKNOWN";
 
   return `${productId}::OPTION:${optionIdentity}`;
 }
@@ -212,19 +226,41 @@ async function addCheonyuProductsToCart(
   const foundMap = new Map(
     foundProducts.map((product) => [String(product.productId), product]),
   );
-  const resolvedProducts = productIds.map((productId) => {
+  const missingProductIds = productIds.filter(
+    (productId) => !foundMap.has(productId),
+  );
+  const resolvedProducts = productIds.flatMap((productId) => {
     const found = foundMap.get(productId);
 
     if (!found) {
-      throw new Error(`천유 상품번호 ${productId}를 찾지 못했습니다.`);
+      return [];
     }
 
-    return {
+    return [{
       ...found,
       productId,
       cartRequests: grouped.get(productId),
-    };
+    }];
   });
+
+  if (missingProductIds.length > 0) {
+    const message =
+      `천유 상품번호 탐색에서 ${missingProductIds.length}개를 찾지 못해 ` +
+      `해당 상품만 제외합니다. (${missingProductIds.slice(0, 10).join(", ")})`;
+    console.warn(`[WARN] ${message}`);
+    onProgress({
+      stage: "cart-product-excluded",
+      level: "warn",
+      message,
+      productIds: missingProductIds,
+    });
+  }
+
+  if (resolvedProducts.length < 1) {
+    throw new Error(
+      "천유 장바구니 대상 상품을 하나도 찾지 못했습니다. 목록 HTML 구조를 확인해야 합니다.",
+    );
+  }
 
   onProgress({
     stage: "cart",
@@ -243,6 +279,10 @@ async function addCheonyuProductsToCart(
     requestedProducts: products,
     resolvedProducts,
     ...addResult,
+    unavailableProductIds: Array.from(new Set([
+      ...missingProductIds,
+      ...(addResult.unavailableProductIds || []).map(String),
+    ])),
   };
 }
 
@@ -279,14 +319,16 @@ async function probeCheonyuCartStock(
   const popupMap = new Map();
 
   for (const row of popupOptionRows || []) {
+    if (row?.selectedForCart !== true) continue;
     const productId = String(row.productId || "").trim();
     const optionText = String(row.optionText || "").trim();
     const key = createCartOptionMatchKey(productId, optionText);
 
     if (!productId) continue;
     if (!popupMap.has(key)) {
-      popupMap.set(key, row);
+      popupMap.set(key, []);
     }
+    popupMap.get(key).push(row);
   }
   const maxReadAttempts = Math.max(
     1,
@@ -300,13 +342,32 @@ async function probeCheonyuCartStock(
   let inventoryItems = [];
   let coverage = null;
 
+  if (targetIds.size < 1) {
+    coverage = analyzeCheonyuCartCoverage({
+      products,
+      popupOptionRows,
+      inventoryItems,
+      unavailableProductIds,
+    });
+    return {
+      cartHtml,
+      inventoryItems,
+      clearAfterResult: null,
+      probeQty,
+      coverage,
+    };
+  }
+
   for (let attempt = 1; attempt <= maxReadAttempts; attempt += 1) {
     throwIfAborted(signal);
     cartHtml = await readCartHtml(page, config);
     const allCartItems = parseCartHtml(cartHtml, {
       ...config,
       cartQty: probeQty,
+    }, {
+      requireTable: true,
     });
+    const popupMatchIndexes = new Map();
 
     inventoryItems = sortInventoryItems(
       allCartItems
@@ -315,9 +376,13 @@ async function probeCheonyuCartStock(
           const productId = String(item.productId || "").trim();
           const optionText = String(item.optionText || "").trim();
           const key = createCartOptionMatchKey(productId, optionText);
-          const popupRow = popupMap.get(key);
+          const candidates = popupMap.get(key) || [];
+          const candidateIndex = popupMatchIndexes.get(key) || 0;
+          const popupRow =
+            candidates[candidateIndex] || candidates[candidates.length - 1];
 
           if (popupRow) {
+            popupMatchIndexes.set(key, candidateIndex + 1);
             return {
               ...item,
               optionId: popupRow.optionId ?? item.optionId,
@@ -341,11 +406,13 @@ async function probeCheonyuCartStock(
       break;
     }
 
+    const missingPreview = coverage.missingProductIds.slice(0, 10).join(", ");
     console.warn(
-      `[CHEONYU CART] incomplete coverage ` +
+      `[WARN] [CHEONYU CART] incomplete coverage ` +
       `${coverage.actualProductCount}/${coverage.expectedProductCount} products ` +
-      `(attempt ${attempt}/${maxReadAttempts})`,
-      coverage,
+      `(attempt ${attempt}/${maxReadAttempts}), ` +
+      `missing ${coverage.missingProductIds.length}` +
+      (missingPreview ? ` (${missingPreview})` : ""),
     );
 
     if (attempt < maxReadAttempts) {
@@ -372,21 +439,19 @@ async function probeCheonyuCartStock(
       .slice(0, 10)
       .join(", ");
 
-    throw markSiteError(
-      new Error(
-        `천유 장바구니 부분 수집: ` +
-        `${coverage?.actualProductCount || 0}/${coverage?.expectedProductCount || 0}상품, ` +
-        `${rowSummary}, 누락 상품 ${coverage?.missingProductIds?.length || 0}개, ` +
-        `옵션 불일치 ${coverage?.partialProductIds?.length || 0}상품` +
-        (missingPreview ? ` (${missingPreview})` : ""),
-      ),
-      {
-        retryable: true,
-        code: "CHEONYU_CART_COVERAGE_INCOMPLETE",
-        stage: "cheonyu-cart-coverage",
-        details: coverage,
-      },
-    );
+    const message =
+      `천유 장바구니 부분 수집 결과를 유지하고 계속 진행합니다: ` +
+      `${coverage?.actualProductCount || 0}/${coverage?.expectedProductCount || 0}상품, ` +
+      `${rowSummary}, 누락 상품 ${coverage?.missingProductIds?.length || 0}개, ` +
+      `옵션 불일치 ${coverage?.partialProductIds?.length || 0}상품` +
+      (missingPreview ? ` (${missingPreview})` : "");
+    console.warn(`[WARN] ${message}`);
+    onProgress({
+      stage: "inventory-partial",
+      level: "warn",
+      message,
+      coverage,
+    });
   }
 
   let clearAfterResult = null;
@@ -444,9 +509,12 @@ async function collectCheonyuCartStock(
     (result) => result.popupOptionRows || [],
   );
   const unavailableProductIds = Array.from(new Set(
-    bulkResults.flatMap(
-      (result) => result.unavailableProductIds || [],
-    ).map(String),
+    [
+      ...(addResult.unavailableProductIds || []),
+      ...bulkResults.flatMap(
+        (result) => result.unavailableProductIds || [],
+      ),
+    ].map(String),
   ));
 
   return probeCheonyuCartStock(
@@ -465,10 +533,68 @@ async function collectCheonyuCartStock(
   );
 }
 
+function createCheonyuPopupInventoryItems({
+  products = [],
+  popupOptionRows = [],
+  directProductIds = [],
+  config = {},
+} = {}) {
+  const directProductIdSet = new Set(directProductIds.map((id) => String(id)));
+  const productMap = new Map(
+    products.map((product) => [String(product.productId || ""), product]),
+  );
+  const inventoryMap = new Map();
+
+  for (const row of popupOptionRows) {
+    const productId = String(row.productId || "");
+    if (!directProductIdSet.has(productId) || row.complete !== true) continue;
+
+    const product = productMap.get(productId) || {};
+    const optionId = String(row.optionId ?? "0") || "0";
+    const submitOptionId = String(row.submitOptionId ?? optionId) || optionId;
+    const optionText = String(row.optionText || "").trim();
+    const inventoryKey = `${productId}::${optionId}::${submitOptionId}::${optionText}`;
+    const maxStock = Math.max(0, Math.trunc(Number(row.maxStock) || 0));
+    const stockStatus =
+      row.stockStatus || (maxStock > 0 ? "IN_STOCK" : "OUT_OF_STOCK");
+
+    inventoryMap.set(inventoryKey, {
+      sourceMall: config.mall || "cheonyu",
+      categoryCode: config.category,
+      cartCheckId: "",
+      inPIDX: "",
+      productId,
+      barcode: product.barcode || null,
+      productUrl: product.productUrl || "",
+      productName: row.productName || product.productName || "",
+      normalizedName:
+        product.normalizedName ||
+        row.productName ||
+        product.productName ||
+        "",
+      optionText,
+      hasOption: row.hasOption === true,
+      optionId,
+      submitOptionId,
+      requestedQty: Math.max(0, Math.trunc(Number(row.requestedQty) || 0)),
+      maxStock,
+      stockStatus,
+      stockLimited: false,
+      porderMinus: String(row.porderMinus || ""),
+      isSoldOut: maxStock <= 0 || stockStatus === "OUT_OF_STOCK",
+      msg: row.disabled === true ? "옵션 선택 비활성화" : "",
+      rowSource: "popup-max-stock",
+    });
+  }
+
+  return Array.from(inventoryMap.values());
+}
+
 module.exports = {
   addCheonyuProductsToCart,
   analyzeCheonyuCartCoverage,
   collectCheonyuCartStock,
+  createCheonyuPopupInventoryItems,
   groupCheonyuRequestsByProduct,
   probeCheonyuCartStock,
 };

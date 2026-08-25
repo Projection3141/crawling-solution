@@ -44,6 +44,7 @@ function createNetworkUsageTracker({ label = "수집" } = {}) {
   const startedAt = new Date().toISOString();
   const usageByProxy = new Map();
   const trackedPages = new WeakSet();
+  const pageTrackingPromises = new WeakMap();
   const contextListeners = [];
   const sessions = new Set();
 
@@ -55,7 +56,7 @@ function createNetworkUsageTracker({ label = "수집" } = {}) {
     return usageByProxy.get(proxy.key);
   }
 
-  async function trackPage(page, proxyInput) {
+  async function startTrackingPage(page, proxyInput) {
     if (!page || trackedPages.has(page)) return;
     trackedPages.add(page);
 
@@ -111,6 +112,17 @@ function createNetworkUsageTracker({ label = "수집" } = {}) {
           `${error?.message || error}`,
       );
     }
+  }
+
+  function trackPage(page, proxyInput) {
+    if (!page) return Promise.resolve();
+
+    const existingPromise = pageTrackingPromises.get(page);
+    if (existingPromise) return existingPromise;
+
+    const trackingPromise = startTrackingPage(page, proxyInput);
+    pageTrackingPromises.set(page, trackingPromise);
+    return trackingPromise;
   }
 
   async function trackContext(context, proxyInput) {

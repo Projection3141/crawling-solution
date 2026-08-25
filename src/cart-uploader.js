@@ -5,7 +5,8 @@ const {
 } = require("playwright");
 const {
   installDialogAutoAccept,
-  installLightweightRouting,
+  getLightweightLaunchArgs,
+  installLightweightNetworkPolicy,
 } = require("./utils/browser");
 const {
   throwIfAborted,
@@ -34,6 +35,7 @@ const {
 async function createCartBrowser(config, browserType) {
   const browser = await browserType.launch({
     headless: config.headless,
+    args: getLightweightLaunchArgs({ showBrowser: config.showBrowser }),
   });
   let context = null;
 
@@ -44,7 +46,7 @@ async function createCartBrowser(config, browserType) {
       ...(config.proxy ? { proxy: config.proxy } : {}),
     });
 
-    await installLightweightRouting(context, {
+    await installLightweightNetworkPolicy(context, {
       showBrowser: config.showBrowser,
     });
 

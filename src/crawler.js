@@ -631,7 +631,67 @@ async function runCollection(
   }
 
   const files = createRunFiles(config.baseOutDir, config.mall, runId);
-  const result = await adapter.run(config, { onProgress, signal });
+  const cycleArchivedProducts = new Map();
+  const onCycleArchive = config.mall === "cheonyu"
+    ? async ({
+      cycleNo,
+      products = [],
+      inventoryItems = [],
+      coverage = null,
+      pageRange = null,
+    } = {}) => {
+      throwIfAborted(signal);
+      const checkpointProducts = await createBackendProducts({
+        collectionMode: "general",
+        products,
+        inventoryItems,
+        detailItems: [],
+        translatedItems: [],
+        lowStockThreshold: Number(config.lowStockThreshold) || 10,
+      });
+      const archiveUpdate = await updateProductArchive(
+        checkpointProducts,
+        {
+          source: "general",
+          conversion: null,
+        },
+      );
+
+      for (const product of archiveUpdate.currentProducts || []) {
+        const productId = String(product?.id || product?.productId || "").trim();
+        if (productId) cycleArchivedProducts.set(productId, product);
+      }
+      writeJson(files.resultJson, Array.from(cycleArchivedProducts.values()));
+
+      const result = {
+        cycleNo,
+        productCount: checkpointProducts.length,
+        inventoryRowCount: inventoryItems.length,
+        missingProductCount: coverage?.missingProductIds?.length || 0,
+        optionMismatchProductCount: coverage?.partialProductIds?.length || 0,
+        archiveNewProductCount: archiveUpdate.stats.newProductCount,
+        archiveUpdatedProductCount: archiveUpdate.stats.updatedProductCount,
+        archiveChangedFieldCount: archiveUpdate.stats.changedFieldCount,
+        archivePath: archiveUpdate.archivePath,
+      };
+
+      onProgress({
+        stage: "cycle-archived",
+        message:
+          `천유 ${cycleNo}차 ${checkpointProducts.length}개 상품의 ` +
+          `장바구니 재고 아카이빙을 완료했습니다.`,
+        cycleNo,
+        pageRange,
+        ...result,
+      });
+      return result;
+    }
+    : null;
+  const result = await adapter.run(config, {
+    onProgress,
+    onCycleArchive,
+    signal,
+  });
 
   throwIfAborted(signal);
 
