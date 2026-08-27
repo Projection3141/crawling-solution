@@ -543,6 +543,75 @@ async function runCheonyu(
     return page;
   };
 
+  const recoverCheonyuListPage = async ({
+    currentPage,
+    pageNo,
+    mode,
+    error,
+  }) => {
+    throwIfAborted(runSignal);
+
+    if (mode === "replace-tab") {
+      const activeProxyUsage =
+        proxyRotation[currentProxyRotationIndex] || initialProxyUsage;
+      onProgress({
+        stage: "page-recovery",
+        message:
+          `${pageNo}페이지 이동 실패로 같은 프록시 컨텍스트에서 ` +
+          "수집 탭을 교체합니다.",
+        currentPage: pageNo,
+      });
+      const nextPage = await replacePage(currentPage, {
+        signal: runSignal,
+        closeOldPage: true,
+        setupPage: async (replacementPage) => {
+          await Promise.all([
+            networkUsageTracker.trackPage(
+              replacementPage,
+              activeProxyUsage,
+            ),
+            lightweightNetworkPolicy?.configurePage?.(replacementPage),
+          ]);
+          installDialogAutoAccept(replacementPage);
+        },
+      });
+      page = nextPage;
+      maintenanceHistory.push({
+        pageNo,
+        action: "recoverListWithNewTab",
+        reason: error?.message || String(error),
+        proxyProfileId: activeProxyUsage?.proxyProfileId,
+        proxyProfileName: activeProxyUsage?.proxyProfileName,
+        at: new Date().toISOString(),
+      });
+      return nextPage;
+    }
+
+    if (mode === "next-proxy") {
+      if (proxyRotation.length < 1) {
+        throw new Error(
+          "목록 복구에 사용할 다음 프록시가 등록되어 있지 않습니다.",
+        );
+      }
+
+      const nextRotationIndex = currentProxyRotationIndex + 1;
+      onProgress({
+        stage: "page-recovery",
+        message:
+          `${pageNo}페이지를 다음 프록시 컨텍스트에서 재시도합니다.`,
+        currentPage: pageNo,
+      });
+      return rotateCheonyuProxyPage({
+        currentPage,
+        pageNo,
+        rotationIndex: nextRotationIndex,
+        forceRestart: true,
+      });
+    }
+
+    throw new Error(`지원하지 않는 천유 목록 복구 방식입니다: ${mode}`);
+  };
+
   try {
     throwIfAborted(runSignal);
     onProgress({
@@ -687,6 +756,7 @@ async function runCheonyu(
               ? rotateCheonyuProxyPage
               : null,
           resetPage: resetCheonyuPageKeepingContext,
+          recoverListPage: recoverCheonyuListPage,
           proxyPageStart: config.pageStart,
           waitBeforeFirstPage: waitBeforeCycleFirstPage,
         },

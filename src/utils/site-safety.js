@@ -419,6 +419,8 @@ async function gotoWithSiteRetry(
     waitUntil = "domcontentloaded",
     readySelector = "",
     readyTimeoutMs = null,
+    acceptReadySelectorAfterNavigationError = false,
+    onNavigationErrorReady,
     validate,
     beforeAttempt,
     onRetry,
@@ -432,10 +434,40 @@ async function gotoWithSiteRetry(
     async ({ attempt, maxAttempts: totalAttempts }) => {
       throwIfAborted(signal);
 
-      const response = await page.goto(url, {
-        waitUntil,
-        timeout: Math.max(1000, Number(timeoutMs) || 60000),
-      });
+      let response = null;
+
+      try {
+        response = await page.goto(url, {
+          waitUntil,
+          timeout: Math.max(1000, Number(timeoutMs) || 60000),
+        });
+      } catch (error) {
+        if (!acceptReadySelectorAfterNavigationError || !readySelector) {
+          throw error;
+        }
+
+        const readyElementExists = await page
+          .locator(readySelector)
+          .first()
+          .count()
+          .then((count) => count > 0)
+          .catch(() => false);
+
+        if (!readyElementExists) throw error;
+
+        if (typeof onNavigationErrorReady === "function") {
+          await Promise.resolve(
+            onNavigationErrorReady({
+              error,
+              page,
+              url,
+              attempt,
+              maxAttempts: totalAttempts,
+              readySelector,
+            }),
+          ).catch(() => null);
+        }
+      }
 
       if (response && !response.ok()) {
         throw createHttpStatusError(response, label, url);

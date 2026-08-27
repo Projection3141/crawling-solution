@@ -188,6 +188,7 @@ async function gotoCheonyuSafely(
     readySelector = "",
     maxAttempts = null,
     waitUntil = "domcontentloaded",
+    acceptReadySelectorAfterNavigationError = true,
   } = {},
 ) {
   const attempts =
@@ -209,6 +210,14 @@ async function gotoCheonyuSafely(
     waitUntil,
     readySelector,
     readyTimeoutMs: config.navigationTimeoutMs,
+    acceptReadySelectorAfterNavigationError,
+    onNavigationErrorReady: ({ error }) => {
+      logCheonyuWarn(
+        `[CHEONYU] ${label} 이동은 완료 신호 전에 실패했지만 ` +
+          `필수 목록 요소가 이미 생성되어 현재 문서로 계속 진행합니다. ` +
+          `(${error?.message || error})`,
+      );
+    },
     baseDelayMs: 900,
     maxDelayMs: 15000,
     multiplier: 1.6,
@@ -2629,24 +2638,25 @@ async function waitForReadyCheonyuOptionPopup(
   timeoutOverrideMs = null,
   expectedProductCount = 1,
 ) {
+  const popupOpenWaitExtensionMs = 1000;
   const configuredTimeout =
-    Number(timeoutOverrideMs) ||
-    Number(config.optionPopupWaitTimeoutMs) ||
-    Number(config.navigationTimeoutMs) ||
-    60000;
+    (Number(timeoutOverrideMs) ||
+      Number(config.optionPopupWaitTimeoutMs) ||
+      Number(config.navigationTimeoutMs) ||
+      60000) + popupOpenWaitExtensionMs;
   const timeout =
     config.collectionMode === "general"
       ? Math.max(
           500,
           Math.min(
-            Number(timeoutOverrideMs) ||
+            (Number(timeoutOverrideMs) ||
               getSafetyNumber(
-                config,
-                "optionPopupPartialWaitMs",
-                2000,
-                500,
-                120000,
-              ),
+                  config,
+                  "optionPopupPartialWaitMs",
+                  2000,
+                  500,
+                  120000,
+                )) + popupOpenWaitExtensionMs,
             120000,
           ),
         )
@@ -3642,6 +3652,7 @@ async function bulkAddPages(
     skipProductIds = [],
     rotatePage = null,
     resetPage = null,
+    recoverListPage = null,
     proxyPageStart = null,
     waitBeforeFirstPage = false,
   } = {},
@@ -3742,13 +3753,101 @@ async function bulkAddPages(
     let pageExcludedProducts = [];
     let pageResult;
     const cachedHtml = pageNo === 1 ? firstPageHtml : null;
-    const { candidates, targets } = await collectListCandidates(
-      page,
-      pageNo,
-      config,
-      cachedHtml,
-      signal,
-    );
+    let listCollection = null;
+
+    try {
+      listCollection = await collectListCandidates(
+        page,
+        pageNo,
+        config,
+        cachedHtml,
+        signal,
+      );
+    } catch (initialError) {
+      if (typeof recoverListPage !== "function") throw initialError;
+
+      logCheonyuWarn(
+        `[LIST ${pageNo}] 기존 탭의 목록 이동 재시도가 모두 실패했습니다. ` +
+          `같은 프록시 컨텍스트에서 탭을 교체합니다. ` +
+          `(${initialError?.message || initialError})`,
+      );
+
+      let tabRecoveryError = null;
+
+      try {
+        page = await recoverListPage({
+          currentPage: page,
+          pageNo,
+          pageRange,
+          mode: "replace-tab",
+          error: initialError,
+        });
+        listCollection = await collectListCandidates(
+          page,
+          pageNo,
+          config,
+          null,
+          signal,
+        );
+        logCheonyuSuccess(
+          `[LIST ${pageNo}] 같은 프록시의 새 탭에서 목록 수집을 복구했습니다.`,
+        );
+      } catch (error) {
+        tabRecoveryError = error;
+      }
+
+      if (!listCollection) {
+        logCheonyuWarn(
+          `[LIST ${pageNo}] 새 탭에서도 목록을 불러오지 못해 ` +
+            `다음 프록시 컨텍스트로 교체합니다. ` +
+            `(${tabRecoveryError?.message || tabRecoveryError})`,
+        );
+
+        try {
+          page = await recoverListPage({
+            currentPage: page,
+            pageNo,
+            pageRange,
+            mode: "next-proxy",
+            error: tabRecoveryError || initialError,
+          });
+          listCollection = await collectListCandidates(
+            page,
+            pageNo,
+            config,
+            null,
+            signal,
+          );
+          logCheonyuSuccess(
+            `[LIST ${pageNo}] 다음 프록시 컨텍스트에서 목록 수집을 복구했습니다.`,
+          );
+        } catch (proxyRecoveryError) {
+          throw markSiteError(
+            new Error(
+              `천유 ${pageNo}페이지 목록 복구가 모두 실패했습니다. ` +
+                `기존 탭: ${initialError?.message || initialError} / ` +
+                `새 탭: ${tabRecoveryError?.message || tabRecoveryError} / ` +
+                `다음 프록시: ${proxyRecoveryError?.message || proxyRecoveryError}`,
+            ),
+            {
+              retryable: false,
+              code: "CHEONYU_LIST_PAGE_RECOVERY_FAILED",
+              stage: "cheonyu-list",
+              details: {
+                pageNo,
+                initialError: initialError?.message || String(initialError),
+                tabRecoveryError:
+                  tabRecoveryError?.message || String(tabRecoveryError),
+                proxyRecoveryError:
+                  proxyRecoveryError?.message || String(proxyRecoveryError),
+              },
+            },
+          );
+        }
+      }
+    }
+
+    const { candidates, targets } = listCollection;
     throwIfAborted(signal);
 
     if (enforceLimit && collectedProductCount >= collectedLimit) {
