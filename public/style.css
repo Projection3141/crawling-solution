@@ -483,6 +483,27 @@ h3 {
   letter-spacing: -0.02em;
 }
 
+.upload-api-settings {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.upload-api-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.upload-api-input-row input {
+  min-width: 0;
+}
+
+.upload-api-input-row button {
+  min-width: 92px;
+}
+
 .header-actions p,
 .result-header-actions p {
   margin-bottom: 0;
@@ -1347,6 +1368,10 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
+  .upload-api-input-row {
+    grid-template-columns: 1fr;
+  }
+
   .settings-actions {
     padding: 12px;
   }
@@ -1400,5 +1425,99 @@ button:disabled {
   .metric-card {
     min-height: 80px;
     padding: 12px;
+  }
+}
+
+.upload-log-panel {
+  margin: 0 0 24px;
+  padding: 22px;
+  border: 1px solid rgba(129, 157, 195, 0.28);
+  border-radius: 18px;
+  background: linear-gradient(
+    145deg,
+    rgba(18, 39, 64, 0.86),
+    rgba(12, 29, 50, 0.72)
+  );
+}
+
+.upload-log-header,
+.upload-log-item-heading,
+.upload-log-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.upload-log-header h3,
+.upload-log-header p {
+  margin: 0;
+}
+
+.upload-log-header > div > p:last-child {
+  margin-top: 6px;
+  color: #91a3b8;
+}
+
+.upload-log-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.upload-log-item {
+  padding: 15px 16px;
+  border: 1px solid rgba(129, 157, 195, 0.2);
+  border-radius: 13px;
+  background: rgba(7, 20, 36, 0.55);
+}
+
+.upload-log-item p {
+  margin: 7px 0 0;
+}
+
+.upload-log-status {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.upload-log-status.success {
+  color: #80e5ad;
+  background: rgba(30, 155, 91, 0.18);
+}
+
+.upload-log-status.error,
+.upload-log-error {
+  color: #ff9d9d;
+}
+
+.upload-log-details,
+.upload-log-sample,
+.upload-log-empty {
+  color: #91a3b8;
+  font-size: 0.86rem;
+}
+
+.upload-log-pagination {
+  justify-content: center;
+  margin-top: 16px;
+}
+
+.upload-log-pagination button {
+  min-width: 78px;
+}
+
+@media (max-width: 720px) {
+  .upload-log-header,
+  .upload-log-item-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .upload-log-header button {
+    width: 100%;
   }
 }

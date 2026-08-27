@@ -72,6 +72,10 @@ const elements = {
   outputDirectory: document.querySelector("#outputDirectory"),
   chooseOutputButton: document.querySelector("#chooseOutputButton"),
   openSettingsButton: document.querySelector("#openSettingsButton"),
+  uploadApiSettingsForm: document.querySelector("#uploadApiSettingsForm"),
+  uploadApiUrl: document.querySelector("#uploadApiUrl"),
+  uploadApiUrlHelp: document.querySelector("#uploadApiUrlHelp"),
+  saveUploadApiUrlButton: document.querySelector("#saveUploadApiUrlButton"),
   pageStart: document.querySelector("#pageStart"),
   pageEnd: document.querySelector("#pageEnd"),
   detailMaxProducts: document.querySelector("#detailMaxProducts"),
@@ -106,10 +110,22 @@ const elements = {
     document.querySelector("#cartUploadButton"),
   cartUploadMessage:
     document.querySelector("#cartUploadMessage"),
+  collectionUploadLogList:
+    document.querySelector("#collectionUploadLogList"),
+  collectionUploadLogPageInfo:
+    document.querySelector("#collectionUploadLogPageInfo"),
+  collectionUploadLogPreviousButton:
+    document.querySelector("#collectionUploadLogPreviousButton"),
+  collectionUploadLogNextButton:
+    document.querySelector("#collectionUploadLogNextButton"),
+  openCollectionUploadLogDirectoryButton:
+    document.querySelector("#openCollectionUploadLogDirectoryButton"),
 };
 
 const state = {
   defaults: null,
+  collectionUploadLogPage: 1,
+  collectionUploadLogTotalPages: 1,
   accounts: [],
   credentialProfiles: {
     proxies: [],
@@ -2071,6 +2087,157 @@ async function openSettingsDirectory() {
   }
 }
 
+function renderUploadApiSettings(settings = {}) {
+  const uploadApiUrl = String(settings.uploadApiUrl || "").trim();
+  elements.uploadApiUrl.value = uploadApiUrl;
+  elements.uploadApiUrlHelp.textContent = settings.isDefault
+    ? "기본 URL을 사용 중입니다. 장바구니 조회, 운송정보, 수집정보 전송에 공통 적용됩니다."
+    : "사용자 설정 URL을 사용 중입니다. 세 가지 업로드 요청에 즉시 공통 적용됩니다.";
+}
+
+async function loadUploadApiSettings() {
+  const settings = await window.collectorApp.getUploadApiSettings();
+  renderUploadApiSettings(settings);
+}
+
+async function saveUploadApiSettings(event) {
+  event.preventDefault();
+  clearError();
+  clearSuccess();
+
+  const requestedUrl = elements.uploadApiUrl.value.trim();
+
+  if (requestedUrl) {
+    let parsed;
+
+    try {
+      parsed = new URL(requestedUrl);
+    } catch {
+      showError("Upload API URL 형식을 확인해 주세요.");
+      elements.uploadApiUrl.focus();
+      return;
+    }
+
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      showError("Upload API URL은 HTTP 또는 HTTPS 주소만 사용할 수 있습니다.");
+      elements.uploadApiUrl.focus();
+      return;
+    }
+  }
+
+  elements.saveUploadApiUrlButton.disabled = true;
+  elements.saveUploadApiUrlButton.textContent = "저장 중";
+
+  try {
+    const settings = await window.collectorApp.saveUploadApiSettings({
+      uploadApiUrl: requestedUrl,
+    });
+    renderUploadApiSettings(settings);
+    showSuccess(
+      requestedUrl
+        ? "Upload API URL을 저장했습니다."
+        : "Upload API URL을 기본값으로 복원했습니다.",
+    );
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    elements.saveUploadApiUrlButton.disabled = false;
+    elements.saveUploadApiUrlButton.textContent = "저장";
+  }
+}
+
+function formatCollectionUploadSentAt(value) {
+  if (!value) return "시각 확인 불가";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) return String(value);
+
+  return new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+}
+
+function renderCollectionUploadLogs(result) {
+  state.collectionUploadLogPage = result?.page || 1;
+  state.collectionUploadLogTotalPages = result?.totalPages || 1;
+  elements.collectionUploadLogList.replaceChildren();
+
+  const items = Array.isArray(result?.items) ? result.items : [];
+
+  if (items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "upload-log-empty";
+    empty.textContent = "아직 저장된 수집정보 전송 로그가 없습니다.";
+    elements.collectionUploadLogList.append(empty);
+  } else {
+    items.forEach((item) => {
+      const article = document.createElement("article");
+      article.className = "upload-log-item";
+
+      const heading = document.createElement("div");
+      heading.className = "upload-log-item-heading";
+      const title = document.createElement("strong");
+      title.textContent = `${item.type || "수집정보"} · ${formatCollectionUploadSentAt(item.sentAt)}`;
+      const badge = document.createElement("span");
+      badge.className = `upload-log-status ${item.success ? "success" : "error"}`;
+      badge.textContent = item.success ? "전송 성공" : "전송 실패";
+      heading.append(title, badge);
+
+      const details = document.createElement("p");
+      details.className = "upload-log-details";
+      const itemCount = Number.isFinite(item.itemCount)
+        ? `${item.itemCount.toLocaleString()}개`
+        : "확인 불가";
+      const status = item.status === null
+        ? "응답 없음"
+        : `HTTP ${item.status}`;
+      details.textContent = `데이터 ${itemCount} · ${status} · ${item.dateDirectory}/${item.fileName}`;
+      article.append(heading, details);
+
+      if (item.sampleProductIds?.length > 0) {
+        const sample = document.createElement("p");
+        sample.className = "upload-log-sample";
+        sample.textContent = `상품 ID 예시: ${item.sampleProductIds.join(", ")}`;
+        article.append(sample);
+      }
+
+      if (item.error) {
+        const error = document.createElement("p");
+        error.className = "upload-log-error";
+        error.textContent = item.error;
+        article.append(error);
+      }
+
+      elements.collectionUploadLogList.append(article);
+    });
+  }
+
+  elements.collectionUploadLogPageInfo.textContent =
+    `${state.collectionUploadLogPage} / ${state.collectionUploadLogTotalPages} · 총 ${(result?.totalCount || 0).toLocaleString()}건`;
+  elements.collectionUploadLogPreviousButton.disabled =
+    state.collectionUploadLogPage <= 1;
+  elements.collectionUploadLogNextButton.disabled =
+    state.collectionUploadLogPage >= state.collectionUploadLogTotalPages;
+}
+
+async function loadCollectionUploadLogs(page = 1) {
+  try {
+    const result = await window.collectorApp.getCollectionUploadLogs(page);
+    renderCollectionUploadLogs(result);
+  } catch (error) {
+    elements.collectionUploadLogList.textContent =
+      `전송 로그를 불러오지 못했습니다: ${error.message}`;
+  }
+}
+
 /** Electron preload API 존재 여부를 확인하고 화면을 초기화한다. */
 async function initialize() {
   if (!window.collectorApp) {
@@ -2081,6 +2248,8 @@ async function initialize() {
 
   await loadDefaults();
   await loadCredentialProfiles();
+  await loadUploadApiSettings();
+  await loadCollectionUploadLogs(1);
   loadAccounts();
   updateCollectionModeGuide();
   updateRunModeGuide();
@@ -2105,6 +2274,23 @@ elements.openOpenAiManagerButton.addEventListener("click", openOpenAiManager);
 elements.closeOpenAiManagerButton.addEventListener("click", closeOpenAiManager);
 elements.cancelOpenAiManagerButton.addEventListener("click", closeOpenAiManager);
 elements.saveOpenAiProfileButton.addEventListener("click", saveOpenAiProfile);
+elements.uploadApiSettingsForm.addEventListener("submit", saveUploadApiSettings);
+elements.collectionUploadLogPreviousButton.addEventListener("click", () => {
+  void loadCollectionUploadLogs(state.collectionUploadLogPage - 1);
+});
+elements.collectionUploadLogNextButton.addEventListener("click", () => {
+  void loadCollectionUploadLogs(state.collectionUploadLogPage + 1);
+});
+elements.openCollectionUploadLogDirectoryButton.addEventListener(
+  "click",
+  async () => {
+    try {
+      await window.collectorApp.openCollectionUploadLogDirectory();
+    } catch (error) {
+      showError(`전송 로그 폴더를 열지 못했습니다: ${error.message}`);
+    }
+  },
+);
 elements.collectionMode.addEventListener("change", updateCollectionModeGuide);
 elements.runMode.addEventListener("change", updateRunModeGuide);
 elements.repeatScheduleType.addEventListener("change", updateRepeatScheduleGuide);
@@ -2235,6 +2421,10 @@ function switchView(viewName) {
   document
     .querySelector(`.nav-item[data-view="${viewName}"]`)
     ?.classList.add("active");
+
+  if (viewName === "results") {
+    void loadCollectionUploadLogs(1);
+  }
 }
 
 // 사이드바 네비게이션 이벤트 처리

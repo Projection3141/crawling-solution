@@ -395,6 +395,30 @@
                 </div>
               </div>
 
+              <section class="upload-log-panel" aria-labelledby="collectionUploadLogTitle">
+                <div class="upload-log-header">
+                  <div>
+                    <p class="section-kicker">수집정보 POST 이력</p>
+                    <h3 id="collectionUploadLogTitle">수집정보 전송 로그</h3>
+                    <p>실제 전송 데이터와 응답은 날짜별 JSON 파일에 저장됩니다.</p>
+                  </div>
+
+                  <button id="openCollectionUploadLogDirectoryButton" type="button" class="secondary-button">
+                    폴더 열기
+                  </button>
+                </div>
+
+                <div id="collectionUploadLogList" class="upload-log-list" aria-live="polite">
+                  <p class="upload-log-empty">전송 로그를 불러오는 중입니다.</p>
+                </div>
+
+                <div class="upload-log-pagination" aria-label="수집정보 전송 로그 페이지 이동">
+                  <button id="collectionUploadLogPreviousButton" type="button" class="secondary-button">이전</button>
+                  <span id="collectionUploadLogPageInfo">1 / 1</span>
+                  <button id="collectionUploadLogNextButton" type="button" class="secondary-button">다음</button>
+                </div>
+              </section>
+
               <div class="download-grid">
                 <button id="saveInventoryButton" type="button" class="download-button disabled" disabled>
                   재고 CSV 저장
@@ -437,6 +461,22 @@
                     API 키 등록 및 관리
                   </button>
                 </div>
+
+                <form id="uploadApiSettingsForm" class="upload-api-settings">
+                  <label class="field" for="uploadApiUrl">
+                    <span>Upload API URL</span>
+                    <div class="upload-api-input-row">
+                      <input id="uploadApiUrl" name="uploadApiUrl" type="url" inputmode="url"
+                        autocomplete="url" placeholder="https://www.web3.io.kr/joahstore/crawling/uploader" />
+                      <button id="saveUploadApiUrlButton" type="submit" class="primary-button">
+                        저장
+                      </button>
+                    </div>
+                    <small id="uploadApiUrlHelp">
+                      장바구니 조회, 운송정보 전송, 수집정보 전송에 공통으로 사용합니다.
+                    </small>
+                  </label>
+                </form>
               </div>
             </section>
           </div>

@@ -37,6 +37,8 @@ const {
     runCartUpload,
 } = require("../src/cart-uploader");
 const { runCollection } = require("../src/crawler");
+const { setResultUploadLogRoot } = require("../src/utils/result-uploader");
+const collectionUploadLogFs = require("node:fs/promises");
 const {
     createWonToYenRateScheduler,
 } = require("../translate/convert");
@@ -45,12 +47,17 @@ const {
 } = require("../src/shipping-scheduler");
 const { loadEnvironment } = require("./environment");
 const { createCredentialStore } = require("./credential-store");
+const {
+    DEFAULT_UPLOAD_API_URL,
+    getUploadApiUrl,
+    normalizeUploadApiUrl,
+    setUploadApiUrl,
+} = require("../src/utils/upload-api-settings");
 
 const APP_SCHEME = "mall-collector";
 const APP_ORIGIN = `${APP_SCHEME}://app`;
 const APP_URL = `${APP_ORIGIN}/index.html`;
-const CART_UPLOAD_API_URL =
-    "https://www.web3.io.kr/joahstore/crawling/uploader";
+const UPLOAD_API_SETTINGS_FILE_NAME = "upload-api-settings.json";
 const RENDERER_DIR = path.resolve(__dirname, "..", "public");
 
 const CHANNELS = Object.freeze({
@@ -69,6 +76,10 @@ const CHANNELS = Object.freeze({
     showResultFile: "collector:show-result-file",
     openSettingsDirectory: "collector:open-settings-directory",
     getCredentialProfiles: "collector:get-credential-profiles",
+    getUploadApiSettings: "collector:get-upload-api-settings",
+    saveUploadApiSettings: "collector:save-upload-api-settings",
+    getCollectionUploadLogs: "collector:get-collection-upload-logs",
+    openCollectionUploadLogDirectory: "collector:open-collection-upload-log-directory",
     saveProxyProfile: "collector:save-proxy-profile",
     deleteProxyProfile: "collector:delete-proxy-profile",
     saveOpenAiProfile: "collector:save-openai-profile",
@@ -116,6 +127,100 @@ let allowImmediateQuit = false;
 let shippingScheduler = null;
 let wonToYenRateScheduler = null;
 let credentialStore = null;
+
+function getUploadApiSettingsPath() {
+    return path.join(
+        environmentInfo?.userDataDir || app.getPath("userData"),
+        UPLOAD_API_SETTINGS_FILE_NAME,
+    );
+}
+
+function createUploadApiSettingsResult(uploadApiUrl, source) {
+    return {
+        uploadApiUrl,
+        defaultUploadApiUrl: DEFAULT_UPLOAD_API_URL,
+        isDefault: uploadApiUrl === DEFAULT_UPLOAD_API_URL,
+        source,
+    };
+}
+
+const COLLECTION_UPLOAD_LOG_DIRECTORY_NAME = "collection-upload-logs";
+let collectionUploadLogRoot = "";
+
+function getCollectionUploadLogRoot() {
+    if (collectionUploadLogRoot) return collectionUploadLogRoot;
+
+    const baseDirectory = app.isPackaged
+        ? app.getPath("userData")
+        : path.join(app.getPath("home"), "MallCollector");
+
+    return path.join(
+        baseDirectory,
+        COLLECTION_UPLOAD_LOG_DIRECTORY_NAME,
+    );
+}
+
+function loadUploadApiSettings() {
+    const settingsPath = getUploadApiSettingsPath();
+    let storedUrl = "";
+
+    try {
+        if (isFile(settingsPath)) {
+            const stored = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+            storedUrl = String(stored?.uploadApiUrl || "").trim();
+        }
+    } catch (error) {
+        console.warn(
+            `[UPLOAD API] 저장 설정을 읽지 못해 기본값을 사용합니다: ` +
+                `${error?.message || error}`,
+        );
+    }
+
+    const environmentUrl = String(process.env.UPLOAD_API_URL || "").trim();
+    let source = storedUrl
+        ? "user"
+        : environmentUrl
+            ? "environment"
+            : "default";
+    let uploadApiUrl;
+
+    try {
+        uploadApiUrl = setUploadApiUrl(
+            storedUrl || environmentUrl || DEFAULT_UPLOAD_API_URL,
+        );
+    } catch (error) {
+        console.warn(
+            `[UPLOAD API] 저장된 URL이 올바르지 않아 기본값으로 복원합니다: ` +
+                `${error?.message || error}`,
+        );
+        source = "default";
+        uploadApiUrl = setUploadApiUrl(DEFAULT_UPLOAD_API_URL);
+    }
+
+    return createUploadApiSettingsResult(uploadApiUrl, source);
+}
+
+async function saveUploadApiSettings(payload) {
+    const requestedUrl = String(payload?.uploadApiUrl || "").trim();
+    const uploadApiUrl = normalizeUploadApiUrl(
+        requestedUrl || DEFAULT_UPLOAD_API_URL,
+    );
+    const settingsPath = getUploadApiSettingsPath();
+
+    ensureDir(path.dirname(settingsPath));
+    await fs.promises.writeFile(
+        settingsPath,
+        `${JSON.stringify({ uploadApiUrl }, null, 2)}\n`,
+        "utf8",
+    );
+    setUploadApiUrl(uploadApiUrl);
+
+    console.log(`[UPLOAD API] URL 설정 저장: ${uploadApiUrl}`);
+    return createUploadApiSettingsResult(
+        uploadApiUrl,
+        requestedUrl ? "user" : "default",
+    );
+}
 
 /**
  * 여러 수집 작업을 동시에 실행하기 위한 상태 저장소.
@@ -376,6 +481,117 @@ function assertTrustedSender(event) {
     ) {
         throw new Error("허용되지 않은 Electron IPC 요청입니다.");
     }
+}
+
+function summarizeCollectionUploadLog(log, dateDirectory, fileName) {
+    const products = Array.isArray(log?.request?.data)
+        ? log.request.data
+        : [];
+    const sampleProductIds = products
+        .map(
+            (product) =>
+                product?.productId ?? product?.product_id ?? product?.id,
+        )
+        .filter(
+            (value) =>
+                value !== undefined &&
+                value !== null &&
+                String(value).trim(),
+        )
+        .slice(0, 5)
+        .map(String);
+
+    return {
+        dateDirectory,
+        fileName,
+        sentAt: log?.sentAt || null,
+        success: log?.success === true,
+        type: log?.type || log?.request?.type || "수집정보",
+        itemCount: Number.isFinite(log?.itemCount)
+            ? log.itemCount
+            : products.length,
+        uploadApiUrl: log?.uploadApiUrl || "",
+        status: log?.response?.status ?? null,
+        error: log?.error || "",
+        sampleProductIds,
+    };
+}
+
+async function listCollectionUploadLogs(payload = {}) {
+    const root = getCollectionUploadLogRoot();
+    const pageSize = 5;
+    const requestedPage = Math.max(
+        1,
+        Number.parseInt(payload?.page, 10) || 1,
+    );
+    await collectionUploadLogFs.mkdir(root, { recursive: true });
+
+    const dateDirectories = (
+        await collectionUploadLogFs.readdir(root, { withFileTypes: true })
+    )
+        .filter(
+            (entry) => entry.isDirectory() && /^\d{8}$/.test(entry.name),
+        )
+        .map((entry) => entry.name)
+        .sort((a, b) => b.localeCompare(a));
+    const files = [];
+
+    for (const dateDirectory of dateDirectories) {
+        const directory = path.join(root, dateDirectory);
+        const names = (
+            await collectionUploadLogFs.readdir(directory, {
+                withFileTypes: true,
+            })
+        )
+            .filter(
+                (entry) =>
+                    entry.isFile() &&
+                    entry.name.toLowerCase().endsWith(".json"),
+            )
+            .map((entry) => entry.name)
+            .sort((a, b) => b.localeCompare(a));
+        names.forEach((fileName) =>
+            files.push({ dateDirectory, fileName }),
+        );
+    }
+
+    const totalCount = files.length;
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const page = Math.min(requestedPage, totalPages);
+    const selectedFiles = files.slice(
+        (page - 1) * pageSize,
+        page * pageSize,
+    );
+    const items = await Promise.all(
+        selectedFiles.map(async ({ dateDirectory, fileName }) => {
+            try {
+                const content = await collectionUploadLogFs.readFile(
+                    path.join(root, dateDirectory, fileName),
+                    "utf8",
+                );
+                return summarizeCollectionUploadLog(
+                    JSON.parse(content),
+                    dateDirectory,
+                    fileName,
+                );
+            } catch (error) {
+                return {
+                    dateDirectory,
+                    fileName,
+                    sentAt: null,
+                    success: false,
+                    type: "로그 읽기 실패",
+                    itemCount: null,
+                    uploadApiUrl: "",
+                    status: null,
+                    error: error?.message || String(error),
+                    sampleProductIds: [],
+                };
+            }
+        }),
+    );
+
+    return { page, pageSize, totalCount, totalPages, items, root };
 }
 
 /** IPC 오류를 직렬화 가능한 표준 응답으로 변환한다. */
@@ -667,7 +883,7 @@ function extractUploaderCartItems(responseData) {
 
 /** uploader API를 한 번 호출해 전체 장바구니 상품 배열을 가져온다. */
 async function fetchUploaderCartItems(signal) {
-    const url = new URL(CART_UPLOAD_API_URL);
+    const url = new URL(getUploadApiUrl());
 
     console.log("[CART UPLOADER GET]", url.toString());
 
@@ -1480,6 +1696,33 @@ function registerIpcHandlers() {
         ensureCredentialStore().getSummary(),
     );
 
+    registerIpcHandler(CHANNELS.getUploadApiSettings, () =>
+        loadUploadApiSettings(),
+    );
+
+    registerIpcHandler(CHANNELS.saveUploadApiSettings, (payload) =>
+        saveUploadApiSettings(payload),
+    );
+
+    registerIpcHandler(CHANNELS.getCollectionUploadLogs, (payload) =>
+        listCollectionUploadLogs(payload),
+    );
+
+    registerIpcHandler(
+        CHANNELS.openCollectionUploadLogDirectory,
+        async () => {
+            const directory = getCollectionUploadLogRoot();
+            await collectionUploadLogFs.mkdir(directory, {
+                recursive: true,
+            });
+            const errorMessage = await shell.openPath(directory);
+
+            if (errorMessage) throw new Error(errorMessage);
+
+            return { directory };
+        },
+    );
+
     registerIpcHandler(CHANNELS.saveProxyProfile, (payload) =>
         ensureCredentialStore().saveProxy(payload),
     );
@@ -1760,7 +2003,14 @@ async function bootstrap() {
 
     Menu.setApplicationMenu(null);
 
+    collectionUploadLogRoot = getCollectionUploadLogRoot();
+    await collectionUploadLogFs.mkdir(collectionUploadLogRoot, {
+        recursive: true,
+    });
+    setResultUploadLogRoot(collectionUploadLogRoot);
+
     environmentInfo = loadEnvironment(app);
+    loadUploadApiSettings();
 
     credentialStore = createCredentialStore({
         safeStorage,

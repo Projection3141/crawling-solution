@@ -16,6 +16,10 @@ const CHANNELS = Object.freeze({
   showResultFile: "collector:show-result-file",
   openSettingsDirectory: "collector:open-settings-directory",
   getCredentialProfiles: "collector:get-credential-profiles",
+  getUploadApiSettings: "collector:get-upload-api-settings",
+  saveUploadApiSettings: "collector:save-upload-api-settings",
+  getCollectionUploadLogs: "collector:get-collection-upload-logs",
+  openCollectionUploadLogDirectory: "collector:open-collection-upload-log-directory",
   saveProxyProfile: "collector:save-proxy-profile",
   deleteProxyProfile: "collector:delete-proxy-profile",
   saveOpenAiProfile: "collector:save-openai-profile",
@@ -75,6 +79,13 @@ contextBridge.exposeInMainWorld(
       }),
     openSettingsDirectory: () => invoke(CHANNELS.openSettingsDirectory),
     getCredentialProfiles: () => invoke(CHANNELS.getCredentialProfiles),
+    getUploadApiSettings: () => invoke(CHANNELS.getUploadApiSettings),
+    saveUploadApiSettings: (settings) =>
+      invoke(CHANNELS.saveUploadApiSettings, settings),
+    getCollectionUploadLogs: (page = 1) =>
+      invoke(CHANNELS.getCollectionUploadLogs, { page }),
+    openCollectionUploadLogDirectory: () =>
+      invoke(CHANNELS.openCollectionUploadLogDirectory),
     saveProxyProfile: (profile) =>
       invoke(CHANNELS.saveProxyProfile, profile),
     deleteProxyProfile: (id) =>

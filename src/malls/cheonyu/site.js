@@ -3688,7 +3688,7 @@ async function bulkAddPages(
     if (pageNo > pageRange.pageStart || waitBeforeFirstPage) {
       onProgress({
         stage: "waiting",
-        message: `${pageNo - 1}페이지 완료 · 다음 ${pageNo}페이지 수집 전 4분 대기`,
+        message: `${pageNo - 1}페이지 완료 · 다음 ${pageNo}페이지 수집 전 2분 대기`,
         currentPage: pageNo - 1,
         pageRange,
       });
@@ -3698,7 +3698,7 @@ async function bulkAddPages(
           timeout: 5000,
         })
         .catch(() => null);
-      await page.waitForTimeout(4 * 60 * 1000);
+      await page.waitForTimeout(2 * 60 * 1000);
       throwIfAborted(signal);
     }
 

@@ -7,12 +7,12 @@ const {
 const {
   postResultJson,
 } = require("./utils/result-uploader");
+const {
+  getUploadApiUrl,
+} = require("./utils/upload-api-settings");
 
 const SOURCE_BASE_URL =
   "https://www.kseoms.com/cs_partner/xhr/getGridData";
-
-const UPLOAD_URL =
-  "https://www.web3.io.kr/joahstore/crawling/uploader";
 
 const INTERVAL_MS = 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -230,7 +230,7 @@ async function uploadShippingRecords(
   records,
 ) {
   const response = await fetch(
-    UPLOAD_URL,
+    getUploadApiUrl(),
     {
       method: "POST",
       headers: {

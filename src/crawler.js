@@ -641,7 +641,7 @@ async function runCollection(
       pageRange = null,
     } = {}) => {
       throwIfAborted(signal);
-      const checkpointProducts = await createBackendProducts({
+      const cycleArchiveProducts = await createBackendProducts({
         collectionMode: "general",
         products,
         inventoryItems,
@@ -650,7 +650,7 @@ async function runCollection(
         lowStockThreshold: Number(config.lowStockThreshold) || 10,
       });
       const archiveUpdate = await updateProductArchive(
-        checkpointProducts,
+        cycleArchiveProducts,
         {
           source: "general",
           conversion: null,
@@ -665,7 +665,7 @@ async function runCollection(
 
       const result = {
         cycleNo,
-        productCount: checkpointProducts.length,
+        productCount: cycleArchiveProducts.length,
         inventoryRowCount: inventoryItems.length,
         missingProductCount: coverage?.missingProductIds?.length || 0,
         optionMismatchProductCount: coverage?.partialProductIds?.length || 0,
@@ -678,7 +678,7 @@ async function runCollection(
       onProgress({
         stage: "cycle-archived",
         message:
-          `천유 ${cycleNo}차 ${checkpointProducts.length}개 상품의 ` +
+          `천유 ${cycleNo}차 ${cycleArchiveProducts.length}개 상품의 ` +
           `장바구니 재고 아카이빙을 완료했습니다.`,
         cycleNo,
         pageRange,
