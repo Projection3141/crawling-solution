@@ -359,6 +359,7 @@ async function runCheonyu(
     ? config.proxyRotation.filter((item) => item?.proxy)
     : [];
   let currentProxyRotationIndex = 0;
+  let proxyRotationPageStart = null;
   resetCheonyuPopupWorkloadTracker(runSignal);
   logCheonyuInfo(
     "[RUN] 새 수집 실행 상태 초기화: 프록시 순번 1, 새 브라우저·컨텍스트, " +
@@ -394,10 +395,16 @@ async function runCheonyu(
     );
 
     try {
+      const activeProxyUsage =
+        proxyRotation[currentProxyRotationIndex] || initialProxyUsage;
       const recycled = await replacePage(targetPage, {
         signal: runSignal,
         closeOldPage: true,
         setupPage: async (nextPage) => {
+          await Promise.all([
+            networkUsageTracker.trackPage(nextPage, activeProxyUsage),
+            lightweightNetworkPolicy?.configurePage?.(nextPage),
+          ]);
           installDialogAutoAccept(nextPage);
           await clearClientCaches(nextPage);
         },
@@ -481,10 +488,16 @@ async function runCheonyu(
   }) => {
     if (proxyRotation.length < 1) return currentPage;
 
-    const nextIndex = rotationIndex % proxyRotation.length;
+    const normalizedRotationIndex = Math.max(0, Number(rotationIndex) || 0);
+    const nextIndex = forceRestart
+      ? (currentProxyRotationIndex + 1) % proxyRotation.length
+      : normalizedRotationIndex % proxyRotation.length;
     const nextProxy = proxyRotation[nextIndex];
 
     if (!forceRestart && nextIndex === currentProxyRotationIndex) {
+      if (!Number.isFinite(Number(proxyRotationPageStart))) {
+        proxyRotationPageStart = pageNo;
+      }
       return currentPage;
     }
 
@@ -492,7 +505,7 @@ async function runCheonyu(
     onProgress({
       stage: "proxy-rotation",
       message:
-        `${pageNo}페이지부터 시작 프록시 기준 ${rotationIndex + 1}번째 구간 · ` +
+        `${pageNo}페이지부터 현재 사용 프록시의 다음 순번 · ` +
         `${nextProxy.proxyProfileName}으로 변경 후 브라우저 세션을 재실행합니다.`,
       currentPage: pageNo,
       proxyProfileName: nextProxy.proxyProfileName,
@@ -502,50 +515,68 @@ async function runCheonyu(
         `(${nextIndex + 1}/${proxyRotation.length})`,
     );
 
-    await Promise.resolve(blockGuard?.dispose?.()).catch(() => null);
-    await context?.close().catch(() => null);
+    const previousContext = context;
+    const previousBlockGuard = blockGuard;
+    let nextContext = null;
+    let nextBlockGuard = null;
+    let nextNetworkPolicy = null;
+    let nextPage = null;
 
-    context = await browser.newContext({
-      viewport: config.viewport,
-      userAgent: config.userAgent,
-      proxy: nextProxy.proxy,
-    });
-    await networkUsageTracker.trackContext(context, nextProxy);
-    blockGuard = installHttpBlockGuard(context, {
-      hostname: new URL(config.baseUrl).hostname,
-      label: "천유",
-      onBlocked: (error) => {
-        blockController.abort();
-        onProgress({
-          stage: "blocked",
-          message: error.message,
-        });
-      },
-    });
-    lightweightNetworkPolicy = await installLightweightNetworkPolicy(context, {
-      showBrowser: config.showBrowser,
-    });
-    page = await context.newPage();
-    await Promise.all([
-      networkUsageTracker.trackPage(page, nextProxy),
-      lightweightNetworkPolicy?.configurePage?.(page),
-    ]);
-    installDialogAutoAccept(page);
-    await loginCheonyu(
-      page,
-      config,
-      runSignal,
-      {
-        verificationTarget: "list",
-      },
-    );
+    try {
+      nextContext = await browser.newContext({
+        viewport: config.viewport,
+        userAgent: config.userAgent,
+        proxy: nextProxy.proxy,
+      });
+      await networkUsageTracker.trackContext(nextContext, nextProxy);
+      nextBlockGuard = installHttpBlockGuard(nextContext, {
+        hostname: new URL(config.baseUrl).hostname,
+        label: "천유",
+        onBlocked: (error) => {
+          blockController.abort();
+          onProgress({
+            stage: "blocked",
+            message: error.message,
+          });
+        },
+      });
+      nextNetworkPolicy = await installLightweightNetworkPolicy(nextContext, {
+        showBrowser: config.showBrowser,
+      });
+      nextPage = await nextContext.newPage();
+      await Promise.all([
+        networkUsageTracker.trackPage(nextPage, nextProxy),
+        nextNetworkPolicy?.configurePage?.(nextPage),
+      ]);
+      installDialogAutoAccept(nextPage);
+      await loginCheonyu(
+        nextPage,
+        config,
+        runSignal,
+        {
+          verificationTarget: "list",
+        },
+      );
+    } catch (error) {
+      await Promise.resolve(nextBlockGuard?.dispose?.()).catch(() => null);
+      await nextContext?.close().catch(() => null);
+      throw error;
+    }
+
+    await Promise.resolve(previousBlockGuard?.dispose?.()).catch(() => null);
+    await previousContext?.close().catch(() => null);
+    context = nextContext;
+    blockGuard = nextBlockGuard;
+    lightweightNetworkPolicy = nextNetworkPolicy;
+    page = nextPage;
     currentProxyRotationIndex = nextIndex;
+    proxyRotationPageStart = pageNo;
     maintenanceHistory.push({
       pageNo,
       action: "rotateProxyContext",
       proxyProfileId: nextProxy.proxyProfileId,
       proxyProfileName: nextProxy.proxyProfileName,
-      rotationIndex,
+      rotationIndex: normalizedRotationIndex,
       at: new Date().toISOString(),
     });
 
@@ -626,12 +657,28 @@ async function runCheonyu(
           : `${pageNo}페이지를 다음 프록시 컨텍스트에서 재시도합니다.`,
         currentPage: pageNo,
       });
-      return rotateCheonyuProxyPage({
-        currentPage,
-        pageNo,
-        rotationIndex: nextRotationIndex,
-        forceRestart: true,
-      });
+      try {
+        return await rotateCheonyuProxyPage({
+          currentPage,
+          pageNo,
+          rotationIndex: nextRotationIndex,
+          forceRestart: true,
+        });
+      } catch (proxyRecoveryError) {
+        if (!isPopupOverloadRecovery) throw proxyRecoveryError;
+
+        logCheonyuWarn(
+          `[BULK ${pageNo}] 다음 프록시의 새 컨텍스트 준비 실패 ` +
+            `(${proxyRecoveryError?.message || proxyRecoveryError}) · ` +
+            "기존 컨텍스트의 새 탭으로 누락 상품 재시도를 계속합니다.",
+        );
+        return recoverCheonyuListPage({
+          currentPage,
+          pageNo,
+          mode: "popup-overload",
+          error: proxyRecoveryError,
+        });
+      }
     }
 
     throw new Error(`지원하지 않는 천유 목록 복구 방식입니다: ${mode}`);
@@ -727,6 +774,7 @@ async function runCheonyu(
     let cartHtml = "";
     let clearAfterResult = null;
     let pageRange = null;
+    let resolvedPageRange = null;
     let detectedTotalProductCount = null;
     const seenProductIds = new Set();
     let loop = 0;
@@ -789,20 +837,54 @@ async function runCheonyu(
           startPage: nextCyclePageStart,
           waitBeforeFirstPage: waitBeforeCycleFirstPage,
           pagePacingNotBeforeAt: nextCyclePageNotBeforeAt,
+          resolvedPageRange,
+          getProxyPageStart:
+            proxyRotation.length > 0
+              ? () => proxyRotationPageStart
+              : null,
         },
       );
+      if (!resolvedPageRange) {
+        const detectedRange = cycleResult?.pageRange;
+        const detectedPageStart = Number(detectedRange?.pageStart);
+        const detectedPageEnd = Number(detectedRange?.pageEnd);
+
+        if (
+          Number.isInteger(detectedPageStart) &&
+          Number.isInteger(detectedPageEnd) &&
+          detectedPageStart >= 1 &&
+          detectedPageEnd >= detectedPageStart
+        ) {
+          resolvedPageRange = { ...detectedRange };
+          for (const transientKey of [
+            "collectedLastPage",
+            "collectedPageCount",
+            "pageOrder",
+            "resumePage",
+            "stopReason",
+            "traversalStartPage",
+          ]) {
+            delete resolvedPageRange[transientKey];
+          }
+          Object.freeze(resolvedPageRange);
+          logCheonyuSuccess(
+            `[PAGE DETECT] 이번 실행 범위를 ${detectedPageStart}~${detectedPageEnd}페이지로 확정했습니다. 이후 차수와 프록시 교체에서 재사용합니다.`,
+          );
+        }
+      }
       nextCyclePageNotBeforeAt = Math.max(
         0,
         Number(cycleResult?.nextPageNotBeforeAt) || 0,
       );
-      if (
+      const cycleProxyPageStart = Number(cycleResult?.proxyPageStart);
+      if (Number.isFinite(cycleProxyPageStart)) {
+        proxyTraversalStart = cycleProxyPageStart;
+      } else if (
         proxyTraversalStart === null ||
         proxyTraversalStart === undefined ||
         !Number.isFinite(Number(proxyTraversalStart))
       ) {
-        proxyTraversalStart = Number(
-          cycleResult?.pageRange?.traversalStartPage,
-        );
+        proxyTraversalStart = Number(cycleResult?.pageRange?.traversalStartPage);
       }
       const cycleElapsedMs = performance.now() - cycleStartAt;
       const cycleProfile = buildCheonyuCycleProfile({

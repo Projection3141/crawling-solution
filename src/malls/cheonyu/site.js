@@ -3812,15 +3812,45 @@ async function bulkAddPages(
     startPage = null,
     waitBeforeFirstPage = false,
     pagePacingNotBeforeAt = 0,
+    resolvedPageRange = null,
+    getProxyPageStart = null,
   } = {},
 ) {
   throwIfAborted(signal);
 
-  const { pageRange, firstPageHtml } = await resolvePageRange(
-    page,
-    config,
-    signal,
-  );
+  const reusablePageStart = Number(resolvedPageRange?.pageStart);
+  const reusablePageEnd = Number(resolvedPageRange?.pageEnd);
+  const canReusePageRange =
+    Number.isInteger(reusablePageStart) &&
+    Number.isInteger(reusablePageEnd) &&
+    reusablePageStart >= 1 &&
+    reusablePageEnd >= reusablePageStart &&
+    reusablePageEnd <= Number(config.maxSafePages || 1000);
+  let pageRange;
+  let firstPageHtml = null;
+
+  if (canReusePageRange) {
+    pageRange = { ...resolvedPageRange };
+    for (const transientKey of [
+      "collectedLastPage",
+      "collectedPageCount",
+      "pageOrder",
+      "resumePage",
+      "stopReason",
+      "traversalStartPage",
+    ]) {
+      delete pageRange[transientKey];
+    }
+    pageRange.pageStart = reusablePageStart;
+    pageRange.pageEnd = reusablePageEnd;
+    logCheonyuInfo(
+      `[PAGE DETECT] 실행 시작 시 확정한 ${reusablePageStart}~${reusablePageEnd}페이지 범위를 재사용합니다.`,
+    );
+  } else {
+    const rangeResolution = await resolvePageRange(page, config, signal);
+    pageRange = rangeResolution.pageRange;
+    firstPageHtml = rangeResolution.firstPageHtml;
+  }
   throwIfAborted(signal);
   const allTargets = [];
   const allPopupOptionRows = [];
@@ -3854,6 +3884,18 @@ async function bulkAddPages(
   let previousSignature = "";
   let resumePage = traversalStartPage;
   let nextPageNotBeforeAt = Math.max(0, Number(pagePacingNotBeforeAt) || 0);
+  const toValidProxyPageStart = (value) => {
+    if (value === null || value === undefined || value === "") return null;
+
+    const normalized = Number(value);
+    return Number.isInteger(normalized) && normalized >= 1
+      ? normalized
+      : null;
+  };
+  let activeProxyPageStart = toValidProxyPageStart(proxyPageStart);
+  if (activeProxyPageStart === null) {
+    activeProxyPageStart = traversalStartPage;
+  }
 
   onProgress({
     stage: "collecting",
@@ -3912,9 +3954,15 @@ async function bulkAddPages(
     };
     config = { ...config, pagePacingState };
 
-    const rotationStartPage =
-      Number(proxyPageStart) || traversalStartPage;
-    const pageOffset = Math.abs(pageNo - rotationStartPage);
+    const reportedProxyPageStart = toValidProxyPageStart(
+      typeof getProxyPageStart === "function"
+        ? getProxyPageStart()
+        : null,
+    );
+    if (reportedProxyPageStart !== null) {
+      activeProxyPageStart = reportedProxyPageStart;
+    }
+    const pageOffset = Math.abs(pageNo - activeProxyPageStart);
     const isProxyRotationBoundary =
       typeof rotatePage === "function" &&
       pageOffset >= 0 &&
@@ -3930,6 +3978,14 @@ async function bulkAddPages(
         rotationIndex: Math.floor(pageOffset / 10),
         forceRestart: pageOffset > 0,
       });
+      const rotatedProxyPageStart = toValidProxyPageStart(
+        typeof getProxyPageStart === "function"
+          ? getProxyPageStart()
+          : null,
+      );
+      if (rotatedProxyPageStart !== null) {
+        activeProxyPageStart = rotatedProxyPageStart;
+      }
       throwIfAborted(signal);
     }
 
@@ -4235,6 +4291,7 @@ async function bulkAddPages(
     resumePage,
     pageRange,
     nextPageNotBeforeAt,
+    proxyPageStart: activeProxyPageStart,
   };
 }
 
