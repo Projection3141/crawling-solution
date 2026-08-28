@@ -94,12 +94,6 @@ const elements = {
   errorMessage: document.querySelector("#errorMessage"),
   successMessage: document.querySelector("#successMessage"),
 
-  saveInventoryButton: document.querySelector("#saveInventoryButton"),
-  saveSummaryButton: document.querySelector("#saveSummaryButton"),
-  saveProductsButton: document.querySelector("#saveProductsButton"),
-  saveDetailsButton: document.querySelector("#saveDetailsButton"),
-  openResultDirectoryButton: document.querySelector("#openResultDirectoryButton"),
-
   cartCheonyuAccountSelect:
     document.querySelector("#cartCheonyuAccountSelect"),
   cartCheonyuProxyProfileSelect:
@@ -163,13 +157,6 @@ const RUNNING_STATUSES = new Set([
   "running",
   "canceling",
 ]);
-
-const FILE_BUTTONS = {
-  inventory: elements.saveInventoryButton,
-  summary: elements.saveSummaryButton,
-  products: elements.saveProductsButton,
-  details: elements.saveDetailsButton,
-};
 
 function createAccountId() {
   return `account_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -1141,7 +1128,11 @@ function formatPageRange(progress, summary) {
   const start = range.pageStart ?? "-";
   const end = range.pageEnd ?? "-";
 
-  return current ? `${start} ~ ${current} / ${end}` : `${start} ~ ${end}`;
+  if (range.pageOrder === "reverse") {
+    return current ? `${end} → ${current} / ${start}` : `${end} → ${start}`;
+  }
+
+  return current ? `${start} → ${current} / ${end}` : `${start} → ${end}`;
 }
 
 /** 실행 카드의 진행률을 계산한다. */
@@ -1172,25 +1163,20 @@ function getProgressPercent(run) {
   }
 
   const total = Math.max(1, range.pageEnd - range.pageStart + 1);
-  const done = Math.max(0, current - range.pageStart + 1);
+  const done = range.pageOrder === "reverse"
+    ? Math.max(0, range.pageEnd - current + 1)
+    : Math.max(0, current - range.pageStart + 1);
 
   return Math.min(98, Math.max(5, (done / total) * 100));
 }
 
 /** 최근 완료 실행의 결과 파일 버튼을 갱신한다. */
 function updateResultFiles(files, runId = "") {
-  let anyAvailable = false;
-
-  for (const [fileType, button] of Object.entries(FILE_BUTTONS)) {
-    const available = Boolean(files?.[fileType]?.available);
-
-    button.disabled = !available;
-    button.classList.toggle("disabled", !available);
-    anyAvailable ||= available;
-  }
+  const anyAvailable = Object.values(files || {}).some(
+    (file) => file?.available === true,
+  );
 
   state.latestResultRunId = anyAvailable ? runId : "";
-  elements.openResultDirectoryButton.disabled = !anyAvailable;
 }
 
 /** 오류 메시지를 표시한다. */
@@ -1416,6 +1402,36 @@ function scheduleRepeatRuns(applicationState) {
     }
 
     if (!["completed", "failed"].includes(run.status)) continue;
+
+    if (!plan.terminalStatusHandled) {
+      if (run.status === "failed") {
+        plan.consecutiveFailureCount =
+          Number(plan.consecutiveFailureCount || 0) + 1;
+      } else {
+        plan.consecutiveFailureCount = 0;
+      }
+
+      const mall = String(
+        plan.basePayload.mall ||
+          state.defaults?.envDefaults?.mall ||
+          "cheonyu",
+      ).toLowerCase();
+      plan.nextPageOrder =
+        run.status === "failed" &&
+        plan.consecutiveFailureCount >= 2 &&
+        mall === "cheonyu"
+          ? "reverse"
+          : "forward";
+      plan.terminalStatusHandled = true;
+
+      if (plan.nextPageOrder === "reverse") {
+        console.warn(
+          `[REPEAT] 천유 수집이 ${plan.consecutiveFailureCount}회 연속 실패해 ` +
+            "다음 실행은 마지막 페이지부터 역순으로 진행합니다.",
+        );
+      }
+    }
+
     if (
       state.repeatTimers.has(run.id) ||
       state.repeatLaunching.has(run.id)
@@ -1439,16 +1455,28 @@ function scheduleRepeatRuns(applicationState) {
       try {
         if (state.repeatPlans.get(run.id) !== plan) return;
 
-        const nextRun = await window.collectorApp.start({
+        const nextPageOrder =
+          plan.nextPageOrder === "reverse" ? "reverse" : "forward";
+        const nextRunPayload = {
           ...plan.basePayload,
-        });
+          pageOrder: nextPageOrder,
+        };
+        const nextRun = await window.collectorApp.start(nextRunPayload);
+        const carriedFailureCount =
+          nextPageOrder === "reverse"
+            ? 0
+            : Number(plan.consecutiveFailureCount || 0);
 
         state.repeatPlans.delete(run.id);
         state.repeatPlans.set(nextRun.id, {
           basePayload: {
             ...plan.basePayload,
+            pageOrder: "forward",
           },
           nextRunAt: null,
+          consecutiveFailureCount: carriedFailureCount,
+          nextPageOrder: "forward",
+          terminalStatusHandled: false,
         });
 
         handleStateChanged(await window.collectorApp.getState());
@@ -1689,7 +1717,10 @@ function createRunCard(run) {
     const repeatText = document.createElement("p");
     repeatText.className = "form-note";
     repeatText.textContent =
-      `다음 실행: ${new Date(repeatPlan.nextRunAt).toLocaleString("ko-KR")}`;
+      `다음 실행: ${new Date(repeatPlan.nextRunAt).toLocaleString("ko-KR")}` +
+      (repeatPlan.nextPageOrder === "reverse"
+        ? " · 마지막 페이지부터 역순 수집"
+        : "");
 
     actions.append(stopRepeatButton, repeatText);
   }
@@ -1871,8 +1902,12 @@ async function handleSubmit(event) {
       state.repeatPlans.set(run.id, {
         basePayload: {
           ...payload,
+          pageOrder: "forward",
         },
         nextRunAt: null,
+        consecutiveFailureCount: 0,
+        nextPageOrder: "forward",
+        terminalStatusHandled: false,
       });
     }
 
@@ -2317,26 +2352,6 @@ elements.chooseOutputButton.addEventListener("click", chooseOutputDirectory);
 elements.openSettingsButton?.addEventListener(
   "click",
   openSettingsDirectory,
-);
-elements.openResultDirectoryButton.addEventListener(
-  "click",
-  () => openResultDirectory(state.latestResultRunId),
-);
-elements.saveInventoryButton.addEventListener(
-  "click",
-  () => saveResultFile("inventory", state.latestResultRunId),
-);
-elements.saveSummaryButton.addEventListener(
-  "click",
-  () => saveResultFile("summary", state.latestResultRunId),
-);
-elements.saveProductsButton.addEventListener(
-  "click",
-  () => saveResultFile("products", state.latestResultRunId),
-);
-elements.saveDetailsButton.addEventListener(
-  "click",
-  () => saveResultFile("details", state.latestResultRunId),
 );
 elements.cartUploadButton.addEventListener(
   "click",

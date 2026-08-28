@@ -36,6 +36,7 @@ const DEFAULT_RUN_CONFIG = Object.freeze({
   showBrowser: false,
   pageStart: 1,
   pageEnd: 0,
+  pageOrder: "forward",
   maxPerPage: 150,
   cartQty: 999,
   clearCartBefore: true,
@@ -345,6 +346,11 @@ function resolveRunConfig(
     DEFAULT_RUN_CONFIG.pageEnd,
     0,
   );
+  const pageOrder =
+    String(input.pageOrder || DEFAULT_RUN_CONFIG.pageOrder).toLowerCase() ===
+    "reverse"
+      ? "reverse"
+      : "forward";
   const rawPageSize = pickInteger(
     input,
     "pageSize",
@@ -405,6 +411,7 @@ function resolveRunConfig(
     headless: !showBrowser,
     pageStart,
     pageEnd,
+    pageOrder,
     pageSize,
 
     maxPerPage: pickInputInteger(
@@ -501,6 +508,7 @@ function toSafeConfig(config) {
     showBrowser: config.showBrowser,
     pageStart: config.pageStart,
     pageEnd: config.pageEnd,
+    pageOrder: config.pageOrder || "forward",
     pageSize: config.pageSize,
     maxPerPage: config.maxPerPage,
     cartQty: config.cartQty,

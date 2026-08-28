@@ -1462,7 +1462,7 @@ button:disabled {
 .upload-log-list {
   display: grid;
   gap: 10px;
-  margin-top: 18px;
+  margin-top: 0;
 }
 
 .upload-log-item {

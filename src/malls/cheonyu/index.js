@@ -22,7 +22,11 @@ const {
   probeCheonyuCartStock,
 } = require("./cart-stock");
 const { collectCheonyuDetails } = require("./detail");
-const { bulkAddPages, loginCheonyu } = require("./site");
+const {
+  bulkAddPages,
+  loginCheonyu,
+  resetCheonyuPopupWorkloadTracker,
+} = require("./site");
 
 const CHEONYU_LOG_COLORS = {
   reset: "\x1b[0m",
@@ -355,6 +359,11 @@ async function runCheonyu(
     ? config.proxyRotation.filter((item) => item?.proxy)
     : [];
   let currentProxyRotationIndex = 0;
+  resetCheonyuPopupWorkloadTracker(runSignal);
+  logCheonyuInfo(
+    "[RUN] 새 수집 실행 상태 초기화: 프록시 순번 1, 새 브라우저·컨텍스트, " +
+      "팝업 누적량 0, 2,000개 사이클 0",
+  );
 
   const clearClientCaches = async (targetPage) => {
     await targetPage.evaluate(() => {
@@ -551,14 +560,15 @@ async function runCheonyu(
   }) => {
     throwIfAborted(runSignal);
 
-    if (mode === "replace-tab") {
+    if (mode === "replace-tab" || mode === "popup-overload") {
+      const isPopupOverloadRecovery = mode === "popup-overload";
       const activeProxyUsage =
         proxyRotation[currentProxyRotationIndex] || initialProxyUsage;
       onProgress({
         stage: "page-recovery",
-        message:
-          `${pageNo}페이지 이동 실패로 같은 프록시 컨텍스트에서 ` +
-          "수집 탭을 교체합니다.",
+        message: isPopupOverloadRecovery
+          ? `${pageNo}페이지 팝업 누락률이 10%를 초과해 새 탭에서 누락 상품만 재시도합니다.`
+          : `${pageNo}페이지 이동 실패로 같은 프록시 컨텍스트에서 수집 탭을 교체합니다.`,
         currentPage: pageNo,
       });
       const nextPage = await replacePage(currentPage, {
@@ -578,7 +588,9 @@ async function runCheonyu(
       page = nextPage;
       maintenanceHistory.push({
         pageNo,
-        action: "recoverListWithNewTab",
+        action: isPopupOverloadRecovery
+          ? "recoverPopupMissingWithNewTab"
+          : "recoverListWithNewTab",
         reason: error?.message || String(error),
         proxyProfileId: activeProxyUsage?.proxyProfileId,
         proxyProfileName: activeProxyUsage?.proxyProfileName,
@@ -587,8 +599,20 @@ async function runCheonyu(
       return nextPage;
     }
 
-    if (mode === "next-proxy") {
+    if (mode === "next-proxy" || mode === "popup-overload-next-proxy") {
+      const isPopupOverloadRecovery = mode === "popup-overload-next-proxy";
       if (proxyRotation.length < 1) {
+        if (isPopupOverloadRecovery) {
+          logCheonyuWarn(
+            `[BULK ${pageNo}] 다음 프록시가 없어 같은 컨텍스트의 새 탭으로 복구합니다.`,
+          );
+          return recoverCheonyuListPage({
+            currentPage,
+            pageNo,
+            mode: "popup-overload",
+            error,
+          });
+        }
         throw new Error(
           "목록 복구에 사용할 다음 프록시가 등록되어 있지 않습니다.",
         );
@@ -597,8 +621,9 @@ async function runCheonyu(
       const nextRotationIndex = currentProxyRotationIndex + 1;
       onProgress({
         stage: "page-recovery",
-        message:
-          `${pageNo}페이지를 다음 프록시 컨텍스트에서 재시도합니다.`,
+        message: isPopupOverloadRecovery
+          ? `${pageNo}페이지 팝업 누락률이 10%를 초과해 다음 프록시의 새 컨텍스트에서 누락 상품만 재시도합니다.`
+          : `${pageNo}페이지를 다음 프록시 컨텍스트에서 재시도합니다.`,
         currentPage: pageNo,
       });
       return rotateCheonyuProxyPage({
@@ -705,8 +730,12 @@ async function runCheonyu(
     let detectedTotalProductCount = null;
     const seenProductIds = new Set();
     let loop = 0;
-    let nextCyclePageStart = config.pageStart;
+    const reversePageOrder = config.pageOrder === "reverse";
+    const pageStep = reversePageOrder ? -1 : 1;
+    let nextCyclePageStart = reversePageOrder ? null : config.pageStart;
+    let proxyTraversalStart = reversePageOrder ? null : config.pageStart;
     let waitBeforeCycleFirstPage = false;
+    let nextCyclePageNotBeforeAt = 0;
 
     while (true) {
       loop += 1;
@@ -738,7 +767,6 @@ async function runCheonyu(
         page,
         {
           ...config,
-          pageStart: nextCyclePageStart,
         },
         (progress) => {
           onProgress({
@@ -757,10 +785,25 @@ async function runCheonyu(
               : null,
           resetPage: resetCheonyuPageKeepingContext,
           recoverListPage: recoverCheonyuListPage,
-          proxyPageStart: config.pageStart,
+          proxyPageStart: proxyTraversalStart,
+          startPage: nextCyclePageStart,
           waitBeforeFirstPage: waitBeforeCycleFirstPage,
+          pagePacingNotBeforeAt: nextCyclePageNotBeforeAt,
         },
       );
+      nextCyclePageNotBeforeAt = Math.max(
+        0,
+        Number(cycleResult?.nextPageNotBeforeAt) || 0,
+      );
+      if (
+        proxyTraversalStart === null ||
+        proxyTraversalStart === undefined ||
+        !Number.isFinite(Number(proxyTraversalStart))
+      ) {
+        proxyTraversalStart = Number(
+          cycleResult?.pageRange?.traversalStartPage,
+        );
+      }
       const cycleElapsedMs = performance.now() - cycleStartAt;
       const cycleProfile = buildCheonyuCycleProfile({
         cycleNo,
@@ -1056,23 +1099,29 @@ async function runCheonyu(
         cycleResult?.pageRange?.collectedLastPage,
       );
       const cyclePageEnd = Number(cycleResult?.pageRange?.pageEnd);
+      const cyclePageStart = Number(cycleResult?.pageRange?.pageStart);
+      const resumePageOutsideRange = reversePageOrder
+        ? resumePage < cyclePageStart
+        : resumePage > cyclePageEnd;
 
       if (
         !Number.isFinite(resumePage) ||
+        !Number.isFinite(cyclePageStart) ||
         !Number.isFinite(cyclePageEnd) ||
-        resumePage > cyclePageEnd
+        resumePageOutsideRange
       ) {
         break;
       }
 
       waitBeforeCycleFirstPage =
         Number.isFinite(lastCollectedPage) &&
-        resumePage > lastCollectedPage;
+        resumePage === lastCollectedPage + pageStep;
       nextCyclePageStart = resumePage;
       logCheonyuInfo(
-        `[RUN] 다음 ${cycleNo + 1}차는 ${nextCyclePageStart}페이지부터 이어서 수집합니다.` +
+        `[RUN] 다음 ${cycleNo + 1}차는 ${nextCyclePageStart}페이지부터 ` +
+          `${reversePageOrder ? "역순" : "정순"}으로 이어서 수집합니다.` +
           (waitBeforeCycleFirstPage
-            ? " 이전 페이지 완료 상태이므로 4분 대기 후 진행합니다."
+            ? " 이전 페이지의 2분 처리 예산 중 남은 시간만 대기 후 진행합니다."
             : " 현재 페이지의 미처리 상품부터 즉시 이어서 진행합니다."),
       );
     }
@@ -1376,6 +1425,7 @@ async function runCheonyu(
     );
     throw blockGuard?.getError() || error;
   } finally {
+    resetCheonyuPopupWorkloadTracker(runSignal, page);
     blockGuard?.dispose();
     releaseAbort();
     if (context) await context.close().catch(() => null);

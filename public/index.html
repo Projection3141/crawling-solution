@@ -52,8 +52,8 @@
             <span class="nav-label">장바구니 담기</span>
           </a>
           <a href="#" class="nav-item" data-view="results">
-            <span class="nav-icon" aria-hidden="true">결과</span>
-            <span class="nav-label">최근 완료 결과</span>
+            <span class="nav-icon" aria-hidden="true">전송</span>
+            <span class="nav-label">전송 내역</span>
           </a>
           <a href="#" class="nav-item nav-item-spaced" data-view="settings">
             <span class="nav-icon" aria-hidden="true">설정</span>
@@ -216,8 +216,7 @@
                     </div>
 
                     <div id="repeatTimeControl" class="repeat-control" hidden>
-                      <input id="repeatTime" name="repeatTime" type="time" value="09:00"
-                        aria-label="매일 반복 실행 시각" />
+                      <input id="repeatTime" name="repeatTime" type="time" value="09:00" aria-label="매일 반복 실행 시각" />
                     </div>
 
                     <small id="repeatScheduleHelp">
@@ -378,36 +377,21 @@
               </div>
             </section>
 
-            <!-- 결과 파일 섹션 -->
+            <!-- 수집 정보 전송 내역 섹션 -->
             <section id="downloadView" class="panel view-section download-panel">
               <div class="section-heading">
                 <div>
-                  <p class="section-kicker">결과 파일</p>
-                  <h2>최근 완료 결과 파일</h2>
+                  <p class="section-kicker">수집정보 POST 이력</p>
+                  <h2 id="collectionUploadLogTitle">수집정보 전송 내역</h2>
+                  <p class="env-hint">실제 전송 데이터와 응답은 날짜별 JSON 파일에 저장됩니다.</p>
                 </div>
 
-                <div class="result-header-actions">
-                  <p>각 실행 카드에서도 해당 실행의 결과 파일을 개별 저장할 수 있습니다.</p>
-
-                  <button id="openResultDirectoryButton" type="button" class="secondary-button" disabled>
-                    결과 폴더 열기
-                  </button>
-                </div>
+                <button id="openCollectionUploadLogDirectoryButton" type="button" class="secondary-button">
+                  폴더 열기
+                </button>
               </div>
 
               <section class="upload-log-panel" aria-labelledby="collectionUploadLogTitle">
-                <div class="upload-log-header">
-                  <div>
-                    <p class="section-kicker">수집정보 POST 이력</p>
-                    <h3 id="collectionUploadLogTitle">수집정보 전송 로그</h3>
-                    <p>실제 전송 데이터와 응답은 날짜별 JSON 파일에 저장됩니다.</p>
-                  </div>
-
-                  <button id="openCollectionUploadLogDirectoryButton" type="button" class="secondary-button">
-                    폴더 열기
-                  </button>
-                </div>
-
                 <div id="collectionUploadLogList" class="upload-log-list" aria-live="polite">
                   <p class="upload-log-empty">전송 로그를 불러오는 중입니다.</p>
                 </div>
@@ -418,28 +402,6 @@
                   <button id="collectionUploadLogNextButton" type="button" class="secondary-button">다음</button>
                 </div>
               </section>
-
-              <div class="download-grid">
-                <button id="saveInventoryButton" type="button" class="download-button disabled" disabled>
-                  재고 CSV 저장
-                  <small>옵션별 재고 또는 판매 가능 상태</small>
-                </button>
-
-                <button id="saveSummaryButton" type="button" class="download-button disabled" disabled>
-                  요약 CSV 저장
-                  <small>상품 단위 재고·옵션 요약</small>
-                </button>
-
-                <button id="saveProductsButton" type="button" class="download-button disabled" disabled>
-                  상품 CSV 저장
-                  <small>수집한 전체 상품 목록</small>
-                </button>
-
-                <button id="saveDetailsButton" type="button" class="download-button disabled" disabled>
-                  상세 CSV 저장
-                  <small>상세페이지 상품 정보·이미지 URL</small>
-                </button>
-              </div>
             </section>
 
             <!-- 환경 설정 섹션 -->
@@ -466,8 +428,8 @@
                   <label class="field" for="uploadApiUrl">
                     <span>Upload API URL</span>
                     <div class="upload-api-input-row">
-                      <input id="uploadApiUrl" name="uploadApiUrl" type="url" inputmode="url"
-                        autocomplete="url" placeholder="https://www.web3.io.kr/joahstore/crawling/uploader" />
+                      <input id="uploadApiUrl" name="uploadApiUrl" type="url" inputmode="url" autocomplete="url"
+                        placeholder="https://www.web3.io.kr/joahstore/crawling/uploader" />
                       <button id="saveUploadApiUrlButton" type="submit" class="primary-button">
                         저장
                       </button>

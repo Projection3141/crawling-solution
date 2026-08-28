@@ -70,6 +70,16 @@ const logCheonyuWarn = (message, details) => logCheonyu("warn", message, details
 const logCheonyuSuccess = (message, details) => logCheonyu("success", message, details);
 const logCheonyuInfo = (message, details) => logCheonyu("info", message, details);
 
+const CHEONYU_PAGE_PACING_BUDGET_MS = 2 * 60 * 1000;
+const CHEONYU_PAGE_HARD_COOLDOWN_MS = 30 * 1000;
+const CHEONYU_POPUP_PROGRESS_POLL_MS = 2000;
+const CHEONYU_POPUP_MAX_ADAPTIVE_WAIT_MS = 20 * 1000;
+const CHEONYU_PAGE_POPUP_ADAPTIVE_BUDGET_MS =
+  CHEONYU_PAGE_PACING_BUDGET_MS - CHEONYU_PAGE_HARD_COOLDOWN_MS;
+const CHEONYU_POPUP_NO_PROGRESS_POLL_LIMIT = 3;
+const CHEONYU_HIGH_POPUP_MISSING_RATIO = 0.1;
+const CHEONYU_DEFERRED_RETRY_BATCH_SIZE = 20;
+
 // 천유닷컴 페이지에서 성능·DOM 상태를 읽는다.
 async function readCheonyuPageRuntimeSnapshot(page) {
   try {
@@ -1522,7 +1532,10 @@ async function addCheonyuProductBatchesToCart(
   config,
   targets,
   signal,
-  { popupStockMode = false } = {},
+  {
+    popupStockMode = false,
+    recoverDeferredPage = null,
+  } = {},
 ) {
   const batchSize = getSafetyNumber(
     config,
@@ -1548,6 +1561,7 @@ async function addCheonyuProductBatchesToCart(
     5,
   );
   let deferredRound = 0;
+  let highMissingRecoveryCompleted = false;
   const batchResults = [];
   const knownUnavailableProductIds = new Set();
   const excludedProducts = [];
@@ -1641,10 +1655,59 @@ async function addCheonyuProductBatchesToCart(
       deferredRound += 1;
       const retryEntries = deferredBatches.splice(0);
       const retryProducts = retryEntries.flatMap((entry) => entry.products);
+      const missingRatio = targets.length > 0
+        ? retryProducts.length / targets.length
+        : 0;
+      const retryQueueEntries =
+        missingRatio > CHEONYU_HIGH_POPUP_MISSING_RATIO
+          ? retryEntries.flatMap((entry) =>
+              splitCheonyuProductBatches(
+                entry.products,
+                Math.min(batchSize, CHEONYU_DEFERRED_RETRY_BATCH_SIZE),
+              ).map((products, index) => ({
+                ...entry,
+                products,
+                path: `${entry.path}.chunk${index + 1}`,
+              })),
+            )
+          : retryEntries;
       deferredProductIds.clear();
       logCheonyuWarn(
         `[BULK ${pageNo}] 페이지 최초 배치 완료 · 팝업 누락 ${retryProducts.length}개만 재시도합니다. (${deferredRound}/${maxDeferredAttempts})`,
       );
+
+      if (
+        !highMissingRecoveryCompleted &&
+        missingRatio > CHEONYU_HIGH_POPUP_MISSING_RATIO &&
+        typeof recoverDeferredPage === "function"
+      ) {
+        highMissingRecoveryCompleted = true;
+        logCheonyuWarn(
+          `[BULK ${pageNo}] 팝업 누락률 ${(missingRatio * 100).toFixed(1)}% · ` +
+            `같은 프록시에서 즉시 재시도하지 않고 30초 휴식 후 ` +
+            `다음 프록시의 새 컨텍스트에서 ${retryProducts.length}개를 ` +
+            `${CHEONYU_DEFERRED_RETRY_BATCH_SIZE}개씩 재시도합니다.`,
+        );
+        await closeCheonyuOptionPopup(page).catch(() => null);
+        await page
+          .goto("about:blank", {
+            waitUntil: "commit",
+            timeout: 5000,
+          })
+          .catch(() => null);
+        await page.waitForTimeout(CHEONYU_PAGE_HARD_COOLDOWN_MS);
+        throwIfAborted(signal);
+        page = await recoverDeferredPage({
+          currentPage: page,
+          pageNo,
+          mode: "popup-overload-next-proxy",
+          error: new Error(
+            `천유 ${pageNo}페이지 팝업 누락률 ${(missingRatio * 100).toFixed(1)}%`,
+          ),
+        });
+        throwIfAborted(signal);
+      }
+
       await resetCheonyuBulkListPage(
         page,
         pageNo,
@@ -1652,7 +1715,7 @@ async function addCheonyuProductBatchesToCart(
         retryProducts,
         signal,
       );
-      pendingBatches.push(...retryEntries);
+      pendingBatches.push(...retryQueueEntries);
     }
 
     const {
@@ -2048,6 +2111,7 @@ async function addCheonyuProductBatchesToCart(
 
   return {
     ...mergedResult,
+    activePage: page,
     excludedProductIds: Array.from(excludedProductIds),
     excludedProducts,
     unavailableProductIds,
@@ -2637,6 +2701,7 @@ async function waitForReadyCheonyuOptionPopup(
   config,
   timeoutOverrideMs = null,
   expectedProductCount = 1,
+  pageNo = 0,
 ) {
   const popupOpenWaitExtensionMs = 1000;
   const configuredTimeout =
@@ -2662,6 +2727,8 @@ async function waitForReadyCheonyuOptionPopup(
         )
       : Math.max(15000, Math.min(configuredTimeout, 120000));
   let timedOutWithPartialPopup = false;
+  let adaptiveWaitedMs = 0;
+  let adaptiveStopReason = "not-needed";
 
   try {
     await page.waitForFunction(
@@ -2718,7 +2785,81 @@ async function waitForReadyCheonyuOptionPopup(
       throw error;
     }
 
-    const partialState = await readCheonyuOptionPopupState(page);
+    const isCompletePopupState = (state) =>
+      state.visibleWrapperCount === expectedProductCount &&
+      state.optionTableCount === expectedProductCount &&
+      state.optionRowCount > 0 &&
+      state.completeRowCount === state.optionRowCount;
+    let partialState = await readCheonyuOptionPopupState(page);
+    const pacingState = config.pagePacingState;
+    const remainingPagePacingMs = pacingState
+      ? Math.max(0, Number(pacingState.nextPageNotBeforeAt || 0) - Date.now())
+      : 0;
+    const remainingPopupBudgetMs = pacingState
+      ? Math.max(
+          0,
+          Number(pacingState.popupAdaptiveBudgetRemainingMs || 0),
+        )
+      : 0;
+    const adaptiveWaitLimitMs = Math.min(
+      CHEONYU_POPUP_MAX_ADAPTIVE_WAIT_MS,
+      remainingPagePacingMs,
+      remainingPopupBudgetMs,
+    );
+
+    if (!isCompletePopupState(partialState) && adaptiveWaitLimitMs > 0) {
+      const adaptiveStartedAt = Date.now();
+      let previousState = partialState;
+      let noProgressPollCount = 0;
+      adaptiveStopReason = "limit-reached";
+
+      while (Date.now() - adaptiveStartedAt < adaptiveWaitLimitMs) {
+        const remainingMs = adaptiveWaitLimitMs - (Date.now() - adaptiveStartedAt);
+        await page.waitForTimeout(
+          Math.min(CHEONYU_POPUP_PROGRESS_POLL_MS, remainingMs),
+        );
+        partialState = await readCheonyuOptionPopupState(page);
+        adaptiveWaitedMs = Date.now() - adaptiveStartedAt;
+
+        const progressed = [
+          "visibleWrapperCount",
+          "optionTableCount",
+          "optionRowCount",
+          "completeRowCount",
+          "selectableRowCount",
+        ].some(
+          (key) => Number(partialState[key] || 0) > Number(previousState[key] || 0),
+        );
+        noProgressPollCount = progressed ? 0 : noProgressPollCount + 1;
+
+        if (isCompletePopupState(partialState)) {
+          adaptiveStopReason = "completed";
+          break;
+        }
+        if (noProgressPollCount >= CHEONYU_POPUP_NO_PROGRESS_POLL_LIMIT) {
+          adaptiveStopReason = "no-progress";
+          break;
+        }
+        previousState = partialState;
+      }
+    } else if (!isCompletePopupState(partialState)) {
+      adaptiveStopReason = "budget-exhausted";
+    }
+
+    if (pacingState && adaptiveWaitedMs > 0) {
+      pacingState.popupAdaptiveBudgetRemainingMs = Math.max(
+        0,
+        remainingPopupBudgetMs - adaptiveWaitedMs,
+      );
+      logCheonyuInfo(
+        `[BULK ${pageNo}] 옵션 팝업 추가 대기 ${Math.ceil(
+          adaptiveWaitedMs / 1000,
+        )}초 종료(${adaptiveStopReason}) · 완성 ` +
+          `${partialState.completeRowCount}/${partialState.optionRowCount} · ` +
+          `상품 ${partialState.visibleWrapperCount}/${expectedProductCount}`,
+      );
+    }
+
     const hasUsablePartialPopup =
       partialState.visibleWrapperCount > 0 &&
       partialState.optionTableCount === partialState.visibleWrapperCount &&
@@ -2743,6 +2884,8 @@ async function waitForReadyCheonyuOptionPopup(
     completeCoverage: popupState.visibleWrapperCount === expectedProductCount,
     timedOutWithPartialPopup,
     waitLimitMs: timeout,
+    adaptiveWaitedMs,
+    adaptiveStopReason,
   };
 }
 
@@ -2782,6 +2925,17 @@ async function resetCheonyuBulkListPage(
 }
 
 const cheonyuPopupWorkloadTrackers = new WeakMap();
+
+function resetCheonyuPopupWorkloadTracker(signal, page = null) {
+  const trackerKey =
+    signal && (typeof signal === "object" || typeof signal === "function")
+      ? signal
+      : page;
+
+  if (trackerKey) {
+    cheonyuPopupWorkloadTrackers.delete(trackerKey);
+  }
+}
 
 function getCheonyuPopupWorkloadTracker(signal, page) {
   const trackerKey =
@@ -3053,6 +3207,7 @@ async function clickBulkCartAndConfirm(
           config,
           effectivePopupWaitTimeoutMs,
           activeRequestedProducts.length,
+          pageNo,
         );
 
         if (!popupReadiness.completeCoverage) {
@@ -3654,7 +3809,9 @@ async function bulkAddPages(
     resetPage = null,
     recoverListPage = null,
     proxyPageStart = null,
+    startPage = null,
     waitBeforeFirstPage = false,
+    pagePacingNotBeforeAt = 0,
   } = {},
 ) {
   throwIfAborted(signal);
@@ -3677,44 +3834,87 @@ async function bulkAddPages(
       .map((value) => String(value || "").trim())
       .filter(Boolean),
   );
+  const reversePageOrder = config.pageOrder === "reverse";
+  const pageStep = reversePageOrder ? -1 : 1;
+  const defaultTraversalStart = reversePageOrder
+    ? pageRange.pageEnd
+    : pageRange.pageStart;
+  const requestedTraversalStart = Number(startPage);
+  const traversalStartPage =
+    startPage !== null &&
+    startPage !== undefined &&
+    Number.isInteger(requestedTraversalStart) &&
+    requestedTraversalStart >= pageRange.pageStart &&
+    requestedTraversalStart <= pageRange.pageEnd
+      ? requestedTraversalStart
+      : defaultTraversalStart;
+  pageRange.pageOrder = reversePageOrder ? "reverse" : "forward";
+  pageRange.traversalStartPage = traversalStartPage;
   let collectedProductCount = 0;
   let previousSignature = "";
-  let resumePage = pageRange.pageStart;
+  let resumePage = traversalStartPage;
+  let nextPageNotBeforeAt = Math.max(0, Number(pagePacingNotBeforeAt) || 0);
 
   onProgress({
     stage: "collecting",
-    message: `상품 목록 ${pageRange.pageStart} ~ ${pageRange.pageEnd}페이지 수집`,
+    message: reversePageOrder
+      ? `상품 목록 ${pageRange.pageEnd} → ${pageRange.pageStart}페이지 역순 수집`
+      : `상품 목록 ${pageRange.pageStart} → ${pageRange.pageEnd}페이지 정순 수집`,
     pageRange,
     detectedTotalProductCount: pageRange.detectedTotalProductCount,
   });
 
   for (
-    let pageNo = pageRange.pageStart;
-    pageNo <= pageRange.pageEnd;
-    pageNo += 1
+    let pageNo = traversalStartPage;
+    reversePageOrder
+      ? pageNo >= pageRange.pageStart
+      : pageNo <= pageRange.pageEnd;
+    pageNo += pageStep
   ) {
     throwIfAborted(signal);
 
     // 다음 페이지로 이동하기 전 사이트 문서를 비워 백그라운드 요청을 멈춘다.
-    if (pageNo > pageRange.pageStart || waitBeforeFirstPage) {
-      onProgress({
-        stage: "waiting",
-        message: `${pageNo - 1}페이지 완료 · 다음 ${pageNo}페이지 수집 전 2분 대기`,
-        currentPage: pageNo - 1,
-        pageRange,
-      });
+    if (pageNo !== traversalStartPage || waitBeforeFirstPage) {
+      const previousPageNo = pageNo - pageStep;
+      const remainingPacingMs = nextPageNotBeforeAt
+        ? Math.max(
+            CHEONYU_PAGE_HARD_COOLDOWN_MS,
+            nextPageNotBeforeAt - Date.now(),
+          )
+        : CHEONYU_PAGE_PACING_BUDGET_MS;
+      if (remainingPacingMs > 0) {
+        onProgress({
+          stage: "waiting",
+          message:
+            `${previousPageNo}페이지 완료 · 2분 처리 예산 중 남은 ` +
+            `${Math.ceil(remainingPacingMs / 1000)}초 대기 후 ${pageNo}페이지 진행`,
+          currentPage: previousPageNo,
+          pageRange,
+        });
+      }
       await page
         .goto("about:blank", {
           waitUntil: "commit",
           timeout: 5000,
         })
         .catch(() => null);
-      await page.waitForTimeout(2 * 60 * 1000);
+      if (remainingPacingMs > 0) {
+        await page.waitForTimeout(remainingPacingMs);
+      }
       throwIfAborted(signal);
     }
 
-    const rotationStartPage = Number(proxyPageStart) || pageRange.pageStart;
-    const pageOffset = pageNo - rotationStartPage;
+    const pagePacingStartedAt = Date.now();
+    nextPageNotBeforeAt = pagePacingStartedAt + CHEONYU_PAGE_PACING_BUDGET_MS;
+    const pagePacingState = {
+      nextPageNotBeforeAt,
+      popupAdaptiveBudgetRemainingMs: CHEONYU_PAGE_POPUP_ADAPTIVE_BUDGET_MS,
+    };
+    config = { ...config, pagePacingState };
+
+    const rotationStartPage =
+      Number(proxyPageStart) || traversalStartPage;
+    const pageOffset = Math.abs(pageNo - rotationStartPage);
     const isProxyRotationBoundary =
       typeof rotatePage === "function" &&
       pageOffset >= 0 &&
@@ -3752,7 +3952,8 @@ async function bulkAddPages(
     const pageHealthBefore = await readCheonyuPageRuntimeSnapshot(page).catch(() => null);
     let pageExcludedProducts = [];
     let pageResult;
-    const cachedHtml = pageNo === 1 ? firstPageHtml : null;
+    const cachedHtml =
+      pageNo === pageRange.pageStart ? firstPageHtml : null;
     let listCollection = null;
 
     try {
@@ -3899,14 +4100,19 @@ async function bulkAddPages(
     }
 
     if (selectedTargets.length > 0) {
-      const bulkResult = await addCheonyuProductBatchesToCart(
+      const bulkExecutionResult = await addCheonyuProductBatchesToCart(
         page,
         pageNo,
         config,
         selectedTargets,
         signal,
-        { popupStockMode: true },
+        {
+          popupStockMode: true,
+          recoverDeferredPage: recoverListPage,
+        },
       );
+      page = bulkExecutionResult.activePage || page;
+      const { activePage: _activePage, ...bulkResult } = bulkExecutionResult;
       throwIfAborted(signal);
 
       for (const productId of bulkResult.unavailableProductIds || []) {
@@ -3973,7 +4179,7 @@ async function bulkAddPages(
     previousSignature = signature;
     pageRange.collectedLastPage = pageNo;
     pageRange.collectedPageCount = pageResults.length;
-    resumePage = pageNo + 1;
+    resumePage = pageNo + pageStep;
     pageRange.resumePage = resumePage;
 
     const pageExcludedIds = pageExcludedProducts.map((item) =>
@@ -4003,7 +4209,9 @@ async function bulkAddPages(
     if (
       config.collectionMode !== "general" &&
       config.requestDelayMs > 0 &&
-      pageNo < pageRange.pageEnd
+      (reversePageOrder
+        ? pageNo > pageRange.pageStart
+        : pageNo < pageRange.pageEnd)
     ) {
       await sleep(config.requestDelayMs);
       throwIfAborted(signal);
@@ -4026,6 +4234,7 @@ async function bulkAddPages(
     collectedProductCount,
     resumePage,
     pageRange,
+    nextPageNotBeforeAt,
   };
 }
 
@@ -4041,6 +4250,7 @@ module.exports = {
   parseListHtml,
   parseLoginState,
   parseAndPreparePopupOptions,
+  resetCheonyuPopupWorkloadTracker,
   parseTotalProductCount,
   resolvePageRange,
   addProductsFromListPagesToCart,
