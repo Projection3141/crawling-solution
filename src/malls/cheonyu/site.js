@@ -4241,14 +4241,51 @@ async function bulkAddPages(
     const pageExcludedIds = pageExcludedProducts.map((item) =>
       String(item.productId),
     );
+    const pageCollectionWarningGroups = new Map();
+
+    for (const item of pageExcludedProducts) {
+      const reasonCode = String(item?.reasonCode || "");
+      const rawReason = String(item?.reason || "").trim();
+      const reason = reasonCode === "LIST_CONTROLS_DISABLED"
+        ? "상품 체크박스 또는 수량 입력 비활성화"
+        : reasonCode === "CHEONYU_POPUP_PARTIAL_DEFERRED_FAILED" ||
+            rawReason.includes("팝업에 생성되지")
+          ? "팝업에 생성되지 않음"
+          : rawReason || reasonCode || "사유 미확인";
+      const group = pageCollectionWarningGroups.get(reason) || {
+        code: reasonCode || "UNKNOWN",
+        reason,
+        productIds: new Set(),
+      };
+      const productId = String(item?.productId || "").trim();
+
+      if (productId) {
+        group.productIds.add(productId);
+      }
+
+      pageCollectionWarningGroups.set(reason, group);
+    }
+
+    const pageCollectionWarnings = Array.from(
+      pageCollectionWarningGroups.values(),
+    ).map((group) => {
+      const productIds = Array.from(group.productIds);
+
+      return {
+        code: group.code,
+        page: pageNo,
+        reason: group.reason,
+        count: productIds.length,
+        productIds,
+        message: `예외: ${group.reason} (${productIds.join(", ")})`,
+      };
+    });
     const excludedProductCount = allExcludedProductsMap.size;
 
     onProgress({
       stage: "collecting",
       message: pageExcludedIds.length > 0
-        ? `${pageNo}페이지 완료 · 상품 체크박스 또는 수량 입력 비활성화로 ` +
-          `${pageExcludedIds.length}개 상품(${pageExcludedIds.join(", ")})의 ` +
-          `장바구니 재고 수집을 제외하고 계속 진행합니다.`
+        ? `${pageNo}페이지 완료 · 예외 ${pageExcludedIds.length}개`
         : `${pageNo}페이지 완료`,
       currentPage: pageNo,
       pageRange,
@@ -4258,7 +4295,8 @@ async function bulkAddPages(
         allTargets.map((item) => String(item.productId)),
       ).size,
       excludedProductCount,
-      excludedProducts: Array.from(allExcludedProductsMap.values()),
+      excludedProducts: pageExcludedProducts,
+      collectionWarnings: pageCollectionWarnings,
       elapsedText: formatMs(performance.now() - startedAt),
     });
 

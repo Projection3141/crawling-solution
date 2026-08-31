@@ -81,38 +81,85 @@ const CHEONYU_CYCLE_HEAP_GROWTH_RATIO = 1.45;
 const CHEONYU_CYCLE_HEAP_SPIKE_MB = 120;
 const CHEONYU_FORCE_REFRESH_EVERY_CYCLES = 6;
 
+function getCheonyuExclusionDisplayReason(item = {}) {
+  const reasonCode = String(item?.reasonCode || "");
+  const reason = String(item?.reason || "").trim();
+
+  if (reasonCode === "LIST_CONTROLS_DISABLED") {
+    return "상품 체크박스 또는 수량 입력 비활성화";
+  }
+
+  if (
+    reasonCode === "CHEONYU_POPUP_PARTIAL_DEFERRED_FAILED" ||
+    reason.includes("팝업에 생성되지")
+  ) {
+    return "팝업에 생성되지 않음";
+  }
+
+  return reason || reasonCode || "사유 미확인";
+}
+
 function createCheonyuCollectionWarnings(excludedProducts = []) {
   const groups = new Map();
 
   for (const item of excludedProducts) {
     const page = Number(item?.page) || 0;
-    const reasonCode = String(item?.reasonCode || "LIST_CONTROLS_DISABLED");
-    const key = `${page}:${reasonCode}`;
-    const group = groups.get(key) || {
+    const reason = getCheonyuExclusionDisplayReason(item);
+    const reasonCode = String(item?.reasonCode || "UNKNOWN");
+    const group = groups.get(reason) || {
       code: reasonCode,
-      page,
-      reason: String(
-        item?.reason || "상품 체크박스 또는 수량 입력 비활성화",
-      ),
-      productIds: [],
+      reason,
+      pages: new Map(),
+      productIds: new Set(),
     };
-    const productId = String(item?.productId || "");
+    const pageGroup = group.pages.get(page) || {
+      page,
+      productIds: new Set(),
+      unknownCount: 0,
+    };
+    const productId = String(item?.productId || "").trim();
 
-    if (productId && !group.productIds.includes(productId)) {
-      group.productIds.push(productId);
+    if (productId) {
+      pageGroup.productIds.add(productId);
+      group.productIds.add(productId);
+    } else {
+      pageGroup.unknownCount += 1;
     }
 
-    groups.set(key, group);
+    group.pages.set(page, pageGroup);
+    groups.set(reason, group);
   }
 
-  return Array.from(groups.values()).map((group) => ({
-    ...group,
-    count: group.productIds.length,
-    message:
-      `${group.page}페이지에서 ${group.reason} 상태인 ` +
-      `${group.productIds.length}개 상품(${group.productIds.join(", ")})의 ` +
-      `장바구니 재고 수집을 제외하고 나머지 상품을 수집했습니다.`,
-  }));
+  return Array.from(groups.values()).map((group) => {
+    const pages = Array.from(group.pages.values())
+      .map((pageGroup) => ({
+        page: pageGroup.page,
+        count: pageGroup.productIds.size + pageGroup.unknownCount,
+        productIds: Array.from(pageGroup.productIds),
+      }))
+      .sort((a, b) => {
+        if (a.page === 0) return 1;
+        if (b.page === 0) return -1;
+        return a.page - b.page;
+      });
+    const pageSummary = pages
+      .map((item) =>
+        item.page > 0
+          ? `${item.page}페이지(${item.count})`
+          : `페이지 미확인(${item.count})`,
+      )
+      .join(", ");
+
+    return {
+      code: group.code,
+      reason: group.reason,
+      page: 0,
+      pages,
+      count: pages.reduce((sum, item) => sum + item.count, 0),
+      productIds: Array.from(group.productIds),
+      message: `장바구니 재고 수집 제외 : ${group.reason} (${pageSummary})`,
+    };
+  });
 }
 
 /** 2,000개 단위 장바구니 판독 결과를 전체 실행 결과로 합친다. */
@@ -1423,8 +1470,8 @@ async function runCheonyu(
     onProgress({
       stage: "completed",
       message: excludedProductCount > 0
-        ? `천유닷컴 수집이 완료되었습니다. 장바구니 재고 수집에서 ` +
-          `${excludedProductCount}개 상품을 제외했으며 사유는 [${exclusionReasonSummary}]`
+        ? `천유닷컴 수집이 완료되었습니다. 장바구니 재고 수집 제외 ` +
+          `${excludedProductCount}개`
         : "천유닷컴 수집이 완료되었습니다.",
       pageRange,
       detectedTotalProductCount: summary.detectedTotalProductCount,
