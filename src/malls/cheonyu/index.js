@@ -533,13 +533,18 @@ async function runCheonyu(
     rotationIndex,
     forceRestart = false,
   }) => {
-    if (proxyRotation.length < 1) return currentPage;
+    if (proxyRotation.length < 1 && !forceRestart) return currentPage;
+
+    const rotationPool = proxyRotation.length > 0
+      ? proxyRotation
+      : [initialProxyUsage];
 
     const normalizedRotationIndex = Math.max(0, Number(rotationIndex) || 0);
     const nextIndex = forceRestart
-      ? (currentProxyRotationIndex + 1) % proxyRotation.length
-      : normalizedRotationIndex % proxyRotation.length;
-    const nextProxy = proxyRotation[nextIndex];
+      ? (currentProxyRotationIndex + 1) % rotationPool.length
+      : normalizedRotationIndex % rotationPool.length;
+    const nextProxy = rotationPool[nextIndex];
+    const nextProxyName = nextProxy.proxyProfileName || "직접 연결";
 
     if (!forceRestart && nextIndex === currentProxyRotationIndex) {
       if (!Number.isFinite(Number(proxyRotationPageStart))) {
@@ -553,13 +558,13 @@ async function runCheonyu(
       stage: "proxy-rotation",
       message:
         `${pageNo}페이지부터 현재 사용 프록시의 다음 순번 · ` +
-        `${nextProxy.proxyProfileName}으로 변경 후 브라우저 세션을 재실행합니다.`,
+        `${nextProxyName}으로 변경 후 브라우저 세션을 재실행합니다.`,
       currentPage: pageNo,
-      proxyProfileName: nextProxy.proxyProfileName,
+      proxyProfileName: nextProxyName,
     });
     logCheonyuInfo(
-      `[PROXY] ${pageNo}페이지부터 ${nextProxy.proxyProfileName} 사용 ` +
-        `(${nextIndex + 1}/${proxyRotation.length})`,
+      `[PROXY] ${pageNo}페이지부터 ${nextProxyName} 사용 ` +
+        `(${nextIndex + 1}/${rotationPool.length})`,
     );
 
     const previousContext = context;
@@ -573,7 +578,7 @@ async function runCheonyu(
       nextContext = await browser.newContext({
         viewport: config.viewport,
         userAgent: config.userAgent,
-        proxy: nextProxy.proxy,
+        ...(nextProxy.proxy ? { proxy: nextProxy.proxy } : {}),
       });
       await networkUsageTracker.trackContext(nextContext, nextProxy);
       nextBlockGuard = installHttpBlockGuard(nextContext, {
@@ -622,7 +627,7 @@ async function runCheonyu(
       pageNo,
       action: "rotateProxyContext",
       proxyProfileId: nextProxy.proxyProfileId,
-      proxyProfileName: nextProxy.proxyProfileName,
+      proxyProfileName: nextProxyName,
       rotationIndex: normalizedRotationIndex,
       at: new Date().toISOString(),
     });
@@ -1391,18 +1396,92 @@ async function runCheonyu(
         elapsedMs: performance.now() - startedAt,
       });
 
-      detailItems = await collectCheonyuDetails(
-        page,
-        allProducts,
-        config,
-        (progress) => {
-          onProgress({
-            ...progress,
-            elapsedMs: performance.now() - startedAt,
-          });
-        },
-        runSignal,
+      const uniqueDetailTargets = Array.from(
+        new Map(
+          allProducts
+            .filter((item) => item?.productUrl)
+            .map((item) => [String(item.productId), item]),
+        ).values(),
       );
+      const detailTargets = Number(config.detailMaxProducts) > 0
+        ? uniqueDetailTargets.slice(0, Number(config.detailMaxProducts))
+        : uniqueDetailTargets;
+      const detailPageGroups = new Map();
+
+      for (let index = 0; index < detailTargets.length; index += 1) {
+        const product = detailTargets[index];
+        const sourcePage = Number(product.page);
+        const pageNo = Number.isInteger(sourcePage) && sourcePage > 0
+          ? sourcePage
+          : Number(pageRange.pageStart) +
+            Math.floor(index / Math.max(1, Number(config.pageSize) || 150));
+
+        if (!detailPageGroups.has(pageNo)) {
+          detailPageGroups.set(pageNo, []);
+        }
+
+        detailPageGroups.get(pageNo).push(product);
+      }
+
+      let completedDetailTargetCount = 0;
+      let detailGroupIndex = 0;
+
+      for (const [detailPageNo, pageProducts] of detailPageGroups) {
+        detailGroupIndex += 1;
+        throwIfAborted(runSignal);
+
+        onProgress({
+          stage: "detail-context-rotation",
+          message:
+            `상세 ${detailPageNo}페이지 수집 전 다음 프록시의 ` +
+            "새 브라우저 컨텍스트를 준비합니다.",
+          currentPage: detailPageNo,
+          currentDetailIndex: completedDetailTargetCount,
+          detailTargetCount: detailTargets.length,
+          elapsedMs: performance.now() - startedAt,
+        });
+
+        page = await rotateCheonyuProxyPage({
+          currentPage: page,
+          pageNo: detailPageNo,
+          rotationIndex: detailGroupIndex,
+          forceRestart: true,
+        });
+
+        const pageDetailItems = await collectCheonyuDetails(
+          page,
+          pageProducts,
+          {
+            ...config,
+            detailMaxProducts: 0,
+          },
+          (progress) => {
+            const currentInPage = Math.max(
+              0,
+              Number(progress.currentDetailIndex) || 0,
+            );
+            const currentDetailIndex = Math.min(
+              detailTargets.length,
+              completedDetailTargetCount + currentInPage,
+            );
+
+            onProgress({
+              ...progress,
+              message:
+                `${progress.message} · 전체 ` +
+                `${currentDetailIndex}/${detailTargets.length}`,
+              currentPage: detailPageNo,
+              currentDetailIndex,
+              detailTargetCount: detailTargets.length,
+              elapsedMs: performance.now() - startedAt,
+            });
+          },
+          runSignal,
+        );
+
+        detailItems.push(...pageDetailItems);
+        completedDetailTargetCount += pageProducts.length;
+      }
 
       throwIfAborted(runSignal);
     }

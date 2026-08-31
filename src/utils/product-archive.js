@@ -1,15 +1,30 @@
 /** src/utils/product-archive.js */
 
 const fs = require("node:fs/promises");
+const os = require("node:os");
 const path = require("node:path");
+const { version: PACKAGE_VERSION } = require("../../package.json");
 const {
   convertWonToYen,
 } = require("../../translate/convert");
 
-const ARCHIVE_PATH = path.resolve(
+const LEGACY_ARCHIVE_PATH = path.resolve(
   __dirname,
   "../../translate/archive.json",
 );
+const ARCHIVE_VERSION = normalizeArchiveVersion(
+  process.env.PRODUCT_ARCHIVE_VERSION || PACKAGE_VERSION,
+);
+const ARCHIVE_DIRECTORY = path.resolve(
+  process.env.PRODUCT_ARCHIVE_DIRECTORY ||
+    path.join(os.homedir(), "MallCollector", "archive"),
+);
+const ARCHIVE_PATH = path.join(
+  ARCHIVE_DIRECTORY,
+  `v${ARCHIVE_VERSION}_archive.json`,
+);
+const VERSIONED_ARCHIVE_FILE_PATTERN =
+  /^v(\d+\.\d+\.\d+)_archive\.json$/i;
 
 let archiveQueue = Promise.resolve();
 
@@ -103,6 +118,19 @@ const TRANSLATION_FIELDS = new Set([
   "nameEn",
 ]);
 
+/** 앱 릴리즈 버전을 버전별 archive 파일명에 사용할 형식으로 정규화한다. */
+function normalizeArchiveVersion(value) {
+  const matched = String(value || "")
+    .trim()
+    .match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/i);
+
+  if (!matched) {
+    throw new Error(`아카이브 버전 형식이 올바르지 않습니다: ${value}`);
+  }
+
+  return matched.slice(1, 4).map(Number).join(".");
+}
+
 /** 문자열을 공백이 정리된 값으로 변환한다. */
 function normalizeText(value) {
   return String(value ?? "").replace(/\s+/g, " ").trim();
@@ -130,6 +158,40 @@ function hasText(value) {
 /** 비어 있지 않은 배열인지 확인한다. */
 function hasArrayItems(value) {
   return Array.isArray(value) && value.length > 0;
+}
+
+/** 기존 값을 지우지 않아야 하는 빈 값, null, 숫자 0을 걸러낸다. */
+function hasMeaningfulArchiveValue(value) {
+  if (value === undefined || value === null) return false;
+
+  if (typeof value === "number") {
+    return Number.isFinite(value) && value !== 0;
+  }
+
+  if (typeof value === "string") {
+    const normalized = normalizeText(value);
+
+    if (!normalized) return false;
+    if (/^[+-]?0+(?:\.0+)?$/.test(normalized)) return false;
+
+    return true;
+  }
+
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+
+  return true;
+}
+
+/** 숫자 필드가 실제로 갱신 가능한 값인지 확인한다. */
+function hasFiniteArchiveNumber(value, { allowZero = false } = {}) {
+  if (value === undefined || value === null || value === "") return false;
+
+  const normalized = Number(value);
+
+  return Number.isFinite(normalized) &&
+    (allowZero ? normalized >= 0 : normalized > 0);
 }
 
 /** 중복과 빈 값을 제거한 문자열 배열을 생성한다. */
@@ -334,26 +396,110 @@ function normalizeArchiveDocument(value) {
   return { products };
 }
 
-/** archive.json을 잠금 없이 읽는다. */
-async function readArchiveUnlocked() {
+/** 두 릴리즈 버전을 숫자 단위로 비교한다. */
+function compareArchiveVersions(left, right) {
+  const leftParts = normalizeArchiveVersion(left).split(".").map(Number);
+  const rightParts = normalizeArchiveVersion(right).split(".").map(Number);
+
+  for (let index = 0; index < 3; index += 1) {
+    if (leftParts[index] !== rightParts[index]) {
+      return leftParts[index] - rightParts[index];
+    }
+  }
+
+  return 0;
+}
+
+/** 파일 존재 여부만 확인한다. */
+async function archiveFileExists(filePath) {
   try {
-    const text = await fs.readFile(ARCHIVE_PATH, "utf8");
-    const normalizedText = text.replace(/^\uFEFF/, "").trim();
-
-    if (!normalizedText) {
-      return normalizeArchiveDocument([]);
-    }
-
-    return normalizeArchiveDocument(
-      JSON.parse(normalizedText),
-    );
+    await fs.access(filePath);
+    return true;
   } catch (error) {
-    if (error?.code === "ENOENT") {
-      return normalizeArchiveDocument([]);
-    }
-
+    if (error?.code === "ENOENT") return false;
     throw error;
   }
+}
+
+/** 지정한 archive 파일을 현재 릴리즈 스키마로 정규화해 읽는다. */
+async function readArchiveFileUnlocked(filePath) {
+  const text = await fs.readFile(filePath, "utf8");
+  const normalizedText = text.replace(/^\uFEFF/, "").trim();
+
+  if (!normalizedText) {
+    return normalizeArchiveDocument([]);
+  }
+
+  return normalizeArchiveDocument(JSON.parse(normalizedText));
+}
+
+/** 현재 버전보다 낮은 가장 최신 archive 또는 기존 단일 archive를 찾는다. */
+async function findArchiveMigrationSourceUnlocked() {
+  let entries = [];
+
+  try {
+    entries = await fs.readdir(ARCHIVE_DIRECTORY, {
+      withFileTypes: true,
+    });
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+
+  const previousVersions = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => ({
+      entry,
+      matched: entry.name.match(VERSIONED_ARCHIVE_FILE_PATTERN),
+    }))
+    .filter(({ matched }) =>
+      matched && compareArchiveVersions(matched[1], ARCHIVE_VERSION) < 0,
+    )
+    .map(({ entry, matched }) => ({
+      version: normalizeArchiveVersion(matched[1]),
+      filePath: path.join(ARCHIVE_DIRECTORY, entry.name),
+    }))
+    .sort((left, right) =>
+      compareArchiveVersions(right.version, left.version),
+    );
+
+  if (previousVersions.length > 0) {
+    return previousVersions[0];
+  }
+
+  if (await archiveFileExists(LEGACY_ARCHIVE_PATH)) {
+    return {
+      version: "legacy",
+      filePath: LEGACY_ARCHIVE_PATH,
+    };
+  }
+
+  return null;
+}
+
+/** 현재 릴리즈 archive가 없으면 직전 archive를 현재 스키마로 이전한다. */
+async function ensureVersionArchiveUnlocked() {
+  if (await archiveFileExists(ARCHIVE_PATH)) return;
+
+  const migrationSource = await findArchiveMigrationSourceUnlocked();
+  const archive = migrationSource
+    ? await readArchiveFileUnlocked(migrationSource.filePath)
+    : normalizeArchiveDocument([]);
+
+  await writeArchiveUnlocked(archive);
+
+  console.log(
+    `[ARCHIVE] v${ARCHIVE_VERSION} 초기화 완료`,
+    migrationSource
+      ? { migratedFrom: migrationSource.filePath, archivePath: ARCHIVE_PATH }
+      : { archivePath: ARCHIVE_PATH },
+  );
+}
+
+/** 현재 릴리즈 archive를 잠금 없이 읽는다. */
+async function readArchiveUnlocked() {
+  await ensureVersionArchiveUnlocked();
+  return readArchiveFileUnlocked(ARCHIVE_PATH);
 }
 
 /** archive 작업을 순차 실행한다. */
@@ -397,27 +543,21 @@ function setChangedField(target, key, value, stats) {
 /** 수집 출처가 해당 상품 필드를 갱신할 수 있는지 확인한다. */
 function canUpdateProductField(source, field, value) {
   if (source === "translation") {
-    return TRANSLATION_FIELDS.has(field);
+    return TRANSLATION_FIELDS.has(field) &&
+      hasMeaningfulArchiveValue(value);
   }
 
   if (source === "general") {
-    if (GENERAL_FIELDS.has(field)) {
-      if (["nameKo", "nameJa", "nameEn", "currency", "saleStatus", "stockStatus", "type"].includes(field)) {
-        return hasText(value);
-      }
+    if (!GENERAL_FIELDS.has(field)) return false;
 
-      if (field === "originalPrice") {
-        return value !== undefined && value !== null;
-      }
+    /** 재고 수량은 0과 null도 최신 재고 상태이므로 그대로 반영한다. */
+    if (field === "stockQuantity") return value !== undefined;
 
-      /**
-       * salePrice, discountRate, stockQuantity은 null 자체도
-       * 최신 상태를 뜻할 수 있으므로 비교 대상에 포함한다.
-       */
-      return value !== undefined;
+    if (field === "lowStockThreshold") {
+      return hasFiniteArchiveNumber(value, { allowZero: true });
     }
 
-    return false;
+    return hasMeaningfulArchiveValue(value);
   }
 
   if (source === "detail") {
@@ -429,17 +569,21 @@ function canUpdateProductField(source, field, value) {
       return hasArrayItems(value);
     }
 
-    if (field === "subcategoryId") {
-      return value !== undefined && value !== null;
+    if (["originalPrice", "salePrice"].includes(field)) {
+      return hasFiniteArchiveNumber(value);
     }
 
-    return hasText(value);
+    if (field === "discountRate") {
+      return hasFiniteArchiveNumber(value, { allowZero: true });
+    }
+
+    return hasMeaningfulArchiveValue(value);
   }
 
   return false;
 }
 
-/** 번역에서 상품명이 바뀐 경우 이전 번역을 안전하게 초기화한다. */
+/** 번역 결과의 빈 값이 기존 상품명을 지우지 않도록 병합한다. */
 function mergeTranslationProductFields(
   result,
   incoming,
@@ -459,21 +603,6 @@ function mergeTranslationProductFields(
       stats,
     ) || changed;
 
-    changed = setChangedField(
-      result,
-      "nameJa",
-      normalizeText(incoming.nameJa),
-      stats,
-    ) || changed;
-
-    changed = setChangedField(
-      result,
-      "nameEn",
-      normalizeText(incoming.nameEn),
-      stats,
-    ) || changed;
-
-    return changed;
   }
 
   for (const field of ["nameJa", "nameEn"]) {
@@ -510,45 +639,34 @@ function mergeOption(existingOption, incomingOption, stats, source) {
       normalizeText(result.nameKo) !== incomingNameKo;
 
     if (nameChanged) {
-      for (const field of ["nameKo", "nameJa", "nameEn"]) {
-        changed = setChangedField(
-          result,
-          field,
-          normalizeText(incoming[field]),
-          stats,
-        ) || changed;
-      }
+      changed = setChangedField(
+        result,
+        "nameKo",
+        incomingNameKo,
+        stats,
+      ) || changed;
+    }
 
+    for (const field of ["nameJa", "nameEn"]) {
+      const value = normalizeText(incoming[field]);
+
+      if (!value) continue;
+
+      changed = setChangedField(
+        result,
+        field,
+        value,
+        stats,
+      ) || changed;
+    }
+
+    if (hasMeaningfulArchiveValue(incoming.nameJa)) {
       changed = setChangedField(
         result,
         "name",
         normalizeText(incoming.nameJa),
         stats,
       ) || changed;
-    } else {
-      for (const field of ["nameJa", "nameEn"]) {
-        const value = normalizeText(incoming[field]);
-
-        if (!value) {
-          continue;
-        }
-
-        changed = setChangedField(
-          result,
-          field,
-          value,
-          stats,
-        ) || changed;
-      }
-
-      if (hasText(incoming.nameJa)) {
-        changed = setChangedField(
-          result,
-          "name",
-          normalizeText(incoming.nameJa),
-          stats,
-        ) || changed;
-      }
     }
   } else {
     const allowedFields = source === "general"
@@ -573,19 +691,25 @@ function mergeOption(existingOption, incomingOption, stats, source) {
     for (const field of allowedFields) {
       const value = incoming[field];
 
-      if (["name", "nameKo", "nameJa", "nameEn", "status"].includes(field) && !hasText(value)) {
+      if (
+        ["name", "nameKo", "nameJa", "nameEn", "status", "barcode"]
+          .includes(field) &&
+        !hasMeaningfulArchiveValue(value)
+      ) {
         continue;
       }
 
-      if (field === "barcode" && !hasText(value)) {
+      if (
+        field === "additionalPrice" &&
+        !hasFiniteArchiveNumber(value, { allowZero: true })
+      ) {
         continue;
       }
 
-      if (field === "additionalPrice" && value === undefined) {
-        continue;
-      }
-
-      if (field === "stockQuantity" && source !== "general") {
+      if (
+        field === "stockQuantity" &&
+        (source !== "general" || value === undefined)
+      ) {
         continue;
       }
 
@@ -828,9 +952,9 @@ function archiveToProductArray(archive, productIds = null) {
     .map((product) => materializeProduct(product));
 }
 
-/** archive.json을 요청한 상품 객체 배열 형식 그대로 저장한다. */
+/** 현재 릴리즈 archive를 상품 객체 배열 형식 그대로 저장한다. */
 async function writeArchiveUnlocked(archive) {
-  await fs.mkdir(path.dirname(ARCHIVE_PATH), {
+  await fs.mkdir(ARCHIVE_DIRECTORY, {
     recursive: true,
   });
 
@@ -857,14 +981,14 @@ function archiveToTranslationItems(archive) {
   }));
 }
 
-/** 통합 archive를 읽는다. */
+/** 현재 앱 버전의 통합 archive를 읽는다. */
 function readProductArchive() {
   return runWithArchiveLock(() => readArchiveUnlocked());
 }
 
 /**
  * 상품 배열을 productId와 optionId 기준으로 통합 archive에 병합한다.
- * archive.json에는 wrapper 없이 전체 백엔드 상품 객체 배열만 저장한다.
+ * 버전별 archive에는 wrapper 없이 전체 백엔드 상품 객체 배열만 저장한다.
  */
 function updateProductArchive(products, {
   source = "general",
@@ -951,7 +1075,9 @@ function updateProductArchive(products, {
 }
 
 module.exports = {
+  ARCHIVE_DIRECTORY,
   ARCHIVE_PATH,
+  ARCHIVE_VERSION,
   archiveToProductArray,
   archiveToTranslationItems,
   readProductArchive,

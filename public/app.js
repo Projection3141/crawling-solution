@@ -968,6 +968,35 @@ function formatRepeatUnit(unit) {
   return "시간";
 }
 
+const DETAIL_COLLECTION_MAX_PAGES = 20;
+
+/** 상세수집 범위를 제출 전에 한 번 더 검증한다. */
+function validateDetailPageRange(payload) {
+  if (payload.collectionMode !== "detail") return;
+
+  const pageStart = Number(payload.pageStart ?? 1);
+  const pageEnd = Number(payload.pageEnd ?? 0);
+
+  if (!Number.isInteger(pageStart) || pageStart < 1) {
+    throw new Error("상세수집 시작 페이지는 1 이상의 정수여야 합니다.");
+  }
+
+  if (!Number.isInteger(pageEnd) || pageEnd < pageStart) {
+    throw new Error(
+      "상세수집 종료 페이지는 시작 페이지 이상으로 직접 입력하세요.",
+    );
+  }
+
+  const pageCount = pageEnd - pageStart + 1;
+
+  if (pageCount > DETAIL_COLLECTION_MAX_PAGES) {
+    throw new Error(
+      `상세수집은 한 번에 최대 ${DETAIL_COLLECTION_MAX_PAGES}페이지까지만 실행할 수 있습니다. ` +
+      `현재 범위는 ${pageCount}페이지입니다.`,
+    );
+  }
+}
+
 /**
  * 화면 입력값으로 수집 payload를 생성한다.
  *
@@ -1009,6 +1038,7 @@ function buildPayload() {
   setNumberIfPresent(payload, "pageEnd", elements.pageEnd);
   setNumberIfPresent(payload, "detailMaxProducts", elements.detailMaxProducts);
   setNumberIfPresent(payload, "detailRequestDelayMs", elements.detailRequestDelayMs);
+  validateDetailPageRange(payload);
 
   const effectiveMall =
     elements.mall.value || state.defaults?.envDefaults?.mall || "cheonyu";
@@ -1043,15 +1073,39 @@ function updateMallHelp() {
   elements.categoryHelp.textContent = `${mall.categoryLabel}: ${mall.categoryPlaceholder}`;
 }
 
+/** 상세수집일 때 종료 페이지 입력 범위를 시작 페이지부터 20페이지로 제한한다. */
+function updateDetailPageRangeLimit() {
+  const isDetail = elements.collectionMode.value === "detail";
+
+  if (!isDetail) {
+    elements.pageEnd.min = "0";
+    elements.pageEnd.removeAttribute("max");
+    elements.pageEnd.required = false;
+    elements.pageEnd.title = "";
+    return;
+  }
+
+  const pageStart = Math.max(1, Number(elements.pageStart.value) || 1);
+  const maximumPageEnd = pageStart + DETAIL_COLLECTION_MAX_PAGES - 1;
+
+  elements.pageEnd.min = String(pageStart);
+  elements.pageEnd.max = String(maximumPageEnd);
+  elements.pageEnd.required = true;
+  elements.pageEnd.title =
+    `상세수집은 ${pageStart}~${maximumPageEnd}페이지 범위에서 ` +
+    `최대 ${DETAIL_COLLECTION_MAX_PAGES}페이지까지 가능합니다.`;
+}
+
 function updateCollectionModeGuide() {
   const isDetail = elements.collectionMode.value === "detail";
 
   elements.collectionModeHelp.textContent = isDetail
-    ? "상세 수집은 일반 수집 후 각 상품 상세페이지까지 진입합니다."
+    ? "상세 수집은 최대 20페이지이며, 목록 페이지별 상세 작업마다 프록시와 브라우저 컨텍스트를 교체합니다."
     : "일반 수집은 목록과 장바구니 기반 재고 데이터를 빠르게 수집합니다.";
 
   elements.generalGuide.classList.toggle("active", !isDetail);
   elements.detailGuide.classList.toggle("active", isDetail);
+  updateDetailPageRangeLimit();
 }
 
 function updateRunModeGuide() {
@@ -2327,6 +2381,7 @@ elements.openCollectionUploadLogDirectoryButton.addEventListener(
   },
 );
 elements.collectionMode.addEventListener("change", updateCollectionModeGuide);
+elements.pageStart.addEventListener("input", updateDetailPageRangeLimit);
 elements.runMode.addEventListener("change", updateRunModeGuide);
 elements.repeatScheduleType.addEventListener("change", updateRepeatScheduleGuide);
 elements.cheonyuProxyProfileSelect.addEventListener("change", (event) => {

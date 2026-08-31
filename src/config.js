@@ -30,6 +30,7 @@ const MALLS = Object.freeze({
 });
 
 const DEFAULT_OPENAI_MODEL = "gpt-5.6-luna";
+const DETAIL_COLLECTION_MAX_PAGES = 20;
 
 const DEFAULT_RUN_CONFIG = Object.freeze({
   mall: "cheonyu",
@@ -385,6 +386,23 @@ function resolveRunConfig(
     throw new Error(`PAGE_END(${pageEnd})는 PAGE_START(${pageStart})보다 작을 수 없습니다.`);
   }
 
+  if (collectionMode === "detail") {
+    if (pageEnd < 1) {
+      throw new Error(
+        "상세수집은 종료 페이지를 지정해야 하며 자동 마지막 페이지 모드를 사용할 수 없습니다.",
+      );
+    }
+
+    const detailPageCount = pageEnd - pageStart + 1;
+
+    if (detailPageCount > DETAIL_COLLECTION_MAX_PAGES) {
+      throw new Error(
+        `상세수집은 한 번에 최대 ${DETAIL_COLLECTION_MAX_PAGES}페이지까지만 실행할 수 있습니다. ` +
+        `현재 범위: ${pageStart}~${pageEnd} (${detailPageCount}페이지)`,
+      );
+    }
+  }
+
   const maxSafePages = pickInputInteger(
     input,
     "maxSafePages",
@@ -565,6 +583,7 @@ function resolveServerConfig(_env = process.env) {
 }
 
 module.exports = {
+  DETAIL_COLLECTION_MAX_PAGES,
   DEFAULT_OPENAI_MODEL,
   MALLS,
   getPublicDefaults,
