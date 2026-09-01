@@ -16,6 +16,10 @@ const {
 const { installHttpBlockGuard, replacePage } = require("../../utils/site-safety");
 const { createNetworkUsageTracker } = require("../../utils/network-usage");
 const { buildProductSummaries } = require("../../utils/inventory");
+const {
+  recordDetailAttempts,
+  selectPendingDetailProductIds,
+} = require("../../utils/detail-collection-state");
 const { clearCartAll } = require("./cart");
 const {
   createCheonyuPopupInventoryItems,
@@ -1380,22 +1384,10 @@ async function runCheonyu(
 
     const productSummaries = buildProductSummaries(inventoryItems);
     let detailItems = [];
+    let detailTargetCount = 0;
+    let detailCandidateCount = 0;
 
     if (config.collectionMode === "detail") {
-      onProgress({
-        stage: "detail",
-        message: "상품 상세페이지 정보를 수집하고 있습니다.",
-        pageRange,
-        detectedTotalProductCount: pageRange.detectedTotalProductCount,
-        collectedProductCount: allProducts.length,
-        targetProductCount: targetProducts.length,
-        excludedProductCount,
-        excludedProducts: allExcludedProducts,
-        collectionWarnings,
-        productSummaryCount: productSummaries.length,
-        elapsedMs: performance.now() - startedAt,
-      });
-
       const uniqueDetailTargets = Array.from(
         new Map(
           allProducts
@@ -1403,9 +1395,47 @@ async function runCheonyu(
             .map((item) => [String(item.productId), item]),
         ).values(),
       );
-      const detailTargets = Number(config.detailMaxProducts) > 0
-        ? uniqueDetailTargets.slice(0, Number(config.detailMaxProducts))
+      detailCandidateCount = uniqueDetailTargets.length;
+      const pendingProductIds =
+        config.detailTargetMode === "pending"
+          ? new Set(
+              await selectPendingDetailProductIds(
+                config.mall,
+                uniqueDetailTargets,
+              ),
+            )
+          : null;
+      const detailTargets = pendingProductIds
+        ? uniqueDetailTargets.filter((product) =>
+            pendingProductIds.has(String(product.productId || "")),
+          )
         : uniqueDetailTargets;
+      detailTargetCount = detailTargets.length;
+
+      await recordDetailAttempts({
+        mall: config.mall,
+        products: detailTargets,
+      });
+
+      onProgress({
+        stage: "detail",
+        message:
+          config.detailTargetMode === "pending"
+            ? `신규·상세 미수집 상품 ${detailTargetCount}개의 상세페이지를 수집합니다.`
+            : `범위 내 전체 상품 ${detailTargetCount}개의 상세페이지를 수집합니다.`,
+        pageRange,
+        detectedTotalProductCount: pageRange.detectedTotalProductCount,
+        collectedProductCount: allProducts.length,
+        targetProductCount: detailTargetCount,
+        detailCandidateCount,
+        detailTargetCount,
+        excludedProductCount,
+        excludedProducts: allExcludedProducts,
+        collectionWarnings,
+        productSummaryCount: productSummaries.length,
+        elapsedMs: performance.now() - startedAt,
+      });
+
       const detailPageGroups = new Map();
 
       for (let index = 0; index < detailTargets.length; index += 1) {
@@ -1451,10 +1481,7 @@ async function runCheonyu(
         const pageDetailItems = await collectCheonyuDetails(
           page,
           pageProducts,
-          {
-            ...config,
-            detailMaxProducts: 0,
-          },
+          config,
           (progress) => {
             const currentInPage = Math.max(
               0,
@@ -1501,18 +1528,13 @@ async function runCheonyu(
 
     const soldOutProductCount = soldOutIds.size;
 
-    const detailTargetCount =
-      config.collectionMode === "detail"
-        ? config.detailMaxProducts > 0
-          ? Math.min(config.detailMaxProducts, allProducts.length)
-          : allProducts.length
-        : 0;
-
     const summary = {
       mall: config.mall,
       mallLabel: config.mallLabel,
       category: config.category,
       collectionMode: config.collectionMode,
+      detailTargetMode: config.detailTargetMode,
+      detailCandidateCount,
       detailTargetCount,
       detailItemCount: detailItems.length,
       startedAt: new Date(Date.now() - elapsedMs).toISOString(),

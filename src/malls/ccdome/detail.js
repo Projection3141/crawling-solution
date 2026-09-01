@@ -545,10 +545,7 @@ async function collectCcdomeDetails(
         .map((item) => [String(item.productId), item]),
     ).values(),
   );
-  const limitedTargets =
-    Number(config.detailMaxProducts) > 0
-      ? targets.slice(0, Number(config.detailMaxProducts))
-      : targets;
+  const limitedTargets = targets;
 
   if (limitedTargets.length < 1) return [];
 

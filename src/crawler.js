@@ -21,6 +21,10 @@ const {
 const {
   updateProductArchive,
 } = require("./utils/product-archive");
+const {
+  observeDetailProducts,
+  recordDetailOutcomes,
+} = require("./utils/detail-collection-state");
 
 const ADAPTERS = {
   cheonyu: require("./malls/cheonyu"),
@@ -632,6 +636,14 @@ async function runCollection(
 
   const files = createRunFiles(config.baseOutDir, config.mall, runId);
   const cycleArchivedProducts = new Map();
+  let conversionSnapshotPromise = null;
+  const getRunConversionSnapshot = () => {
+    if (!conversionSnapshotPromise) {
+      conversionSnapshotPromise = createConversionSnapshot({ signal });
+    }
+
+    return conversionSnapshotPromise;
+  };
   const onCycleArchive = config.mall === "cheonyu"
     ? async ({
       cycleNo,
@@ -649,13 +661,20 @@ async function runCollection(
         translatedItems: [],
         lowStockThreshold: Number(config.lowStockThreshold) || 10,
       });
+      const cycleConversion = cycleArchiveProducts.length > 0
+        ? await getRunConversionSnapshot()
+        : null;
       const archiveUpdate = await updateProductArchive(
         cycleArchiveProducts,
         {
           source: "general",
-          conversion: null,
+          conversion: cycleConversion,
         },
       );
+      const detailStateObservation = await observeDetailProducts({
+        mall: config.mall,
+        products,
+      });
 
       for (const product of archiveUpdate.currentProducts || []) {
         const productId = String(product?.id || product?.productId || "").trim();
@@ -673,6 +692,9 @@ async function runCollection(
         archiveUpdatedProductCount: archiveUpdate.stats.updatedProductCount,
         archiveChangedFieldCount: archiveUpdate.stats.changedFieldCount,
         archivePath: archiveUpdate.archivePath,
+        pendingDetailProductCount:
+          detailStateObservation.pendingProductIds.length,
+        detailStatePath: detailStateObservation.path,
       };
 
       onProgress({
@@ -746,7 +768,7 @@ async function runCollection(
     skippedOptions: [],
   };
 
-  if (isDetailCollection) {
+  if (isDetailCollection && (result.detailItems || []).length > 0) {
     const translationInput = createTranslationInput(
       result,
       config.collectionMode,
@@ -800,8 +822,11 @@ async function runCollection(
    * The archive applies it after merging, so yenPrice is always derived
    * from the final originalPrice written to the result.
    */
-  const conversion = isDetailCollection
-    ? await createConversionSnapshot({ signal })
+  const needsConversion =
+    (isDetailCollection && backendProducts.length > 0) ||
+    (config.mall === "cheonyu" && cycleArchivedProducts.size > 0);
+  const conversion = needsConversion
+    ? await getRunConversionSnapshot()
     : null;
 
   throwIfAborted(signal);
@@ -817,18 +842,41 @@ async function runCollection(
       conversion,
     },
   );
-  const mergedBackendProducts = archiveUpdate.currentProducts;
+  const detailMergedBackendProducts = archiveUpdate.currentProducts;
+  let mergedBackendProducts = detailMergedBackendProducts;
+
+  if (config.mall === "cheonyu" && isDetailCollection) {
+    /**
+     * pending 모드에서는 상세 대상이 전체 일반 수집 범위의 일부이거나 0건일 수 있다.
+     * 실행 result는 선행 일반 수집 범위를 유지하고, 이번 상세 병합 결과만 교체한다.
+     */
+    const resultProductMap = new Map(cycleArchivedProducts);
+
+    for (const product of detailMergedBackendProducts) {
+      const productId = String(product?.id || product?.productId || "").trim();
+      if (productId) resultProductMap.set(productId, product);
+    }
+
+    mergedBackendProducts = Array.from(resultProductMap.values());
+  }
+  const detailStateUpdate =
+    config.mall === "cheonyu" && isDetailCollection
+      ? await recordDetailOutcomes({
+          mall: config.mall,
+          detailItems: result.detailItems || [],
+        })
+      : null;
 
   /** result.json은 현재 상품의 통합 archive 결과를 저장한다. */
   writeJson(files.resultJson, mergedBackendProducts);
 
   const hasDetailResult =
     config.collectionMode === "detail" &&
-    mergedBackendProducts.length > 0;
+    detailMergedBackendProducts.length > 0;
 
-  /** 기존 상세 결과 파일 경로 호환을 위해 같은 데이터 타입으로 저장한다. */
+  /** detailResult에는 이번 실행에서 상세 수집을 시도한 상품만 저장한다. */
   if (hasDetailResult) {
-    writeJson(files.detailResultJson, mergedBackendProducts);
+    writeJson(files.detailResultJson, detailMergedBackendProducts);
   }
 
   console.log("[BACKEND PRODUCT] 변환 완료", {
@@ -839,6 +887,10 @@ async function runCollection(
     archiveNewProductCount: archiveUpdate.stats.newProductCount,
     archiveUpdatedProductCount: archiveUpdate.stats.updatedProductCount,
     archiveChangedFieldCount: archiveUpdate.stats.changedFieldCount,
+    detailSucceededProductCount:
+      detailStateUpdate?.succeededProductIds?.length || 0,
+    detailFailedProductCount:
+      detailStateUpdate?.failedProductIds?.length || 0,
     wonToYenRate: conversion?.rate ?? null,
     yenToWonRate: conversion?.revRate ?? null,
     convertTime: conversion?.convertTime ?? null,

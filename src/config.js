@@ -375,6 +375,28 @@ function resolveRunConfig(
     throw new Error(`지원하지 않는 수집 방식입니다: ${collectionMode}`);
   }
 
+  const requestedDetailTargetMode = String(
+    pickValue(input, "detailTargetMode", env, "DETAIL_TARGET_MODE", "all"),
+  )
+    .trim()
+    .toLowerCase();
+  const supportsPendingDetail =
+    collectionMode === "detail" && mall === "cheonyu";
+
+  if (
+    supportsPendingDetail &&
+    !["all", "pending"].includes(requestedDetailTargetMode)
+  ) {
+    throw new Error(
+      `지원하지 않는 상세 수집 모드입니다: ${requestedDetailTargetMode}`,
+    );
+  }
+
+  const detailTargetMode =
+    supportsPendingDetail && requestedDetailTargetMode === "pending"
+      ? "pending"
+      : "all";
+
   if (!accountId || !accountPw) {
     throw new Error(
       "계정 정보가 없습니다. 화면에서 계정을 선택하거나 " +
@@ -425,6 +447,7 @@ function resolveRunConfig(
     accountPw,
     accountName: String(input.accountName || ""),
     collectionMode,
+    detailTargetMode,
     showBrowser,
     headless: !showBrowser,
     pageStart,
@@ -476,7 +499,6 @@ function resolveRunConfig(
       1000,
       0,
     ),
-    detailMaxProducts: pickInteger(input, "detailMaxProducts", env, "DETAIL_MAX_PRODUCTS", 0, 0),
     detailConcurrency:
       mall === "cheonyu"
         ? pickInteger(
@@ -522,6 +544,7 @@ function toSafeConfig(config) {
     baseUrl: config.baseUrl,
     category: config.category,
     collectionMode: config.collectionMode,
+    detailTargetMode: config.detailTargetMode,
     accountName: config.accountName || "",
     showBrowser: config.showBrowser,
     pageStart: config.pageStart,
@@ -536,7 +559,6 @@ function toSafeConfig(config) {
     lowStockThreshold: config.lowStockThreshold,
     requestDelayMs: config.requestDelayMs,
     detailRequestDelayMs: config.detailRequestDelayMs,
-    detailMaxProducts: config.detailMaxProducts,
     detailConcurrency: config.detailConcurrency,
     maxSafePages: config.maxSafePages,
     navigationTimeoutMs: config.navigationTimeoutMs,
@@ -548,6 +570,9 @@ function toSafeConfig(config) {
 
 function getPublicDefaults(env = process.env, outputDirectory = "") {
   const mall = DEFAULT_RUN_CONFIG.mall;
+  const requestedDetailTargetMode = hasValue(env.DETAIL_TARGET_MODE)
+    ? String(env.DETAIL_TARGET_MODE).trim().toLowerCase()
+    : "all";
 
   return {
     malls: Object.values(MALLS).map((item) => ({
@@ -566,6 +591,9 @@ function getPublicDefaults(env = process.env, outputDirectory = "") {
       collectionMode: hasValue(env.COLLECTION_MODE)
         ? String(env.COLLECTION_MODE).trim().toLowerCase()
         : "general",
+      detailTargetMode: ["all", "pending"].includes(requestedDetailTargetMode)
+        ? requestedDetailTargetMode
+        : "all",
       showBrowser: DEFAULT_RUN_CONFIG.showBrowser,
       pageStart: DEFAULT_RUN_CONFIG.pageStart,
       pageEnd: DEFAULT_RUN_CONFIG.pageEnd,

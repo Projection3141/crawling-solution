@@ -87,6 +87,7 @@ const GENERAL_FIELDS = new Set([
   "nameKo",
   "nameJa",
   "nameEn",
+  "originalPrice",
   "saleStatus",
   "stockQuantity",
   "lowStockThreshold",
@@ -557,6 +558,11 @@ function canUpdateProductField(source, field, value) {
       return hasFiniteArchiveNumber(value, { allowZero: true });
     }
 
+    /** 잘못 읽은 0/null 가격으로 기존의 정상 가격을 지우지 않는다. */
+    if (field === "originalPrice") {
+      return hasFiniteArchiveNumber(value);
+    }
+
     return hasMeaningfulArchiveValue(value);
   }
 
@@ -676,6 +682,7 @@ function mergeOption(existingOption, incomingOption, stats, source) {
         "nameKo",
         "nameJa",
         "nameEn",
+        "additionalPrice",
         "stockQuantity",
         "status",
       ]
@@ -701,7 +708,13 @@ function mergeOption(existingOption, incomingOption, stats, source) {
 
       if (
         field === "additionalPrice" &&
-        !hasFiniteArchiveNumber(value, { allowZero: true })
+        (
+          !hasFiniteArchiveNumber(value, { allowZero: true }) ||
+          (
+            source === "general" &&
+            incomingOption?.additionalPriceObserved !== true
+          )
+        )
       ) {
         continue;
       }

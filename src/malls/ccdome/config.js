@@ -158,7 +158,6 @@ function createCcdomeConfig(env = process.env, cwd = process.cwd()) {
     pageSize: readInteger(env, "CCDOME_PAGE_SIZE", "PAGE_SIZE", 40, 1),
     requestDelayMs: readInteger(env, "CCDOME_REQUEST_DELAY_MS", "REQUEST_DELAY_MS", 300, 0),
     detailRequestDelayMs: readInteger(env, "CCDOME_DETAIL_REQUEST_DELAY_MS", "DETAIL_REQUEST_DELAY_MS", 300, 0),
-    detailMaxProducts: readInteger(env, "CCDOME_DETAIL_MAX_PRODUCTS", "DETAIL_MAX_PRODUCTS", 0, 0),
     maxSafePages: readInteger(env, "CCDOME_MAX_SAFE_PAGES", "MAX_SAFE_PAGES", 1000, 1),
     navigationTimeoutMs: readInteger(env, "CCDOME_NAVIGATION_TIMEOUT_MS", "NAVIGATION_TIMEOUT_MS", 60000, 1000),
     viewport: { width: 1440, height: 1000 },

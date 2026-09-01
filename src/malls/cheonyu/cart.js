@@ -128,15 +128,17 @@ function parseCartHtml(
     );
     const porderMinus =
       item.find(selectors.porderMinus).first().attr("value") || "";
-    const onePrice = collectDetailFields
-      ? toNumber(item.find(selectors.onePrice).first().attr("value"))
-      : null;
-    const boxPrice = collectDetailFields
-      ? toNumber(item.find(selectors.boxPrice).first().attr("value"))
-      : null;
-    const effectivePrice = collectDetailFields
-      ? normalizeEffectivePrice(onePrice, boxPrice)
-      : null;
+    /**
+     * 재고 확인을 위해 이미 읽은 장바구니 DOM에 가격 input도 함께 있으므로
+     * 일반 수집에서도 추가 요청이나 대기 없이 같은 값을 사용한다.
+     */
+    const onePrice = toNumber(
+      item.find(selectors.onePrice).first().attr("value"),
+    );
+    const boxPrice = toNumber(
+      item.find(selectors.boxPrice).first().attr("value"),
+    );
+    const effectivePrice = normalizeEffectivePrice(onePrice, boxPrice);
     const msg = normalizeProductName(
       item.find(selectors.message).first().text(),
     );
@@ -171,14 +173,14 @@ function parseCartHtml(
       stockStatus,
       stockLimited,
       porderMinus,
+      onePrice,
+      boxPrice,
+      effectivePrice,
+      hasBoxDiscount: boxPrice > 0 && boxPrice < onePrice,
       ...(collectDetailFields
         ? {
             brandHint: inferBrand(productName),
             categoryHint: inferCategory(productName),
-            onePrice,
-            boxPrice,
-            effectivePrice,
-            hasBoxDiscount: boxPrice > 0 && boxPrice < onePrice,
             packageQty: packageInfo.packageQty,
             packageUnit: packageInfo.packageUnit,
             packageText: packageInfo.packageText,

@@ -645,7 +645,7 @@ function normalizeRunInput(input) {
         "pageEnd",
         "maxPerPage",
 
-        "detailMaxProducts",
+        "detailTargetMode",
         "detailRequestDelayMs",
         "proxyProfileId",
         "cheonyuUserAgent",
@@ -757,6 +757,12 @@ function createPublicRunRequest(config, safeInput) {
         mall: config.mall,
         collectionMode:
             safeInput.collectionMode === "detail" ? "detail" : "general",
+        detailTargetMode:
+            safeInput.collectionMode === "detail"
+                ? config.detailTargetMode === "pending"
+                    ? "pending"
+                    : "all"
+                : null,
         accountName:
             String(safeInput.accountName || "").trim() ||
             (safeInput.localCredentialId ? "등록 계정" : ".env 계정"),

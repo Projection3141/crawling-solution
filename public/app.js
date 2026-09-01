@@ -78,7 +78,9 @@ const elements = {
   saveUploadApiUrlButton: document.querySelector("#saveUploadApiUrlButton"),
   pageStart: document.querySelector("#pageStart"),
   pageEnd: document.querySelector("#pageEnd"),
-  detailMaxProducts: document.querySelector("#detailMaxProducts"),
+  pageEndHelp: document.querySelector("#pageEndHelp"),
+  detailTargetMode: document.querySelector("#detailTargetMode"),
+  detailTargetModeHelp: document.querySelector("#detailTargetModeHelp"),
   detailRequestDelayMs: document.querySelector("#detailRequestDelayMs"),
   runButton: document.querySelector("#runButton"),
   mallHelp: document.querySelector("#mallHelp"),
@@ -1036,12 +1038,20 @@ function buildPayload() {
 
   setNumberIfPresent(payload, "pageStart", elements.pageStart);
   setNumberIfPresent(payload, "pageEnd", elements.pageEnd);
-  setNumberIfPresent(payload, "detailMaxProducts", elements.detailMaxProducts);
-  setNumberIfPresent(payload, "detailRequestDelayMs", elements.detailRequestDelayMs);
-  validateDetailPageRange(payload);
 
   const effectiveMall =
     elements.mall.value || state.defaults?.envDefaults?.mall || "cheonyu";
+
+  if (payload.collectionMode === "detail") {
+    payload.detailTargetMode =
+      effectiveMall === "cheonyu" &&
+      elements.detailTargetMode.value === "pending"
+        ? "pending"
+        : "all";
+    setNumberIfPresent(payload, "detailRequestDelayMs", elements.detailRequestDelayMs);
+  }
+
+  validateDetailPageRange(payload);
 
   if (effectiveMall === "cheonyu" && elements.cheonyuProxyProfileSelect?.value) {
     payload.proxyProfileId = elements.cheonyuProxyProfileSelect.value;
@@ -1082,6 +1092,8 @@ function updateDetailPageRangeLimit() {
     elements.pageEnd.removeAttribute("max");
     elements.pageEnd.required = false;
     elements.pageEnd.title = "";
+    elements.pageEndHelp.innerHTML =
+      "<strong>0</strong>이면 마지막 페이지를 자동 감지합니다.";
     return;
   }
 
@@ -1094,17 +1106,40 @@ function updateDetailPageRangeLimit() {
   elements.pageEnd.title =
     `상세수집은 ${pageStart}~${maximumPageEnd}페이지 범위에서 ` +
     `최대 ${DETAIL_COLLECTION_MAX_PAGES}페이지까지 가능합니다.`;
+
+  elements.pageEndHelp.textContent =
+    elements.detailTargetMode.value === "pending"
+      ? `종료 페이지를 직접 입력하세요. 선택 범위에서 신규·상세 미수집 상품을 찾으며, 최대 ${DETAIL_COLLECTION_MAX_PAGES}페이지까지 가능합니다.`
+      : `종료 페이지를 직접 입력하세요. 선택 범위의 모든 상품을 수집하며, 최대 ${DETAIL_COLLECTION_MAX_PAGES}페이지까지 가능합니다.`;
 }
 
 function updateCollectionModeGuide() {
   const isDetail = elements.collectionMode.value === "detail";
+  const selectedMall =
+    elements.mall.value || state.defaults?.envDefaults?.mall || "cheonyu";
+  const supportsPendingDetail = selectedMall === "cheonyu";
+
+  if (!supportsPendingDetail && elements.detailTargetMode.value !== "all") {
+    elements.detailTargetMode.value = "all";
+  }
+
+  const isPendingDetail = elements.detailTargetMode.value === "pending";
 
   elements.collectionModeHelp.textContent = isDetail
     ? "상세 수집은 최대 20페이지이며, 목록 페이지별 상세 작업마다 프록시와 브라우저 컨텍스트를 교체합니다."
-    : "일반 수집은 목록과 장바구니 기반 재고 데이터를 빠르게 수집합니다.";
+    : selectedMall === "cheonyu"
+      ? "일반 수집은 주문 가능 여부·재고와 함께 장바구니·팝업의 effectivePrice를 갱신합니다."
+      : "일반 수집은 목록과 장바구니 기반 주문 가능 여부·재고 데이터를 빠르게 수집합니다.";
 
   elements.generalGuide.classList.toggle("active", !isDetail);
   elements.detailGuide.classList.toggle("active", isDetail);
+  elements.detailTargetMode.disabled = !isDetail || !supportsPendingDetail;
+  elements.detailRequestDelayMs.disabled = !isDetail;
+  elements.detailTargetModeHelp.textContent = !supportsPendingDetail
+    ? "신규·미수집 상품 모드는 현재 천유닷컴에서만 지원합니다."
+    : isPendingDetail
+      ? "선택 범위 중 상세 수집 성공 이력이 없는 신규·미수집 상품만 수집하고, 이전 실패 상품도 재시도합니다. 기능 도입 후 첫 실행에는 기존 상품도 한 번 포함될 수 있습니다."
+      : "선택 범위의 모든 상품 상세 정보를 다시 수집합니다.";
   updateDetailPageRangeLimit();
 }
 
@@ -1609,7 +1644,7 @@ function createRunCard(run) {
         : run.request?.mall || "쇼핑몰";
   const modeLabel =
     run.request?.collectionMode === "detail"
-      ? "상세 수집"
+      ? `상세 수집 (${run.request?.detailTargetMode === "pending" ? "신규·미수집" : "전체"})`
       : "일반 수집";
   title.textContent =
     `${mallLabel} · ${modeLabel} · ` +
@@ -2349,7 +2384,10 @@ async function initialize() {
 }
 
 elements.form.addEventListener("submit", handleSubmit);
-elements.mall.addEventListener("change", updateMallHelp);
+elements.mall.addEventListener("change", () => {
+  updateMallHelp();
+  updateCollectionModeGuide();
+});
 elements.accountSelect.addEventListener("change", updateAccountHelp);
 elements.openAccountManagerButton.addEventListener("click", openAccountManager);
 elements.closeAccountManagerButton.addEventListener("click", closeAccountManager);
@@ -2381,6 +2419,7 @@ elements.openCollectionUploadLogDirectoryButton.addEventListener(
   },
 );
 elements.collectionMode.addEventListener("change", updateCollectionModeGuide);
+elements.detailTargetMode.addEventListener("change", updateCollectionModeGuide);
 elements.pageStart.addEventListener("input", updateDetailPageRangeLimit);
 elements.runMode.addEventListener("change", updateRunModeGuide);
 elements.repeatScheduleType.addEventListener("change", updateRepeatScheduleGuide);

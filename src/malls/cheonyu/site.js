@@ -2372,6 +2372,9 @@ async function parseAndPreparePopupOptions(
             requestedQty: selectedForCart ? quantity : 0,
             stockStatus,
             outerBoxQty,
+            addPriceObserved: Boolean(
+              tr.querySelector("input#inOPaddPrice"),
+            ),
             addPrice: toNumber(tr.querySelector("input#inOPaddPrice")?.value),
             boxCountOpt: toNumber(tr.querySelector("input#boxCountOpt")?.value),
             boxCountOpt2: toNumber(tr.querySelector("input#boxCountOpt2")?.value),
@@ -2781,10 +2784,11 @@ async function waitForReadyCheonyuOptionPopup(
       { timeout },
     );
   } catch (error) {
-    if (config.collectionMode !== "general") {
-      throw error;
-    }
-
+    /**
+     * 상세수집도 상세 페이지 진입 전에 같은 목록 팝업 수집을 수행한다.
+     * 수집 모드와 관계없이 완성된 부분 팝업은 처리하고, 누락 상품만
+     * 상위 batch의 deferred 재시도 대상으로 넘긴다.
+     */
     const isCompletePopupState = (state) =>
       state.visibleWrapperCount === expectedProductCount &&
       state.optionTableCount === expectedProductCount &&

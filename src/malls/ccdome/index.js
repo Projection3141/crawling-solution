@@ -93,13 +93,9 @@ async function runCcdome(
 
     ensureNotAborted();
 
-    const detailLimit = Number(config.detailMaxProducts) || 0;
-
     const detailTargetCount =
       config.collectionMode === "detail"
-        ? detailLimit > 0
-          ? Math.min(detailLimit, result.allProducts.length)
-          : result.allProducts.length
+        ? result.allProducts.length
         : 0;
 
     const inventoryItems = buildAvailabilityInventory(result.allProducts);
@@ -162,7 +158,6 @@ async function runCcdome(
       mallLabel: config.mallLabel,
       category: config.category,
       collectionMode: config.collectionMode,
-      detailMaxProducts: config.detailMaxProducts,
       detailTargetCount,
       detailItemCount: detailItems.length,
       startedAt: new Date(Date.now() - elapsedMs).toISOString(),

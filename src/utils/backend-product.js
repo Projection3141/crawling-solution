@@ -503,6 +503,12 @@ function createBackendOptions(
         : "";
     const stockQuantity = toNullableNumber(row?.maxStock);
     const stockStatus = normalizeText(row?.stockStatus);
+    const additionalPrice = toNullableNumber(row?.addPrice);
+    const additionalPriceObserved =
+      additionalPrice !== null &&
+      (collectionMode === "detail"
+        ? Object.hasOwn(row || {}, "addPrice")
+        : row?.addPriceObserved === true);
 
     optionMap.set(internalKey, {
       id: optionId,
@@ -516,10 +522,15 @@ function createBackendOptions(
       nameJa,
       nameEn,
 
-      additionalPrice:
-        collectionMode === "detail"
-          ? toNullableNumber(row?.addPrice) ?? 0
-          : undefined,
+      ...(additionalPriceObserved
+        ? {
+            additionalPrice,
+            /** archive 병합에서 관측되지 않은 0과 구분하기 위한 내부 표식이다. */
+            additionalPriceObserved: true,
+          }
+        : collectionMode === "detail"
+          ? { additionalPrice: 0 }
+          : {}),
       stockQuantity,
       status: getSaleStatus(
         stockStatus,
@@ -531,18 +542,27 @@ function createBackendOptions(
   return Array.from(optionMap.values());
 }
 
-/** 상품의 원본 가격 하나만 반환한다. */
+/** 상품의 실제 적용 가격 하나만 반환한다. */
 function getOriginalPrice(
   collectionMode,
   inventoryRows,
   productItem,
   detailItem,
 ) {
-  if (collectionMode !== "detail") {
+  const sourceMall = normalizeText(
+    inventoryRows.find((item) => item?.sourceMall)?.sourceMall ||
+      productItem?.sourceMall,
+  ).toLowerCase();
+
+  /** 이번 일반 가격 갱신은 천유에만 적용한다. */
+  if (collectionMode === "general" && sourceMall !== "cheonyu") {
     return null;
   }
 
-  const firstInventoryPrice = inventoryRows
+  const firstEffectivePrice = inventoryRows
+    .map((item) => toNullableNumber(item?.effectivePrice))
+    .find((value) => value !== null && value > 0);
+  const firstOnePrice = inventoryRows
     .map((item) => toNullableNumber(item?.onePrice))
     .find((value) => value !== null && value > 0);
 
@@ -550,14 +570,22 @@ function getOriginalPrice(
     detailItem,
     ["총 상품금액", "상품금액", "판매가", "총 합계금액"],
   );
-  const candidates = [
-    detailItem.originalPrice,
-    detailItem.salePrice,
-    detailSalePrice,
-    detailItem.consumerPrice,
-    firstInventoryPrice,
-    productItem.price,
-  ];
+  const candidates = collectionMode === "general"
+    ? [
+        /** 천유 일반 수집은 팝업/장바구니의 실제 적용 가격을 대표값으로 쓴다. */
+        firstEffectivePrice,
+        firstOnePrice,
+        productItem.price,
+      ]
+    : [
+        /** 상세 수집은 기존처럼 상세페이지 가격을 우선한다. */
+        detailItem.originalPrice,
+        detailItem.salePrice,
+        detailSalePrice,
+        detailItem.consumerPrice,
+        firstOnePrice,
+        productItem.price,
+      ];
 
   for (const candidate of candidates) {
     const number = toPriceNumber(candidate);

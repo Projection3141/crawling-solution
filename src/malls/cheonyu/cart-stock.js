@@ -5,6 +5,7 @@ const {
   throwIfAborted,
 } = require("../../utils/common");
 const {
+  normalizeEffectivePrice,
   sortInventoryItems,
 } = require("../../utils/inventory");
 const {
@@ -61,6 +62,85 @@ function normalizeCoverageOptionText(value) {
 
 function createCartOptionMatchKey(productId, optionText) {
   return `${normalizeCoverageText(productId)}::${normalizeCoverageOptionText(optionText) || "0"}`;
+}
+
+function toFiniteNumber(value, fallback = 0) {
+  const number = Number(value);
+
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function toPositivePrice(value) {
+  const number = Number(value);
+
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+/**
+ * 천유 팝업의 inoPrice/indcPrice 계열은 사이트 내부 필드로 의미가 문서화되어
+ * 있지 않다. 따라서 inoPrice만 낱개 기준 후보로 사용하고, boxCountOpt와
+ * 짝이 확인되는 할인 단계만 박스 가격 후보로 사용한다. 최소 수량 기준이
+ * 더 큰 단계를 먼저 택하되 어떤 값도 소비자가로 추정하지 않고 원시 필드를
+ * inventory row에 함께 보존한다.
+ */
+function normalizeCheonyuPopupPriceFields(row = {}) {
+  const addPriceObserved = row.addPriceObserved === true;
+  const addPrice = toFiniteNumber(row.addPrice);
+  const outerBoxQty = Math.max(0, toFiniteNumber(row.outerBoxQty));
+  const boxCountOpt = Math.max(0, toFiniteNumber(row.boxCountOpt));
+  const boxCountOpt2 = Math.max(0, toFiniteNumber(row.boxCountOpt2));
+  const inoPer = toFiniteNumber(row.inoPer);
+  const indcPer = toFiniteNumber(row.indcPer);
+  const indcPer2 = toFiniteNumber(row.indcPer2);
+  const inoPrice = toPositivePrice(row.inoPrice);
+  const indcPrice = toPositivePrice(row.indcPrice);
+  const indcPrice2 = toPositivePrice(row.indcPrice2);
+  const boxPrice = [
+    { minimumQty: boxCountOpt, price: indcPrice, order: 1 },
+    { minimumQty: boxCountOpt2, price: indcPrice2, order: 2 },
+  ]
+    .filter(({ minimumQty, price }) => minimumQty > 0 && price > 0)
+    .sort((left, right) =>
+      right.minimumQty - left.minimumQty || right.order - left.order,
+    )[0]?.price || 0;
+  const onePrice = inoPrice || indcPrice || indcPrice2;
+  const effectivePrice = normalizeEffectivePrice(onePrice, boxPrice);
+
+  return {
+    addPriceObserved,
+    addPrice,
+    outerBoxQty,
+    boxCountOpt,
+    boxCountOpt2,
+    inoPer,
+    indcPer,
+    indcPer2,
+    inoPrice,
+    indcPrice,
+    indcPrice2,
+    onePrice,
+    boxPrice,
+    effectivePrice,
+    hasBoxDiscount: boxPrice > 0 && boxPrice < onePrice,
+  };
+}
+
+/** 장바구니 가격을 우선하고, 값이 없을 때만 같은 팝업 row 가격으로 보완한다. */
+function mergeCheonyuCartAndPopupPriceFields(cartRow, popupRow) {
+  const popupFields = normalizeCheonyuPopupPriceFields(popupRow);
+  const onePrice = toPositivePrice(cartRow?.onePrice) || popupFields.onePrice;
+  const boxPrice = toPositivePrice(cartRow?.boxPrice) || popupFields.boxPrice;
+  const effectivePrice =
+    toPositivePrice(cartRow?.effectivePrice) ||
+    normalizeEffectivePrice(onePrice, boxPrice);
+
+  return {
+    ...popupFields,
+    onePrice,
+    boxPrice,
+    effectivePrice,
+    hasBoxDiscount: boxPrice > 0 && boxPrice < onePrice,
+  };
 }
 
 function createCoverageRowKey(row) {
@@ -385,6 +465,7 @@ async function probeCheonyuCartStock(
             popupMatchIndexes.set(key, candidateIndex + 1);
             return {
               ...item,
+              ...mergeCheonyuCartAndPopupPriceFields(item, popupRow),
               optionId: popupRow.optionId ?? item.optionId,
               submitOptionId: popupRow.submitOptionId ?? item.submitOptionId,
               hasOption: popupRow.hasOption ?? item.hasOption,
@@ -557,6 +638,7 @@ function createCheonyuPopupInventoryItems({
     const maxStock = Math.max(0, Math.trunc(Number(row.maxStock) || 0));
     const stockStatus =
       row.stockStatus || (maxStock > 0 ? "IN_STOCK" : "OUT_OF_STOCK");
+    const priceFields = normalizeCheonyuPopupPriceFields(row);
 
     inventoryMap.set(inventoryKey, {
       sourceMall: config.mall || "cheonyu",
@@ -584,6 +666,7 @@ function createCheonyuPopupInventoryItems({
       isSoldOut: maxStock <= 0 || stockStatus === "OUT_OF_STOCK",
       msg: row.disabled === true ? "옵션 선택 비활성화" : "",
       rowSource: "popup-max-stock",
+      ...priceFields,
     });
   }
 
