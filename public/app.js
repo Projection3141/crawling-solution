@@ -978,14 +978,27 @@ function validateDetailPageRange(payload) {
 
   const pageStart = Number(payload.pageStart ?? 1);
   const pageEnd = Number(payload.pageEnd ?? 0);
+  const isPendingDetail = payload.detailTargetMode === "pending";
 
   if (!Number.isInteger(pageStart) || pageStart < 1) {
     throw new Error("상세수집 시작 페이지는 1 이상의 정수여야 합니다.");
   }
 
-  if (!Number.isInteger(pageEnd) || pageEnd < pageStart) {
+  if (
+    !Number.isInteger(pageEnd) ||
+    pageEnd < 0 ||
+    (pageEnd > 0 && pageEnd < pageStart)
+  ) {
     throw new Error(
-      "상세수집 종료 페이지는 시작 페이지 이상으로 직접 입력하세요.",
+      "상세수집 종료 페이지는 0 또는 시작 페이지 이상의 정수여야 합니다.",
+    );
+  }
+
+  if (isPendingDetail) return;
+
+  if (pageEnd < 1) {
+    throw new Error(
+      "전체 상품 상세수집은 종료 페이지를 직접 입력해야 합니다.",
     );
   }
 
@@ -1083,9 +1096,11 @@ function updateMallHelp() {
   elements.categoryHelp.textContent = `${mall.categoryLabel}: ${mall.categoryPlaceholder}`;
 }
 
-/** 상세수집일 때 종료 페이지 입력 범위를 시작 페이지부터 20페이지로 제한한다. */
+/** 상세수집 모드에 맞춰 종료 페이지 입력 범위를 갱신한다. */
 function updateDetailPageRangeLimit() {
   const isDetail = elements.collectionMode.value === "detail";
+  const isPendingDetail =
+    isDetail && elements.detailTargetMode.value === "pending";
 
   if (!isDetail) {
     elements.pageEnd.min = "0";
@@ -1094,6 +1109,17 @@ function updateDetailPageRangeLimit() {
     elements.pageEnd.title = "";
     elements.pageEndHelp.innerHTML =
       "<strong>0</strong>이면 마지막 페이지를 자동 감지합니다.";
+    return;
+  }
+
+  if (isPendingDetail) {
+    elements.pageEnd.min = "0";
+    elements.pageEnd.removeAttribute("max");
+    elements.pageEnd.required = false;
+    elements.pageEnd.title =
+      "신규·상세 미수집 상품 모드는 페이지 수 제한이 없으며, 0이면 마지막 페이지까지 수집합니다.";
+    elements.pageEndHelp.innerHTML =
+      "<strong>0</strong>이면 마지막 페이지를 자동 감지합니다. 신규·상세 미수집 상품 모드는 20페이지 제한이 없습니다.";
     return;
   }
 
@@ -1108,9 +1134,7 @@ function updateDetailPageRangeLimit() {
     `최대 ${DETAIL_COLLECTION_MAX_PAGES}페이지까지 가능합니다.`;
 
   elements.pageEndHelp.textContent =
-    elements.detailTargetMode.value === "pending"
-      ? `종료 페이지를 직접 입력하세요. 선택 범위에서 신규·상세 미수집 상품을 찾으며, 최대 ${DETAIL_COLLECTION_MAX_PAGES}페이지까지 가능합니다.`
-      : `종료 페이지를 직접 입력하세요. 선택 범위의 모든 상품을 수집하며, 최대 ${DETAIL_COLLECTION_MAX_PAGES}페이지까지 가능합니다.`;
+    `종료 페이지를 직접 입력하세요. 선택 범위의 모든 상품을 수집하며, 최대 ${DETAIL_COLLECTION_MAX_PAGES}페이지까지 가능합니다.`;
 }
 
 function updateCollectionModeGuide() {
@@ -1126,7 +1150,9 @@ function updateCollectionModeGuide() {
   const isPendingDetail = elements.detailTargetMode.value === "pending";
 
   elements.collectionModeHelp.textContent = isDetail
-    ? "상세 수집은 최대 20페이지이며, 목록 페이지별 상세 작업마다 프록시와 브라우저 컨텍스트를 교체합니다."
+    ? isPendingDetail
+      ? "신규·상세 미수집 상품 수집은 페이지 수 제한이 없으며, 종료 페이지가 0이면 마지막 페이지까지 수집합니다."
+      : "전체 상품 상세 수집은 최대 20페이지이며, 목록 페이지별 상세 작업마다 프록시와 브라우저 컨텍스트를 교체합니다."
     : selectedMall === "cheonyu"
       ? "일반 수집은 주문 가능 여부·재고와 함께 장바구니·팝업의 effectivePrice를 갱신합니다."
       : "일반 수집은 목록과 장바구니 기반 주문 가능 여부·재고 데이터를 빠르게 수집합니다.";
