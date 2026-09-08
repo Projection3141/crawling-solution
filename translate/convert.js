@@ -52,7 +52,7 @@ function formatKoreaDate(value = new Date()) {
   return `${parts.year}${parts.month}${parts.day}`;
 }
 
-function formatConvertTime(value = new Date()) {
+function formatKoreaMinute(value = new Date()) {
   const parts = getKoreaDateTimeParts(value);
 
   return [
@@ -65,7 +65,7 @@ function formatConvertTime(value = new Date()) {
 }
 
 function formatKoreaHour(value = new Date()) {
-  return formatConvertTime(value).slice(0, 8);
+  return formatKoreaMinute(value).slice(0, 8);
 }
 
 function findAssignedJson(source, variableName) {
@@ -451,7 +451,7 @@ async function createConversionSnapshot({
   return {
     rate: rateInfo.rate,
     revRate: rateInfo.revRate,
-    convertTime: formatConvertTime(convertedAt),
+    createdAt: convertedAt.toISOString(),
   };
 }
 
@@ -627,7 +627,7 @@ module.exports = {
   createWonToYenRateScheduler,
   ensureCurrentRate,
   fetchCitiJpyRate,
-  formatConvertTime,
+  formatKoreaMinute,
   formatKoreaDate,
   millisecondsUntilNextHour,
   parseCitiJpyRate,

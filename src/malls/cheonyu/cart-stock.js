@@ -107,6 +107,7 @@ function normalizeCheonyuPopupPriceFields(row = {}) {
   const effectivePrice = normalizeEffectivePrice(onePrice, boxPrice);
 
   return {
+    unitPriceAtOne: toPositivePrice(row.unitPriceAtOne) || null,
     addPriceObserved,
     addPrice,
     outerBoxQty,

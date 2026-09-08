@@ -96,6 +96,7 @@ const CHEONYU_OUTPUT_HEADERS = {
     "onePrice",
     "boxPrice",
     "effectivePrice",
+    "unitPriceAtOne",
     "hasBoxDiscount",
     "packageQty",
     "packageUnit",

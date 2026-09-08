@@ -16,6 +16,8 @@ const SOURCE_BASE_URL =
 
 const INTERVAL_MS = 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 60_000;
+const LOGIN_TIMEOUT_MS = 5 * 60_000;
+const MAX_FETCH_ATTEMPTS = 3;
 
 /** 한국 시간 기준 오늘과 1년 전 날짜를 반환한다. */
 function getDateRange() {
@@ -233,6 +235,7 @@ async function uploadShippingRecords(
     getUploadApiUrl(),
     {
       method: "POST",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       headers: {
         Accept:
           "application/json, text/plain, */*",
@@ -251,7 +254,7 @@ async function uploadShippingRecords(
     throw new Error(
       `서버 전송 실패: HTTP ` +
         `${response.status} ` +
-        `${response.statusText()}\n` +
+        `${response.statusText}\n` +
         responseText,
     );
   }
@@ -352,7 +355,7 @@ async function ensureLoggedIn(
     },
     null,
     {
-      timeout: 0,
+      timeout: LOGIN_TIMEOUT_MS,
     },
   );
 
@@ -434,7 +437,7 @@ async function collectAndUploadOnce(
     let lastFetchError = null;
     let fetchAttempt = 0;
 
-    while (shippingRecords.length < 1) {
+    while (shippingRecords.length < 1 && fetchAttempt < MAX_FETCH_ATTEMPTS) {
       fetchAttempt += 1;
 
       try {
@@ -478,13 +481,16 @@ async function collectAndUploadOnce(
         lastFetchError = error;
       }
 
-      if (shippingRecords.length < 1) {
+      if (shippingRecords.length < 1 && fetchAttempt < MAX_FETCH_ATTEMPTS) {
         console.warn(
           `[WARN] [SHIPPING AUTH] 운송정보 재조회 실패 · 5초 후 다시 로그인합니다: ` +
             `${lastFetchError?.message || lastFetchError || "유효 데이터 없음"}`,
         );
         await page.waitForTimeout(5000);
       }
+    }
+    if (shippingRecords.length < 1) {
+      throw lastFetchError || new Error("운송정보를 확인하지 못했습니다. 다음 주기에 재시도합니다.");
     }
 
     console.log(
@@ -626,17 +632,19 @@ function createShippingScheduler({
     });
 
     try {
+      // 운송 로그인 대기·재조회 실패가 이미 수집한 상품의 전송을 막지 않게 한다.
+      const archiveResult = collectionUploadEnabled ? await uploadProductArchive() : {};
       const result = enabled
-        ? await collectAndUploadOnce(
+        ? { ...(await collectAndUploadOnce(
             resolvedProfileDirectory,
             {
-              uploadArchive: collectionUploadEnabled,
+              uploadArchive: false,
             },
-          )
+          )), ...archiveResult }
         : {
             count: 0,
             response: null,
-            ...(await uploadProductArchive()),
+            ...archiveResult,
           };
 
       emitState({

@@ -1925,6 +1925,8 @@ function createMainWindow() {
             ),
             nodeIntegration: false,
             contextIsolation: true,
+            // 최소화 상태에서도 일반·상세 반복 타이머를 정상 실행한다.
+            backgroundThrottling: false,
             sandbox: true,
             webSecurity: true,
             allowRunningInsecureContent: false,

@@ -1,6 +1,7 @@
 // src/malls/ccdome/detail.js
 
 const cheerio = require("cheerio");
+const { getCcdomeSpecLabelJa } = require("./spec-labels");
 const {
   normalizeWhitespace,
   sleep,
@@ -189,7 +190,7 @@ function createSpecRows(itemInfo = {}) {
     })
     .map(([label, value], index) => ({
       labelKo: normalizeWhitespace(label),
-      labelJa: normalizeWhitespace(label),
+      labelJa: getCcdomeSpecLabelJa(normalizeWhitespace(label)),
       valueKo: normalizeWhitespace(value),
       valueJa: normalizeWhitespace(value),
       sortOrder: index * 10,

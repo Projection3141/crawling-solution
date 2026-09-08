@@ -730,6 +730,7 @@ async function collectCcdomeProducts(
   config,
   onProgress = () => { },
   signal,
+  onPageCollected = async () => {},
 ) {
   throwIfAborted(signal);
 
@@ -807,6 +808,7 @@ async function collectCcdomeProducts(
     pageRange.collectedLastPage = pageNo;
     pageRange.collectedPageCount = pageResults.length;
     previousSignature = signature;
+    await onPageCollected({ pageNo, products: result.products, pageRange });
 
     const allProducts = Array.from(productMap.values());
     const targetProductCount = allProducts.filter(

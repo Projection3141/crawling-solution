@@ -939,7 +939,7 @@ function getRepeatIntervalMs(options) {
 }
 
 /** 반복 방식에 따라 현재 시점 이후의 정확한 다음 실행 시각을 계산한다. */
-function getNextRepeatRunAt(options, fromMs = Date.now()) {
+function getNextRepeatRunAt(options, fromMs = Date.now(), anchorMs = fromMs) {
   if (options.repeatScheduleType === "dailyTime") {
     const [hour, minute] = String(options.repeatTime || "09:00")
       .split(":")
@@ -960,7 +960,9 @@ function getNextRepeatRunAt(options, fromMs = Date.now()) {
     return nextRunAt;
   }
 
-  return new Date(fromMs + getRepeatIntervalMs(options));
+  const intervalMs = getRepeatIntervalMs(options);
+  const periods = Math.max(1, Math.floor((fromMs - anchorMs) / intervalMs) + 1);
+  return new Date(anchorMs + periods * intervalMs);
 }
 
 function formatRepeatUnit(unit) {
@@ -1187,7 +1189,7 @@ function updateRepeatScheduleGuide() {
   elements.repeatTimeControl.hidden = !usesDailyTime;
   elements.repeatScheduleHelp.textContent = usesDailyTime
     ? "매일 선택한 시각에 실행합니다. 수집 중 해당 시각이 지나면 다음 날 실행합니다."
-    : "이전 수집이 끝난 뒤 지정한 주기만큼 대기하고 다음 수집을 실행합니다.";
+    : "첫 실행 시각을 기준으로 지정한 주기마다 실행합니다. 수집이 주기를 넘기면 지난 일정은 건너뜁니다.";
 }
 
 /** 수집 시작 IPC를 요청하는 짧은 동안만 시작 버튼을 잠근다. */
@@ -1558,7 +1560,10 @@ function scheduleRepeatRuns(applicationState) {
         repeatValue: 1,
         repeatUnit: "hour",
       };
-    const nextRunAt = getNextRepeatRunAt(executionOptions);
+    plan.anchorAtMs ||= Number(run.startedAtMs) || Date.now();
+    const nextRunAt = plan.retryAtMs
+      ? new Date(plan.retryAtMs)
+      : getNextRepeatRunAt(executionOptions, Date.now(), plan.anchorAtMs);
     const delayMs = Math.max(0, nextRunAt.getTime() - Date.now());
 
     plan.nextRunAt = nextRunAt.toISOString();
@@ -1584,6 +1589,7 @@ function scheduleRepeatRuns(applicationState) {
 
         state.repeatPlans.delete(run.id);
         state.repeatPlans.set(nextRun.id, {
+          anchorAtMs: plan.anchorAtMs,
           basePayload: {
             ...plan.basePayload,
             pageOrder: "forward",
@@ -1597,9 +1603,12 @@ function scheduleRepeatRuns(applicationState) {
         handleStateChanged(await window.collectorApp.getState());
       } catch (error) {
         launchError = error;
+        plan.launchFailureCount = Number(plan.launchFailureCount || 0) + 1;
+        const retryMs = Math.min(300000, 60000 * (2 ** Math.min(plan.launchFailureCount - 1, 3)));
+        plan.retryAtMs = Date.now() + retryMs;
         plan.nextRunAt = null;
         showError(
-          `반복 수집 실행 요청 실패: ${error.message} 다음 일정은 유지됩니다.`,
+          `반복 수집 실행 요청 실패: ${error.message} ${retryMs / 60000}분 후 다시 시도합니다.`,
         );
       } finally {
         state.repeatTimers.delete(run.id);

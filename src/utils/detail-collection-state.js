@@ -8,7 +8,8 @@ const {
 } = require("./product-archive");
 
 const DETAIL_STATE_SCHEMA_VERSION = 1;
-const DETAIL_DATA_SCHEMA_VERSION = 1;
+// 사이트 식별과 썸네일 분리 이전의 상세 성공도 범위 내에서 다시 확인한다.
+const DETAIL_DATA_SCHEMA_VERSION = 3;
 const DETAIL_STATE_PATH = path.join(
   ARCHIVE_DIRECTORY,
   "detail-collection-state.json",
@@ -346,7 +347,11 @@ function recordDetailOutcomes({
         detailDataSchemaVersion: 0,
         lastDetailSuccessAt: null,
       };
-      const detailError = normalizeText(item?.detailError);
+      const detailError = normalizeText(item?.detailError) ||
+        (normalizeText(mall).toLowerCase() === "cheonyu" &&
+          !(Number(item?.consumerPrice) > 0)
+          ? "천유 상세 소비자가를 확인하지 못했습니다."
+          : "");
       const succeeded = detailError === "";
 
       existing.lastDetailAttemptAt =

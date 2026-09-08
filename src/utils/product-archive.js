@@ -3,6 +3,7 @@
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
+const { randomUUID } = require("node:crypto");
 const { version: PACKAGE_VERSION } = require("../../package.json");
 const {
   convertWonToYen,
@@ -28,47 +29,7 @@ const VERSIONED_ARCHIVE_FILE_PATTERN =
 
 let archiveQueue = Promise.resolve();
 
-const PRODUCT_FIELDS = [
-  "id",
-  "barcode",
-  "hsCode",
-  "sku",
-  "slug",
-  "type",
-  "nameKo",
-  "nameJa",
-  "nameEn",
-  "categoryId",
-  "subcategoryId",
-  "brandId",
-  "originalPrice",
-  "yenPrice",
-  "convertTime",
-  "salePrice",
-  "discountRate",
-  "currency",
-  "saleStatus",
-  "stockQuantity",
-  "lowStockThreshold",
-  "stockStatus",
-  "badges",
-  "imageUrls",
-  "thumbnailUrl",
-  "options",
-  "wholesaleEnabled",
-  "descriptionKo",
-  "descriptionJa",
-  "specs",
-  "rating",
-  "reviewCount",
-  "salesCount",
-  "status",
-  "sortOrder",
-  "adminMemo",
-  "version",
-  "createdAt",
-  "updatedAt",
-];
+const { createProduct, PRODUCT_FIELDS, getProductSourceMall, getProductArchiveKey, normalizeProductTimestamp } = require("./product-schema");
 
 const OPTION_FIELDS = [
   "id",
@@ -88,6 +49,7 @@ const GENERAL_FIELDS = new Set([
   "nameJa",
   "nameEn",
   "originalPrice",
+  "wholesalePrice",
   "saleStatus",
   "stockQuantity",
   "lowStockThreshold",
@@ -103,13 +65,16 @@ const DETAIL_FIELDS = new Set([
   "subcategoryId",
   "brandId",
   "originalPrice",
+  "wholesalePrice",
   "salePrice",
   "discountRate",
   "currency",
   "imageUrls",
+  "descriptionImageUrls",
   "thumbnailUrl",
   "descriptionKo",
   "descriptionJa",
+  "descriptionEn",
   "specs",
 ]);
 
@@ -226,47 +191,7 @@ function normalizeImageUrls(value) {
 
 /** 새 상품의 전체 백엔드 구조를 생성한다. */
 function createEmptyProduct(productId) {
-  return {
-    id: productId,
-    barcode: null,
-    hsCode: null,
-    sku: "",
-    slug: "",
-    type: "SINGLE",
-    nameKo: "",
-    nameJa: "",
-    nameEn: "",
-    categoryId: "",
-    subcategoryId: null,
-    brandId: "",
-    originalPrice: null,
-    yenPrice: null,
-    convertTime: null,
-    salePrice: null,
-    discountRate: null,
-    currency: "KRW",
-    saleStatus: "",
-    stockQuantity: null,
-    lowStockThreshold: 10,
-    stockStatus: "",
-    badges: [],
-    imageUrls: [],
-    thumbnailUrl: "",
-    options: {},
-    wholesaleEnabled: false,
-    descriptionKo: "",
-    descriptionJa: "",
-    specs: [],
-    rating: 0,
-    reviewCount: 0,
-    salesCount: 0,
-    status: "PUBLISHED",
-    sortOrder: 0,
-    adminMemo: "",
-    version: 0,
-    createdAt: null,
-    updatedAt: null,
-  };
+  return { ...createProduct(productId), options: {} };
 }
 
 /** 새 옵션의 전체 구조를 생성한다. */
@@ -357,8 +282,15 @@ function normalizeIncomingProduct(product = {}) {
   }
 
   normalized.id = id;
+  normalized.sourceMall = getProductSourceMall(product);
+  // 구버전 환산 시각을 이전한다. 제거된 필드는 PRODUCT_FIELDS에 없어 출력되지 않는다.
+  normalized.createdAt = normalizeProductTimestamp(product.createdAt)
+    || normalizeProductTimestamp(product.convertTime);
+  normalized.updatedAt = normalizeProductTimestamp(product.updatedAt);
+  normalized.slug = "";
   normalized.options = normalizeOptions(product?.options);
   normalized.imageUrls = normalizeImageUrls(normalized.imageUrls);
+  normalized.descriptionImageUrls = normalizeImageUrls(normalized.descriptionImageUrls);
 
   return normalized;
 }
@@ -391,7 +323,7 @@ function normalizeArchiveDocument(value) {
       continue;
     }
 
-    products[normalized.id] = normalized;
+    products[getProductArchiveKey(normalized)] = normalized;
   }
 
   return { products };
@@ -559,7 +491,7 @@ function canUpdateProductField(source, field, value) {
     }
 
     /** 잘못 읽은 0/null 가격으로 기존의 정상 가격을 지우지 않는다. */
-    if (field === "originalPrice") {
+    if (["originalPrice", "wholesalePrice"].includes(field)) {
       return hasFiniteArchiveNumber(value);
     }
 
@@ -571,11 +503,11 @@ function canUpdateProductField(source, field, value) {
       return false;
     }
 
-    if (["imageUrls", "specs"].includes(field)) {
+    if (["imageUrls", "descriptionImageUrls", "specs"].includes(field)) {
       return hasArrayItems(value);
     }
 
-    if (["originalPrice", "salePrice"].includes(field)) {
+    if (["originalPrice", "wholesalePrice", "salePrice"].includes(field)) {
       return hasFiniteArchiveNumber(value);
     }
 
@@ -756,6 +688,7 @@ function mergeProduct(
   stats,
   source,
   conversion,
+  collectedAt,
 ) {
   const inventoryObserved = incomingProduct?.inventoryObserved === true;
   const inventoryUnavailable =
@@ -774,25 +707,6 @@ function mergeProduct(
     ? cloneJson(existingProduct)
     : createEmptyProduct(incoming.id);
   let changed = false;
-
-  /**
-   * A detail-only first collection has no general archive price yet.
-   * Fill that empty value once so yenPrice uses the same originalPrice
-   * that is materialized in the result.
-   */
-  if (
-    source === "detail" &&
-    result.originalPrice === null &&
-    Number.isFinite(Number(incoming.originalPrice)) &&
-    Number(incoming.originalPrice) > 0
-  ) {
-    changed = setChangedField(
-      result,
-      "originalPrice",
-      Number(incoming.originalPrice),
-      stats,
-    ) || changed;
-  }
 
   if (source === "translation") {
     changed = mergeTranslationProductFields(
@@ -832,7 +746,7 @@ function mergeProduct(
        * 상세 수집에서 확인된 메인·상세 이미지 배열을 최신값으로 반영한다.
        * /thumb/ 중복 URL은 imageUrls에서 제외하고 thumbnailUrl로만 관리한다.
        */
-      const value = field === "imageUrls"
+      const value = ["imageUrls", "descriptionImageUrls"].includes(field)
         ? normalizeImageUrls(incoming[field])
         : incoming[field];
 
@@ -879,25 +793,43 @@ function mergeProduct(
   }
 
   result.id = incoming.id;
+  result.sourceMall = incoming.sourceMall || result.sourceMall;
+  if (result.sourceMall) {
+    result.sku = result.sku || `${result.sourceMall.toUpperCase()}-${result.id}`;
+  }
+  result.slug = "";
   result.type = Object.keys(result.options).length > 0
     ? "OPTION"
     : normalizeText(result.type) || "SINGLE";
 
-  if (conversion) {
-    changed = setChangedField(
-      result,
-      "yenPrice",
-      convertWonToYen(
-        result.originalPrice,
-        conversion.rate,
-      ),
-      stats,
-    ) || changed;
+  for (const [priceField, yenFields] of [
+    ["originalPrice", ["yenOriginalsalePrice"]],
+    ["wholesalePrice", ["yenWholesalePrice"]],
+  ]) {
+    // 이번 수집에서 관측한 가격만 환산한다. 일반·상세·번역 병합이
+    // 다른 수집 시점의 원화 가격과 환산값을 함께 바꾸지 않도록 한다.
+    if (!canUpdateProductField(source, priceField, incoming[priceField])) continue;
 
+    if (conversion) {
+      const yen = convertWonToYen(result[priceField], conversion.rate);
+      for (const yenField of yenFields) {
+        changed = setChangedField(result, yenField, yen, stats) || changed;
+      }
+    } else if (result[priceField] !== existingProduct?.[priceField]) {
+      // 환율 조회 실패 시 변경된 원화 가격에 과거 엔화값을 붙이지 않는다.
+      for (const yenField of yenFields) {
+        changed = setChangedField(result, yenField, null, stats) || changed;
+      }
+    }
+  }
+
+  // 환율·가격 관측 여부와 무관하게 일반/상세 수집 저장 시각을 기록한다.
+  // 번역 캐시 갱신은 수집 시각을 변경하지 않는다.
+  if (source === "general" || source === "detail") {
     changed = setChangedField(
       result,
-      "convertTime",
-      conversion.convertTime,
+      result.createdAt ? "updatedAt" : "createdAt",
+      collectedAt,
       stats,
     ) || changed;
   }
@@ -947,7 +879,7 @@ function materializeProduct(product) {
       continue;
     }
 
-    result[field] = cloneJson(source[field]);
+    result[field] = field === "slug" ? "" : cloneJson(source[field]);
   }
 
   return result;
@@ -960,7 +892,12 @@ function archiveToProductArray(archive, productIds = null) {
     : Object.keys(archive?.products || {});
 
   return ids
-    .map((id) => archive?.products?.[id])
+    .map((id) => {
+      if (archive?.products?.[id]) return archive.products[id];
+      const matches = Object.values(archive?.products || {}).filter((item) => item.id === id);
+      if (matches.length > 1) throw new Error(`사이트 구분이 필요한 상품 ID입니다: ${id}`);
+      return matches[0];
+    })
     .filter(Boolean)
     .map((product) => materializeProduct(product));
 }
@@ -971,16 +908,28 @@ async function writeArchiveUnlocked(archive) {
     recursive: true,
   });
 
-  await fs.writeFile(
-    ARCHIVE_PATH,
-    `${JSON.stringify(archiveToProductArray(archive), null, 2)}\n`,
-    "utf8",
-  );
+  const temporaryPath = `${ARCHIVE_PATH}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporaryPath,
+      `${JSON.stringify(archiveToProductArray(archive), null, 2)}\n`, "utf8");
+    await fs.rename(temporaryPath, ARCHIVE_PATH);
+  } finally {
+    await fs.unlink(temporaryPath).catch((error) => {
+      if (error.code !== "ENOENT") console.warn("[ARCHIVE] 임시 파일 정리 실패", error.message);
+    });
+  }
 }
 
 /** archive 문서를 번역기용 상품 배열로 변환한다. */
-function archiveToTranslationItems(archive) {
-  return archiveToProductArray(archive).map((product) => ({
+function archiveToTranslationItems(archive, sourceMall = "") {
+  const products = archiveToProductArray(archive)
+    .filter((product) => !sourceMall || product.sourceMall === sourceMall);
+  const ids = new Set();
+  for (const product of products) {
+    if (ids.has(product.id)) throw new Error("번역 대상에 같은 상품 ID가 있습니다. sourceMall을 지정하세요.");
+    ids.add(product.id);
+  }
+  return products.map((product) => ({
     id: product.id,
     nameKo: normalizeText(product.nameKo),
     nameJa: normalizeText(product.nameJa),
@@ -1006,12 +955,18 @@ function readProductArchive() {
 function updateProductArchive(products, {
   source = "general",
   conversion = null,
+  collectedAt = new Date().toISOString(),
 } = {}) {
   return runWithArchiveLock(async () => {
+    if ((source === "general" || source === "detail") &&
+        (!collectedAt || normalizeProductTimestamp(collectedAt) !== collectedAt)) {
+      throw new TypeError(`Invalid collectedAt: ${collectedAt}`);
+    }
     if (conversion) {
-      if (!/^\d{10}$/.test(normalizeText(conversion.convertTime))) {
+      if (!conversion.createdAt ||
+          normalizeProductTimestamp(conversion.createdAt) !== conversion.createdAt) {
         throw new TypeError(
-          `Invalid convertTime: ${conversion.convertTime}`,
+          `Invalid conversion createdAt: ${conversion.createdAt}`,
         );
       }
 
@@ -1039,17 +994,19 @@ function updateProductArchive(products, {
         continue;
       }
 
-      currentProductIds.push(productId);
+      const productKey = getProductArchiveKey(product);
+      currentProductIds.push(productKey);
 
       const merged = mergeProduct(
-        archive.products[productId],
+        archive.products[productKey],
         product,
         stats,
         source,
         conversion,
+        collectedAt,
       );
 
-      archive.products[productId] = merged.product;
+      archive.products[productKey] = merged.product;
       changed = merged.changed || changed;
 
       if (merged.changed) {

@@ -6,6 +6,7 @@ const OpenAI = require("openai");
 const { zodTextFormat } = require("openai/helpers/zod");
 const { z } = require("zod");
 const { DEFAULT_OPENAI_MODEL } = require("../src/config");
+const { getProductSourceMall } = require("../src/utils/product-schema");
 const {
   ARCHIVE_PATH,
   archiveToTranslationItems,
@@ -301,10 +302,10 @@ function groupInventoryItems(inventoryItems) {
 }
 
 /** 통합 archive에서 번역에 필요한 상품명·옵션명만 읽는다. */
-async function readArchive() {
+async function readArchive(sourceMall = "") {
   const archive = await readProductArchive();
 
-  return archiveToTranslationItems(archive);
+  return archiveToTranslationItems(archive, sourceMall);
 }
 
 /**
@@ -867,17 +868,22 @@ async function translateResultDataInternal(
     outputPath = "",
     signal,
     collectionMode = "general",
+    sourceMall = "",
     openAi,
   } = {},
 ) {
   throwIfAborted(signal);
 
   const inventoryItems = getInventoryItems(json);
+  const inputMalls = Array.from(new Set(inventoryItems.map((item) =>
+    getProductSourceMall(item)).filter(Boolean)));
+  sourceMall = normalizeText(sourceMall || (inputMalls.length === 1 ? inputMalls[0] : "")).toLowerCase();
+  if (inputMalls.length > 1) throw new Error("번역 입력은 사이트별로 분리해야 합니다.");
   const {
     products: groupedProducts,
     skippedOptions,
   } = groupInventoryItems(inventoryItems);
-  const archive = await readArchive();
+  const archive = await readArchive(sourceMall);
   const products = mergeDetailProductsWithArchive(
     groupedProducts,
     archive,
@@ -910,7 +916,7 @@ async function translateResultDataInternal(
   }
 
   const archiveUpdate = await updateProductArchive(
-    currentResults,
+    currentResults.map((product) => ({ ...product, sourceMall })),
     { source: "translation" },
   );
 

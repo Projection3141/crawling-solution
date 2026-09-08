@@ -1,6 +1,7 @@
 //src/malls/cheonyu/site.js
 
 const cheerio = require("cheerio");
+const { readPopupUnitPricesFromDocument } = require("./popup-price");
 const { performance } = require("node:perf_hooks");
 const { fillFirstAvailable } = require("../../utils/browser");
 const {
@@ -2143,6 +2144,7 @@ async function parseAndPreparePopupOptions(
   requestedProducts = [],
   submitToCart = true,
 ) {
+  const unitPricesAtOne = await page.evaluate(readPopupUnitPricesFromDocument);
   const requests = requestedProducts.map((item) => ({
     productId: String(item.productId || ""),
     productName: String(item.productName || "").replace(/\s+/g, " ").trim(),
@@ -2158,7 +2160,7 @@ async function parseAndPreparePopupOptions(
   }));
 
   return page.evaluate(
-    ({ pageNo, requests, defaultOptionQty, lowStockThreshold, submitToCart }) => {
+    ({ pageNo, requests, defaultOptionQty, lowStockThreshold, submitToCart, unitPricesAtOne }) => {
       const normalize = (value) =>
         String(value || "").replace(/\s+/g, " ").trim();
       const normalizeProductLabel = (value) =>
@@ -2179,6 +2181,7 @@ async function parseAndPreparePopupOptions(
         );
       };
       const rows = [];
+      const allOptionRows = Array.from(document.querySelectorAll("tr#inOptionTR"));
       const productIdInputKeys = new Set([
         "qidx",
         "inqidx",
@@ -2370,6 +2373,7 @@ async function parseAndPreparePopupOptions(
             selectable,
             selectedForCart,
             requestedQty: selectedForCart ? quantity : 0,
+            unitPriceAtOne: unitPricesAtOne[allOptionRows.indexOf(tr)] ?? null,
             stockStatus,
             outerBoxQty,
             addPriceObserved: Boolean(
@@ -2401,6 +2405,7 @@ async function parseAndPreparePopupOptions(
       defaultOptionQty: config.optionCartQty || config.cartQty || 1,
       lowStockThreshold: config.lowStockThreshold,
       submitToCart,
+      unitPricesAtOne,
     },
   );
 }

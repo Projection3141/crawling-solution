@@ -27,6 +27,7 @@ async function runCcdome(
   {
     browserType = chromium,
     onProgress = () => { },
+    onCycleArchive,
     signal,
   } = {},
 ) {
@@ -89,6 +90,12 @@ async function runCcdome(
         });
       },
       signal,
+      async ({ pageNo, products, pageRange }) => {
+        if (typeof onCycleArchive === "function") {
+          await onCycleArchive({ cycleNo: pageNo, products, pageRange,
+            inventoryItems: buildAvailabilityInventory(products) });
+        }
+      },
     );
 
     ensureNotAborted();

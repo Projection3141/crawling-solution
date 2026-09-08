@@ -69,6 +69,12 @@ function createNetworkUsageTracker({ label = "수집" } = {}) {
       const requestTypes = new Map();
       const partialBytes = new Map();
       sessions.add(session);
+      page.once("close", () => {
+        requestTypes.clear();
+        partialBytes.clear();
+        sessions.delete(session);
+        void session.detach().catch(() => null);
+      });
 
       session.on("Network.requestWillBeSent", (event) => {
         if (event?.requestId && event?.type) {
@@ -133,7 +139,13 @@ function createNetworkUsageTracker({ label = "수집" } = {}) {
       void trackPage(page, proxyInput);
     };
     context.on?.("page", onPage);
-    contextListeners.push({ context, onPage });
+    const listener = { context, onPage };
+    contextListeners.push(listener);
+    context.once?.("close", () => {
+      context.off?.("page", onPage);
+      const index = contextListeners.indexOf(listener);
+      if (index >= 0) contextListeners.splice(index, 1);
+    });
 
     await Promise.all(
       (context.pages?.() || []).map((page) => trackPage(page, proxyInput)),

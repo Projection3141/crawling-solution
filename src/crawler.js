@@ -636,16 +636,21 @@ async function runCollection(
 
   const files = createRunFiles(config.baseOutDir, config.mall, runId);
   const cycleArchivedProducts = new Map();
+  const missingWholesalePriceIds = new Set();
   let conversionSnapshotPromise = null;
   const getRunConversionSnapshot = () => {
     if (!conversionSnapshotPromise) {
-      conversionSnapshotPromise = createConversionSnapshot({ signal });
+      conversionSnapshotPromise = createConversionSnapshot({ signal }).catch((error) => {
+        throwIfAborted(signal);
+        onProgress({ stage: "exchange-rate", level: "warn",
+          message: `환율 조회 실패: 원화 수집값은 저장하고 엔화 환산은 다음 실행에서 재시도합니다. ${error.message}` });
+        return null;
+      });
     }
 
     return conversionSnapshotPromise;
   };
-  const onCycleArchive = config.mall === "cheonyu"
-    ? async ({
+  const onCycleArchive = async ({
       cycleNo,
       products = [],
       inventoryItems = [],
@@ -661,6 +666,20 @@ async function runCollection(
         translatedItems: [],
         lowStockThreshold: Number(config.lowStockThreshold) || 10,
       });
+      if (config.mall === "cheonyu") {
+        for (const product of cycleArchiveProducts) {
+          if (product.wholesalePrice > 0 || product.inventoryUnavailable) {
+            missingWholesalePriceIds.delete(product.id);
+          } else {
+            missingWholesalePriceIds.add(product.id);
+          }
+        }
+        if (missingWholesalePriceIds.size > 0) {
+          onProgress({ stage: "price-observation", level: "warn",
+            missingWholesalePriceCount: missingWholesalePriceIds.size,
+            message: `천유 ${missingWholesalePriceIds.size}개 상품의 1개 적용가를 확인하지 못했습니다. 기존 가격은 유지하며 다음 일반 수집에서 재확인합니다.` });
+        }
+      }
       const cycleConversion = cycleArchiveProducts.length > 0
         ? await getRunConversionSnapshot()
         : null;
@@ -671,10 +690,9 @@ async function runCollection(
           conversion: cycleConversion,
         },
       );
-      const detailStateObservation = await observeDetailProducts({
-        mall: config.mall,
-        products,
-      });
+      const detailStateObservation = config.mall === "cheonyu"
+        ? await observeDetailProducts({ mall: config.mall, products })
+        : { pendingProductIds: [], path: null };
 
       for (const product of archiveUpdate.currentProducts || []) {
         const productId = String(product?.id || product?.productId || "").trim();
@@ -700,20 +718,20 @@ async function runCollection(
       onProgress({
         stage: "cycle-archived",
         message:
-          `천유 ${cycleNo}차 ${cycleArchiveProducts.length}개 상품의 ` +
-          `장바구니 재고 아카이빙을 완료했습니다.`,
+          `${config.mallLabel || config.mall} ${cycleNo}차 ${cycleArchiveProducts.length}개 상품의 ` +
+          `일반 수집 아카이빙을 완료했습니다.`,
         cycleNo,
         pageRange,
         ...result,
       });
       return result;
-    }
-    : null;
+    };
   const result = await adapter.run(config, {
     onProgress,
     onCycleArchive,
     signal,
   });
+  result.summary.missingWholesalePriceCount = missingWholesalePriceIds.size;
 
   throwIfAborted(signal);
 
@@ -768,6 +786,20 @@ async function runCollection(
     skippedOptions: [],
   };
 
+  // 번역 API 장애와 무관하게 이미 수집한 가격·이미지·스펙을 먼저 보존한다.
+  if (isDetailCollection && (result.detailItems || []).length > 0) {
+    const collectedProducts = await createBackendProducts({
+      collectionMode: "detail", products: result.products || [],
+      inventoryItems: result.inventoryItems || [], detailItems: result.detailItems,
+      lowStockThreshold: Number(config.lowStockThreshold) || 10,
+    });
+    const collectedArchive = await updateProductArchive(collectedProducts, {
+      source: "detail", conversion: await getRunConversionSnapshot(),
+    });
+    writeJson(files.resultJson, collectedArchive.currentProducts);
+    writeJson(files.detailResultJson, collectedArchive.currentProducts);
+  }
+
   if (isDetailCollection && (result.detailItems || []).length > 0) {
     const translationInput = createTranslationInput(
       result,
@@ -794,6 +826,7 @@ async function runCollection(
         outputPath: translatedResultPath,
         signal,
         collectionMode: config.collectionMode,
+        sourceMall: config.mall,
         openAi,
       },
     );
@@ -819,12 +852,12 @@ async function runCollection(
 
   /**
    * Use one exchange-rate/time snapshot for every product in this run.
-   * The archive applies it after merging, so yenPrice is always derived
-   * from the final originalPrice written to the result.
+   * The archive converts each price observed in this collection after merging:
+   * wholesalePrice → yenWholesalePrice, originalPrice → yenOriginalsalePrice
+   * independently of collection timestamps. Unobserved prices retain their conversions.
    */
   const needsConversion =
-    (isDetailCollection && backendProducts.length > 0) ||
-    (config.mall === "cheonyu" && cycleArchivedProducts.size > 0);
+    backendProducts.length > 0 || cycleArchivedProducts.size > 0;
   const conversion = needsConversion
     ? await getRunConversionSnapshot()
     : null;
@@ -893,7 +926,7 @@ async function runCollection(
       detailStateUpdate?.failedProductIds?.length || 0,
     wonToYenRate: conversion?.rate ?? null,
     yenToWonRate: conversion?.revRate ?? null,
-    convertTime: conversion?.convertTime ?? null,
+    conversionSnapshotAt: conversion?.createdAt ?? null,
     outputPath: files.resultJson,
   });
 

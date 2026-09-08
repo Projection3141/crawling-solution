@@ -1,4 +1,6 @@
 /** src/utils/backend-product.js */
+const { createProduct, getProductSourceMall } = require("./product-schema");
+const { getCcdomeSpecLabelJa } = require("../malls/ccdome/spec-labels");
 
 /** 문자열을 공백이 정리된 값으로 변환한다. */
 function normalizeText(value) {
@@ -162,14 +164,19 @@ function getProductImages(detailItem, productItem) {
   const mainImages = uniqueImageUrls([
     detailImagesObject.main_img,
     detailItem.mainImageUrls,
-    detailItem.thumbnailUrl,
     productItem.mainImageUrls,
-    productItem.thumbnailUrl,
     productItem.imageUrl,
+  ]);
+  const thumbnails = uniqueText([
+    detailItem.thumbnailUrl,
+    detailItem.thumbnailImageUrls,
+    productItem.thumbnailUrl,
+    productItem.thumbnailImageUrls,
   ]);
 
   const detailImages = uniqueImageUrls([
     detailImagesObject.detail_img,
+    detailItem.descriptionImageUrls,
     detailItem.detailImageUrls,
     detailItem.introImageUrls,
     detailItem.detailImageUrl,
@@ -183,15 +190,14 @@ function getProductImages(detailItem, productItem) {
 
   const imageUrls = uniqueImageUrls([
     mainImages,
-    detailImages,
     existingImages,
-  ]);
+  ]).filter((url) => !detailImages.includes(url) || mainImages.includes(url));
 
   return {
     mainImages,
     detailImages,
     imageUrls,
-    thumbnailUrl: mainImages[0] || imageUrls[0] || "",
+    thumbnailUrl: thumbnails.find(isThumbnailImageUrl) || thumbnails[0] || mainImages[0] || imageUrls[0] || "",
   };
 }
 
@@ -366,7 +372,7 @@ function isCcdomeProductFieldSpec(label) {
 }
 
 /** 스펙 row 배열을 백엔드 specs 형식으로 정규화한다. */
-function normalizeSpecRows(rows = []) {
+function normalizeSpecRows(rows = [], sourceMall = "") {
   const result = [];
   const seen = new Set();
 
@@ -391,7 +397,9 @@ function normalizeSpecRows(rows = []) {
 
     result.push({
       labelKo,
-      labelJa: normalizeText(row?.labelJa) || labelKo,
+      labelJa: sourceMall === "ccdome"
+        ? getCcdomeSpecLabelJa(labelKo, normalizeText(row?.labelJa) || labelKo)
+        : normalizeText(row?.labelJa) || labelKo,
       valueKo,
       valueJa: normalizeText(row?.valueJa) || valueKo,
       sortOrder:
@@ -420,7 +428,7 @@ function createSpecs(detailItem = {}) {
   }
 
   if (Array.isArray(detailItem?.specRows)) {
-    const specRows = normalizeSpecRows(detailItem.specRows);
+    const specRows = normalizeSpecRows(detailItem.specRows, detailItem.sourceMall);
 
     if (specRows.length > 0) {
       return specRows;
@@ -437,6 +445,7 @@ function createSpecs(detailItem = {}) {
       label,
       value,
     })),
+    detailItem.sourceMall,
   );
 
   if (rawSpecRows.length > 0) {
@@ -452,7 +461,7 @@ function createSpecs(detailItem = {}) {
     { label: "인증", value: detailItem.certification },
     { label: "사용 대상 연령", value: detailItem.targetAge },
     { label: "품질보증기준", value: detailItem.warranty },
-  ]);
+  ], detailItem.sourceMall);
 }
 
 /** 옵션별 번역 Map을 생성한다. */
@@ -542,60 +551,44 @@ function createBackendOptions(
   return Array.from(optionMap.values());
 }
 
-/** 상품의 실제 적용 가격 하나만 반환한다. */
-function getOriginalPrice(
-  collectionMode,
-  inventoryRows,
-  productItem,
-  detailItem,
-) {
-  const sourceMall = normalizeText(
-    inventoryRows.find((item) => item?.sourceMall)?.sourceMall ||
-      productItem?.sourceMall,
-  ).toLowerCase();
+/** 소비자가와 1개 적용 도매가를 수집 출처별로 분리한다. */
+function getProductPrices(collectionMode, inventoryRows, productItem, detailItem) {
+  const sourceMall = getProductSourceMall({
+    id: detailItem.productId || productItem.productId,
+    sourceMall: detailItem.sourceMall || productItem.sourceMall ||
+      inventoryRows.find((item) => item?.sourceMall)?.sourceMall,
+  });
+  const positivePrice = (...values) => values
+    .map(toPriceNumber).find((value) => value !== null && value > 0) ?? null;
 
-  /** 이번 일반 가격 갱신은 천유에만 적용한다. */
-  if (collectionMode === "general" && sourceMall !== "cheonyu") {
-    return null;
+  if (sourceMall === "cheonyu") {
+    return {
+      originalPrice: collectionMode === "detail"
+        ? positivePrice(detailItem.consumerPrice)
+        : null,
+      // 재고 확인용 대량 수량 가격이나 목록 가격으로 대체하지 않는다.
+      wholesalePrice: collectionMode === "general"
+        ? positivePrice(...inventoryRows.map((row) => row.unitPriceAtOne))
+        : null,
+    };
   }
 
-  const firstEffectivePrice = inventoryRows
-    .map((item) => toNullableNumber(item?.effectivePrice))
-    .find((value) => value !== null && value > 0);
-  const firstOnePrice = inventoryRows
-    .map((item) => toNullableNumber(item?.onePrice))
-    .find((value) => value !== null && value > 0);
-
-  const detailSalePrice = findDetailSpecValue(
-    detailItem,
-    ["총 상품금액", "상품금액", "판매가", "총 합계금액"],
-  );
-  const candidates = collectionMode === "general"
-    ? [
-        /** 천유 일반 수집은 팝업/장바구니의 실제 적용 가격을 대표값으로 쓴다. */
-        firstEffectivePrice,
-        firstOnePrice,
-        productItem.price,
-      ]
-    : [
-        /** 상세 수집은 기존처럼 상세페이지 가격을 우선한다. */
-        detailItem.originalPrice,
-        detailItem.salePrice,
-        detailSalePrice,
-        detailItem.consumerPrice,
-        firstOnePrice,
-        productItem.price,
-      ];
-
-  for (const candidate of candidates) {
-    const number = toPriceNumber(candidate);
-
-    if (number !== null && number > 0) {
-      return number;
-    }
+  if (sourceMall === "ccdome") {
+    const price = collectionMode === "detail"
+      ? positivePrice(
+          detailItem.originalPrice, detailItem.salePrice,
+          findDetailSpecValue(detailItem, ["판매가", "총 합계금액"]),
+          productItem.price,
+        )
+      : positivePrice(productItem.price);
+    return { originalPrice: price, wholesalePrice: price };
   }
 
-  return null;
+  // 추가되는 사이트도 명시적으로 관측한 두 가격을 같은 필드에 매핑한다.
+  return {
+    originalPrice: positivePrice(detailItem.originalPrice, productItem.originalPrice),
+    wholesalePrice: positivePrice(detailItem.wholesalePrice, productItem.wholesalePrice),
+  };
 }
 
 /** 옵션 또는 단일 상품의 총재고를 계산한다. */
@@ -689,6 +682,9 @@ if (!isDetail) {
       inventoryRows[0] ||
       {};
     const detailItem = detailMap.get(productId) || {};
+    const sourceMall = getProductSourceMall({ id: productId,
+      sourceMall: detailItem.sourceMall || productItem.sourceMall ||
+        inventoryRows.find((row) => row?.sourceMall)?.sourceMall });
     const translationItem = translationMap.get(productId) || {};
     const productUnavailable = isProductUnavailable(
       productItem,
@@ -738,15 +734,16 @@ if (!isDetail) {
     );
 
     return {
+      ...createProduct(productId),
       id: productId,
+      sourceMall,
+      sku: sourceMall ? `${sourceMall.toUpperCase()}-${productId}` : "",
+      slug: "",
       inventoryObserved: inventoryRows.some(
         (row) => typeof row?.hasOption === "boolean",
       ),
       inventoryUnavailable: productUnavailable,
       barcode: normalizeText(detailItem?.barcode) || null,
-      hsCode: null,
-      sku: "",
-      slug: "",
       type,
       nameKo,
       nameJa,
@@ -754,7 +751,6 @@ if (!isDetail) {
       categoryId: isDetail
         ? getLastCategory(detailItem, productItem)
         : "",
-      subcategoryId: null,
 
       /** 상세 수집에서 확보한 brandHint 값을 백엔드 brandId로 전달한다. */
       brandId: isDetail
@@ -767,15 +763,12 @@ if (!isDetail) {
           )
         : "",
 
-      originalPrice: getOriginalPrice(
+      ...getProductPrices(
         collectionMode,
         inventoryRows,
         productItem,
         detailItem,
       ),
-      salePrice: null,
-      discountRate: null,
-      currency: "KRW",
       saleStatus: getSaleStatus(
         stockStatus,
         productUnavailable,
@@ -783,23 +776,11 @@ if (!isDetail) {
       stockQuantity : stockQuantity,
       lowStockThreshold,
       stockStatus,
-      badges: [],
       imageUrls: images.imageUrls,
+      descriptionImageUrls: images.detailImages,
       thumbnailUrl: images.thumbnailUrl,
       options,
-      wholesaleEnabled: false,
-      descriptionKo: "",
-      descriptionJa: "",
       specs: createSpecs(detailItem),
-      rating: 0,
-      reviewCount: 0,
-      salesCount: 0,
-      status: "PUBLISHED",
-      sortOrder: 0,
-      adminMemo: "",
-      version: 0,
-      createdAt: null,
-      updatedAt: null,
     };
   });
 }
