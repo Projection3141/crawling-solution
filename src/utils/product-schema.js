@@ -87,4 +87,20 @@ function getProductArchiveKey(product = {}) {
   return mall && id ? `${mall}:${id}` : id;
 }
 
-module.exports = { createProduct, PRODUCT_FIELDS, getProductSourceMall, getProductArchiveKey, normalizeProductTimestamp };
+/** SKU는 실제 재고 단위에 부여한다. 옵션 ID 미관측 시 임의 SKU를 만들지 않는다. */
+function applyProductSkus(product) {
+  const mall = getProductSourceMall(product);
+  const id = String(product.id ?? "").trim();
+  const baseSku = mall && id ? `${mall.toUpperCase()}-${id}` : "";
+  const options = Object.values(product.options || {});
+  const hasOptions = product.type === "OPTION" || options.length > 0;
+  if (options.length > 0) product.type = "OPTION";
+  product.sku = hasOptions ? "" : baseSku || product.sku || "";
+  for (const option of options) {
+    const optionId = String(option.id ?? "").trim();
+    option.sku = baseSku && optionId && optionId !== "0" ? `${baseSku}-${optionId}` : "";
+  }
+  return product;
+}
+
+module.exports = { createProduct, PRODUCT_FIELDS, getProductSourceMall, getProductArchiveKey, normalizeProductTimestamp, applyProductSkus };

@@ -29,10 +29,11 @@ const VERSIONED_ARCHIVE_FILE_PATTERN =
 
 let archiveQueue = Promise.resolve();
 
-const { createProduct, PRODUCT_FIELDS, getProductSourceMall, getProductArchiveKey, normalizeProductTimestamp } = require("./product-schema");
+const { createProduct, PRODUCT_FIELDS, getProductSourceMall, getProductArchiveKey, normalizeProductTimestamp, applyProductSkus } = require("./product-schema");
 
 const OPTION_FIELDS = [
   "id",
+  "sku",
   "barcode",
   "name",
   "nameKo",
@@ -198,6 +199,7 @@ function createEmptyProduct(productId) {
 function createEmptyOption(optionId) {
   return {
     id: optionId,
+    sku: "",
     barcode: null,
     name: "",
     nameKo: "",
@@ -292,7 +294,7 @@ function normalizeIncomingProduct(product = {}) {
   normalized.imageUrls = normalizeImageUrls(normalized.imageUrls);
   normalized.descriptionImageUrls = normalizeImageUrls(normalized.descriptionImageUrls);
 
-  return normalized;
+  return applyProductSkus(normalized);
 }
 
 /** 읽은 JSON을 내부 productId key 문서 구조로 변환한다. */
@@ -794,13 +796,11 @@ function mergeProduct(
 
   result.id = incoming.id;
   result.sourceMall = incoming.sourceMall || result.sourceMall;
-  if (result.sourceMall) {
-    result.sku = result.sku || `${result.sourceMall.toUpperCase()}-${result.id}`;
-  }
   result.slug = "";
   result.type = Object.keys(result.options).length > 0
     ? "OPTION"
     : normalizeText(result.type) || "SINGLE";
+  applyProductSkus(result);
 
   for (const [priceField, yenFields] of [
     ["originalPrice", ["yenOriginalsalePrice"]],
@@ -865,10 +865,10 @@ function materializeOption(option) {
 
 /** archive 내부 상품을 요청한 전체 백엔드 객체 형식으로 변환한다. */
 function materializeProduct(product) {
-  const source = {
+  const source = applyProductSkus({
     ...createEmptyProduct(normalizeText(product?.id)),
     ...cloneJson(product),
-  };
+  });
   const result = {};
 
   for (const field of PRODUCT_FIELDS) {

@@ -1,5 +1,5 @@
 /** src/utils/backend-product.js */
-const { createProduct, getProductSourceMall } = require("./product-schema");
+const { createProduct, getProductSourceMall, applyProductSkus } = require("./product-schema");
 const { getCcdomeSpecLabelJa } = require("../malls/ccdome/spec-labels");
 
 /** 문자열을 공백이 정리된 값으로 변환한다. */
@@ -733,11 +733,10 @@ if (!isDetail) {
       translationItem?.nameJa,
     );
 
-    return {
+    return applyProductSkus({
       ...createProduct(productId),
       id: productId,
       sourceMall,
-      sku: sourceMall ? `${sourceMall.toUpperCase()}-${productId}` : "",
       slug: "",
       inventoryObserved: inventoryRows.some(
         (row) => typeof row?.hasOption === "boolean",
@@ -781,7 +780,7 @@ if (!isDetail) {
       thumbnailUrl: images.thumbnailUrl,
       options,
       specs: createSpecs(detailItem),
-    };
+    });
   });
 }
 
