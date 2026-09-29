@@ -97,6 +97,7 @@ const CSV_HEADERS = {
     "saleStatus",
     "price",
     "priceText",
+    "consumerPrice",
     "listMaxStock",
     "listPorderMinus",
     "packageQty",
@@ -637,6 +638,7 @@ async function runCollection(
   const files = createRunFiles(config.baseOutDir, config.mall, runId);
   const cycleArchivedProducts = new Map();
   const missingWholesalePriceIds = new Set();
+  const missingConsumerPriceIds = new Set();
   let conversionSnapshotPromise = null;
   const getRunConversionSnapshot = () => {
     if (!conversionSnapshotPromise) {
@@ -673,11 +675,21 @@ async function runCollection(
           } else {
             missingWholesalePriceIds.add(product.id);
           }
+          if (product.originalPrice > 0) {
+            missingConsumerPriceIds.delete(product.id);
+          } else {
+            missingConsumerPriceIds.add(product.id);
+          }
         }
         if (missingWholesalePriceIds.size > 0) {
           onProgress({ stage: "price-observation", level: "warn",
             missingWholesalePriceCount: missingWholesalePriceIds.size,
-            message: `천유 ${missingWholesalePriceIds.size}개 상품의 1개 적용가를 확인하지 못했습니다. 기존 가격은 유지하며 다음 일반 수집에서 재확인합니다.` });
+            message: `천유 ${missingWholesalePriceIds.size}개 상품의 낱개 도매가를 확인하지 못했습니다. 기존 가격은 유지하며 다음 일반 수집에서 재확인합니다.` });
+        }
+        if (missingConsumerPriceIds.size > 0) {
+          onProgress({ stage: "price-observation", level: "warn",
+            missingConsumerPriceCount: missingConsumerPriceIds.size,
+            message: `천유 ${missingConsumerPriceIds.size}개 상품의 목록 소비자가를 확인하지 못했습니다. 기존 소비자가와 엔화 환산값은 유지하며 다음 수집에서 재확인합니다.` });
         }
       }
       const cycleConversion = cycleArchiveProducts.length > 0

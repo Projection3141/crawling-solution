@@ -551,7 +551,7 @@ function createBackendOptions(
   return Array.from(optionMap.values());
 }
 
-/** 소비자가와 1개 적용 도매가를 수집 출처별로 분리한다. */
+/** 소비자가와 낱개 도매가를 수집 출처별로 분리한다. */
 function getProductPrices(collectionMode, inventoryRows, productItem, detailItem) {
   const sourceMall = getProductSourceMall({
     id: detailItem.productId || productItem.productId,
@@ -563,12 +563,10 @@ function getProductPrices(collectionMode, inventoryRows, productItem, detailItem
 
   if (sourceMall === "cheonyu") {
     return {
-      originalPrice: collectionMode === "detail"
-        ? positivePrice(detailItem.consumerPrice)
-        : null,
-      // 재고 확인용 대량 수량 가격이나 목록 가격으로 대체하지 않는다.
+      originalPrice: positivePrice(productItem.consumerPrice, detailItem.consumerPrice),
+      // 낱개 기본 가격만 사용하며 수량 할인 가격이나 목록 가격으로 대체하지 않는다.
       wholesalePrice: collectionMode === "general"
-        ? positivePrice(...inventoryRows.map((row) => row.unitPriceAtOne))
+        ? positivePrice(...inventoryRows.map((row) => row.onePrice))
         : null,
     };
   }

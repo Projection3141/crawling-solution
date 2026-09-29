@@ -44,10 +44,12 @@ npm start
 
 | 사이트 | 수집·갱신하는 주요 데이터 | 간략한 절차 |
 | --- | --- | --- |
-| 천유 | 상품 ID·이름, 옵션 ID·이름, 구매 가능 수량, 판매·품절 상태, 1개 적용 도매가 | 목록 조회 → 옵션/장바구니 팝업 확인 → 필요한 상품의 장바구니 재고 보완 → 중간 저장·최종 병합 |
+| 천유 | 상품 ID·이름, 옵션 ID·이름, 구매 가능 수량, 판매·품절 상태, 낱개 도매가·소비자가 | 목록에서 소비자가 조회 → 옵션/장바구니 팝업 확인 → 필요한 상품의 장바구니 재고 보완 → 중간 저장·최종 병합 |
 | 과자생각 | 상품 ID·이름, 판매가, 판매중/품절 상태 | 목록 페이지 조회 → 상품별 가격·판매 상태 판독 → 페이지별 저장 → 최종 병합 |
 
 과자생각 일반 수집은 **정확한 재고 개수를 수집하지 않습니다.** `stockQuantity`가 `null`이어도 `saleStatus`, `stockStatus`로 판매·품절 상태를 확인할 수 있습니다.
+
+천유 소비자가는 목록의 각 상품에 있는 `.m_pdt_list_icon .sale`에서 읽습니다. 예를 들어 `45,000원`은 `consumerPrice: 45000`으로 수집하고 `originalPrice`에 반영합니다. 소비자가 갱신을 위한 추가 상세페이지 요청은 없습니다. 소비자가를 읽지 못하면 경고를 표시하고 기존 소비자가와 엔화 환산값을 유지합니다.
 
 ### 상세 수집
 
@@ -67,17 +69,17 @@ npm start
 
 | 필드 | 천유 | 과자생각 |
 | --- | --- | --- |
-| `originalPrice` | 상세페이지 소비자가 | 기존 판매가 |
-| `wholesalePrice` | 일반 수집 팝업에서 수량 1 적용 후 표시된 단가 | `originalPrice`와 같은 판매가 |
+| `originalPrice` | 목록의 소비자가. 목록값이 없고 상세 수집값이 있으면 상세페이지 소비자가로 보완 | 기존 판매가 |
+| `wholesalePrice` | 일반 수집의 낱개 도매가 `onePrice` (팝업의 `inoPrice`, 장바구니의 `inOnePrice`) | `originalPrice`와 같은 판매가 |
 | `currency` | `KRW` | `KRW` |
 | `yenWholesalePrice` | 일반 수집에서 관측한 `wholesalePrice`의 엔화 환산값 | 일반·상세 수집에서 관측한 `wholesalePrice`의 엔화 환산값 |
-| `yenOriginalsalePrice` | 상세 수집에서 관측한 `originalPrice`의 엔화 환산값 | 일반·상세 수집에서 관측한 `originalPrice`의 엔화 환산값 |
+| `yenOriginalsalePrice` | 일반·상세 수집에서 관측한 `originalPrice`의 엔화 환산값 | 일반·상세 수집에서 관측한 `originalPrice`의 엔화 환산값 |
 | `createdAt` | 최초 수집 저장 시각(ISO 8601 UTC). 이후 유지 | 동일 |
 | `updatedAt` | `createdAt`이 있는 상품을 다시 수집·저장한 시각. 최초 저장 시 `null` | 동일 |
 
-예를 들어 천유 소비자가가 8,500원이고 1개 구매 적용가가 5,525원이면 `originalPrice: 8500`, `wholesalePrice: 5525`로 저장됩니다. 더 많이 구매해야 적용되는 할인가는 도매가로 선택하지 않습니다. 환율이 1원당 0.1엔이면 일반 수집에서 `yenWholesalePrice: 553`, 상세 수집에서 `yenOriginalsalePrice: 850`으로 저장합니다. 환산은 기존과 같이 원화 × 환율을 정수 엔 단위로 반올림합니다. 필드명은 `yenOriginalsalePrice` 철자를 그대로 사용합니다.
+예를 들어 천유 소비자가가 8,500원이고 낱개 도매가가 5,525원이면 `originalPrice: 8500`, `wholesalePrice: 5525`로 저장됩니다. `onePrice`에는 수량 할인 가격을 대신 넣지 않으며, 낱개 가격을 확인하지 못하면 기존 도매가를 유지합니다. 수량을 1로 바꾸어 재계산하던 `unitPriceAtOne`은 더 이상 수집하지 않습니다. 환율이 1원당 0.1엔이면 일반 수집에서 `yenWholesalePrice: 560`, `yenOriginalsalePrice: 850`으로 함께 저장합니다. 환산은 원화 × 환율을 10엔 단위로 올림합니다. 예를 들어 1,872엔은 1,880엔으로 저장하고, 이미 10엔 단위인 값은 유지합니다. 필드명은 `yenOriginalsalePrice` 철자를 그대로 사용합니다.
 
-한 실행에서는 같은 환율 스냅샷을 사용하되, 이번에 관측한 가격만 환산합니다. 천유 일반 수집은 기존 소비자가 환산값을 유지하고 상세 단계는 기존 도매가 환산값을 유지합니다. 상세 실행에 포함된 선행 일반 수집에서도 도매가 환산은 수행합니다. 과자생각은 두 원화 가격이 같으므로 두 엔화 필드도 같은 값으로 갱신합니다.
+한 실행에서는 같은 환율 스냅샷을 사용하되, 이번에 관측한 가격만 환산합니다. 천유 일반 수집과 상세 모드의 선행 일반 수집에서 도매가와 소비자가를 함께 갱신합니다. 신규·상세 미수집 모드에서 상세 대상에서 제외된 기존 상품도 목록 소비자가로 갱신됩니다. 과자생각은 두 원화 가격이 같으므로 두 엔화 필드도 같은 값으로 갱신합니다.
 
 환율 조회에 실패하면 원화값은 저장합니다. 원화 가격이 바뀐 항목의 과거 엔화 환산값만 `null`로 비우고, 바뀌지 않은 가격의 환산값은 유지합니다. 다음에 해당 가격을 관측하고 환율 조회에 성공하면 복구합니다. 두 엔화값이 반드시 같은 시점의 환율이라는 의미는 아닙니다. 기존 아카이브에 새 엔화 필드가 없으면 `null`로 시작하며 해당 가격의 다음 수집 때 채워집니다. 결과 JSON·아카이브에서 원화 두 필드와 엔화 두 필드를 짝지어 확인하세요.
 
@@ -122,7 +124,7 @@ npm start
 1. `id`, `sourceMall`, `nameKo`가 해당 상품과 일치하는지 확인합니다.
 2. `originalPrice`, `wholesalePrice`가 위 가격 기준에 맞는지 확인합니다.
 3. `thumbnailUrl`, `imageUrls`, `descriptionImageUrls`에 올바른 이미지가 들어갔는지 확인합니다.
-4. `saleStatus`, `stockStatus`, `stockQuantity`, `options`를 확인합니다. 신규 천유 상품은 일반 수집만 완료한 시점에 소비자가·상세 이미지가 아직 비어 있을 수 있습니다.
+4. `saleStatus`, `stockStatus`, `stockQuantity`, `options`를 확인합니다. 신규 천유 상품은 일반 수집만 완료한 시점에 상세 이미지가 아직 비어 있을 수 있습니다. 소비자가는 일반 수집에서도 확인하며, 확인 실패 시 비어 있을 수 있습니다.
 5. 가격 누락·상세 실패·번역 실패 경고를 확인합니다. 기존값을 보존한 상품은 최신값인지 추가 확인이 필요합니다.
 
 ### 누적 아카이브와 서버 반영
@@ -155,15 +157,15 @@ C:\Users\사용자명\MallCollector\archive\v앱버전_archive.json
 npm run check
 ```
 
-수집·저장·가격·반복 실행 검증 파일이 있는 작업 환경에서는 다음 테스트도 실행할 수 있습니다.
+가격 수집·저장과 상세 이미지 수집은 다음 테스트로 검증할 수 있습니다.
 
 ```powershell
-# 설치된 Chrome을 사용합니다. Playwright Chromium 사용 시 이 설정을 생략합니다.
-$env:TEST_BROWSER_CHANNEL = 'chrome'
-node --test tests/product-data.test.js tests/popup-price.test.js tests/continuous-collection.test.js
+# 설치된 Edge를 사용합니다. Playwright Chromium 사용 시 이 설정을 생략합니다.
+$env:TEST_BROWSER_CHANNEL = 'msedge'
+node --test tests/cheonyu-prices.test.js tests/popup-price.test.js tests/cheonyu-detail-images.test.js
 ```
 
-테스트는 로컬 데이터와 사이트 공개 가격 함수로 수행합니다. 실제 계정의 장기 수집이나 운영 서버 전송을 대신하는 검증은 아닙니다.
+테스트는 로컬 데이터와 테스트용 HTML로 수행합니다. 실제 계정의 장기 수집이나 운영 서버 전송을 대신하는 검증은 아닙니다.
 
 
 <details>

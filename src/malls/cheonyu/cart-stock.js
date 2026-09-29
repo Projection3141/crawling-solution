@@ -103,11 +103,10 @@ function normalizeCheonyuPopupPriceFields(row = {}) {
     .sort((left, right) =>
       right.minimumQty - left.minimumQty || right.order - left.order,
     )[0]?.price || 0;
-  const onePrice = inoPrice || indcPrice || indcPrice2;
+  const onePrice = inoPrice;
   const effectivePrice = normalizeEffectivePrice(onePrice, boxPrice);
 
   return {
-    unitPriceAtOne: toPositivePrice(row.unitPriceAtOne) || null,
     addPriceObserved,
     addPrice,
     outerBoxQty,

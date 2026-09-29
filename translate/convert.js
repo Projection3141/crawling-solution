@@ -471,7 +471,7 @@ function convertWonToYen(originalPrice, rate) {
     throw new TypeError(`Invalid won-to-yen rate: ${rate}`);
   }
 
-  return Math.round(wonPrice * wonToYenRate);
+  return Math.ceil((wonPrice * wonToYenRate) / 10) * 10;
 }
 
 function millisecondsUntilNextHour(value = new Date()) {

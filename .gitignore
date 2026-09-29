@@ -7,4 +7,6 @@ release/
 Thumbs.db
 tests/*
 !tests/cheonyu-detail-images.test.js
+!tests/cheonyu-prices.test.js
+!tests/popup-price.test.js
 docs/

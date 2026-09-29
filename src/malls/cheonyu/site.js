@@ -1,7 +1,6 @@
 //src/malls/cheonyu/site.js
 
 const cheerio = require("cheerio");
-const { readPopupUnitPricesFromDocument } = require("./popup-price");
 const { performance } = require("node:perf_hooks");
 const { fillFirstAvailable } = require("../../utils/browser");
 const {
@@ -155,6 +154,7 @@ const CHEONYU_SITE = {
       productCheck: 'input[name="inPcheck"][id="inPcheck"]',
       productLink: 'a.pLink[href*="/product/view.html?qIDX="]',
       productName: ".m_pdt_list_name",
+      consumerPrice: ".m_pdt_list_icon .sale",
       productImage: "a.pLink img",
       soldOut: ".soldout_bg",
       addButton: "#btn_addCart",
@@ -791,6 +791,7 @@ function parseListHtml(html, pageNo, config) {
     const productUrl = href
       ? new URL(href, config.baseUrl).toString()
       : "";
+    const consumerPrice = toNumber(item.find(selectors.consumerPrice).first().text());
     const packageInfo = collectDetailFields
       ? parsePackageInfo(productName)
       : null;
@@ -809,6 +810,7 @@ function parseListHtml(html, pageNo, config) {
       productId,
       productName,
       productUrl,
+      consumerPrice: Number.isFinite(consumerPrice) && consumerPrice > 0 ? consumerPrice : null,
       imageUrl: "",
       isSoldOut,
       unavailableInCart: false,
@@ -2144,7 +2146,6 @@ async function parseAndPreparePopupOptions(
   requestedProducts = [],
   submitToCart = true,
 ) {
-  const unitPricesAtOne = await page.evaluate(readPopupUnitPricesFromDocument);
   const requests = requestedProducts.map((item) => ({
     productId: String(item.productId || ""),
     productName: String(item.productName || "").replace(/\s+/g, " ").trim(),
@@ -2160,7 +2161,7 @@ async function parseAndPreparePopupOptions(
   }));
 
   return page.evaluate(
-    ({ pageNo, requests, defaultOptionQty, lowStockThreshold, submitToCart, unitPricesAtOne }) => {
+    ({ pageNo, requests, defaultOptionQty, lowStockThreshold, submitToCart }) => {
       const normalize = (value) =>
         String(value || "").replace(/\s+/g, " ").trim();
       const normalizeProductLabel = (value) =>
@@ -2181,7 +2182,6 @@ async function parseAndPreparePopupOptions(
         );
       };
       const rows = [];
-      const allOptionRows = Array.from(document.querySelectorAll("tr#inOptionTR"));
       const productIdInputKeys = new Set([
         "qidx",
         "inqidx",
@@ -2373,7 +2373,6 @@ async function parseAndPreparePopupOptions(
             selectable,
             selectedForCart,
             requestedQty: selectedForCart ? quantity : 0,
-            unitPriceAtOne: unitPricesAtOne[allOptionRows.indexOf(tr)] ?? null,
             stockStatus,
             outerBoxQty,
             addPriceObserved: Boolean(
@@ -2405,7 +2404,6 @@ async function parseAndPreparePopupOptions(
       defaultOptionQty: config.optionCartQty || config.cartQty || 1,
       lowStockThreshold: config.lowStockThreshold,
       submitToCart,
-      unitPricesAtOne,
     },
   );
 }
