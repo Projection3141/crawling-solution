@@ -1,0 +1,18 @@
+Generation method: built-in image_gen
+Reference: user-provided architecture image (visual style only)
+
+Use case: infographic-diagram. Create a polished Korean software architecture image for the MallCollector v1.4.1 user manual. Transform the supplied reference into a NEW correct diagram: use the reference ONLY for visual style (white background, softly tinted column containers, thin blue/purple/green borders, rounded nested cards, black orthogonal directional arrows, simple computer/browser/folder/cloud icons, bottom overview strip). Replace ALL reference content with the following current repository architecture. Landscape 3:2, high resolution, crisp large readable Korean typography. No dense tiny text. Title: "MallCollector v1.4.1 · 전체 아키텍처".
+Four main columns left to right with generous gutters for arrows:
+1 "외부 데이터" containing two cards "쇼핑몰" with "천유닷컴 / 과자생각" and "상품 · 가격 · 재고 · 상세 정보"; "운송 조회" with "KSE" and "운송정보 조회".
+2 widest column "Windows 로컬 앱 · Electron" containing vertically arranged cards:
+"사용자 화면" / "새 수집 · 실행 현황 · 장바구니" / "전송 내역 · 환경설정"
+small connector label "IPC"
+"실행 관리" / "1회 실행 · 반복 예약 · 취소"
+"수집 엔진 · Playwright" / "Chromium 브라우저 자동화" / "일반 수집 / 상세 수집" / "천유 · 과자생각 전용 처리"
+"데이터 정리" / "공통 스키마 · SKU · 가격 · 이미지 URL".
+3 "PC 저장소" with stacked cards "실행별 결과" / "JSON · CSV"; "누적 상품 아카이브" / "v1.4.1_archive.json" / "사이트별 병합 · 임시 파일 후 교체"; "운영 데이터" / "계정 · 프록시 · API 키 설정" / "번역 캐시 · 환율 · 전송 로그".
+4 "외부 연동" cards: "OpenAI API" / "상세 수집 번역"; "씨티은행 환율" / "원화 → 엔화"; "Upload API" / "상품 아카이브 전송" / "운송정보 전송" / "장바구니 요청 목록".
+Below the middle columns place a distinct horizontal purple box "별도 전송 스케줄러" with "앱 실행 직후 · 이후 1시간마다" and "상품 전송 / 운송 전송 개별 ON·OFF". Connect archive to scheduler to Upload API using purple arrows. Connect KSE to scheduler via a clean outer route. Shop data arrows to collection engine; user screen down through IPC to execution management to engine to data normalization to PC results/archive. OpenAI and exchange cards have thin dashed connections with local data processing representing enrichment. For cart use a small note within app "장바구니: 요청 목록 조회 → 사이트에 담기".
+Bottom full-width strip title "전체 흐름" and five connected boxes "사이트 조회" → "상품 수집" → "데이터 정리" → "PC 저장" → "별도 서버 전송".
+Footer note "수집 주기는 사용자가 설정 · 서버 전송은 수집과 별도" plus "이미지는 파일 대신 URL을 저장".
+Do not include any reference claims about Next.js, Vercel, Puppeteer, MongoDB, AWS, Express, payments, ZIP or image file backup. Remote backend internal architecture is outside this repository and must not be invented. API keys only in local settings, no key values or credentials. Avoid ambiguous arrows that suggest hourly collection: hourly applies only to separate transmission. Preserve a professional clear architecture diagram visual, not a screenshot of an app.

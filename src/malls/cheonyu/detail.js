@@ -24,6 +24,18 @@ const {
   withSiteRetry,
 } = require("../../utils/site-safety");
 
+// 상세 본문 ID가 바뀌어도 탭·상세정보 표와의 관계로 이미지 영역을 찾는다.
+const DETAIL_IMAGE_CONTAINERS = [
+  "#viewContent",
+  "#viewPcontent",
+  "#productView #tab_01 .pic",
+  '#productView :has(> .info[alt="제품상세정보"]) > .pic',
+];
+const IMAGE_SOURCE_ATTRIBUTES = [
+  "src", "data-src", "data-original", "data-lazy", "data-url", "lazy",
+];
+const DETAIL_IMAGE_HOSTS = [1, 2, 3, 4, 5].map((number) => `image${number}.cheonyu.com`);
+
 const CHEONYU_DETAIL = {
   selectors: {
     root: "#productView",
@@ -44,12 +56,17 @@ const CHEONYU_DETAIL = {
       "#productView img#mainImg, " +
       "#productView img[id*='mainImage'], " +
       "#productView .pdt_photo img",
-    introImages:
-      "#tab_01 #viewContent img, " +
-      "#viewContent img, " +
-      ".pic#viewContent img, " +
-      "img[src*='image3.cheonyu.com'], " +
-      "img[data-src*='image3.cheonyu.com']",
+    introImageContainers: DETAIL_IMAGE_CONTAINERS.join(", "),
+    introImages: DETAIL_IMAGE_CONTAINERS.map((selector) => `${selector} img`).join(", "),
+    // 상세 영역을 식별하지 못하는 이전 페이지에만 적용한다.
+    legacyIntroImages: DETAIL_IMAGE_HOSTS.flatMap((host) =>
+      [...IMAGE_SOURCE_ATTRIBUTES, "srcset", "data-srcset"].map((attribute) =>
+        `img[${attribute}*='//${host}/']`,
+      ),
+    ).join(", "),
+    excludedIntroImageAreas:
+      "#viewItemWith, #viewBrandPop, #viewSmallPhoto, .small_photo, " +
+      ".photo_wrap, .view_photo, .pdt_photo, .tab_design",
     detailSpecTable: '#productView #tab_01 .info[alt="제품상세정보"] > table',
     detailSpecRows: '#productView #tab_01 .info[alt="제품상세정보"] > table tr',
   },
@@ -107,7 +124,15 @@ function toAbsoluteUrl(value, baseUrl) {
   }
 }
 
-function isUsefulImageUrl(url) {
+function isCheonyuDetailImageUrl(url) {
+  try {
+    return DETAIL_IMAGE_HOSTS.includes(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isUsefulImageUrl(url, { allowExtensionless = false } = {}) {
   const value = String(url || "").trim();
 
   if (!value) return false;
@@ -115,27 +140,27 @@ function isUsefulImageUrl(url) {
   if (value.startsWith("data:")) return false;
   if (/blank|noimg|loading|spinner/i.test(value)) return false;
 
+  // 상세 영역의 img는 파일 확장자가 없는 외부 이미지 서비스도 사용한다.
+  if (allowExtensionless) {
+    try {
+      return ["http:", "https:"].includes(new URL(value).protocol);
+    } catch {
+      return false;
+    }
+  }
+
   return /\.(jpg|jpeg|png|gif|webp)(\?|#|$)/i.test(value) ||
-    value.includes("image3.cheonyu.com");
+    isCheonyuDetailImageUrl(value);
 }
 
-function getImageCandidateUrls($, image, baseUrl) {
+function getImageCandidateUrls($, image, baseUrl, options = {}) {
   const item = $(image);
   const urls = [];
 
-  const attributes = [
-    "src",
-    "data-src",
-    "data-original",
-    "data-lazy",
-    "data-url",
-    "lazy",
-  ];
-
-  for (const attr of attributes) {
+  for (const attr of IMAGE_SOURCE_ATTRIBUTES) {
     const url = toAbsoluteUrl(item.attr(attr), baseUrl);
 
-    if (isUsefulImageUrl(url)) {
+    if (isUsefulImageUrl(url, options)) {
       urls.push(url);
     }
   }
@@ -146,7 +171,7 @@ function getImageCandidateUrls($, image, baseUrl) {
     for (const part of srcset.split(",")) {
       const url = toAbsoluteUrl(part.trim().split(/\s+/)[0], baseUrl);
 
-      if (isUsefulImageUrl(url)) {
+      if (isUsefulImageUrl(url, options)) {
         urls.push(url);
       }
     }
@@ -190,8 +215,7 @@ function parseMainImageUrls($, productId, config) {
       if (
         productId &&
         url.includes(`/${productId}_`) &&
-        !url.includes("image3.cheonyu.com") &&
-        !url.includes("image4.cheonyu.com")
+        !isCheonyuDetailImageUrl(url)
       ) {
         urls.push(url);
       }
@@ -345,13 +369,12 @@ async function prepareDetailImages(page) {
    * placeholder 상태일 수 있으므로 상세 영역까지 스크롤을 내려준다.
    */
   await page
-    .evaluate(async () => {
-      const targets = [
+    .evaluate(async (selectors) => {
+      const targets = Array.from(new Set([
         document.querySelector("#tab_01"),
-        document.querySelector("#viewContent"),
-        document.querySelector(".pic#viewContent"),
+        ...document.querySelectorAll(selectors.introImageContainers),
         document.body,
-      ].filter(Boolean);
+      ].filter(Boolean)));
 
       for (const target of targets) {
         target.scrollIntoView?.({
@@ -364,20 +387,30 @@ async function prepareDetailImages(page) {
 
       window.scrollTo(0, document.body.scrollHeight);
       await new Promise((resolve) => setTimeout(resolve, 700));
-    })
+    }, CHEONYU_DETAIL.selectors)
     .catch(() => null);
 
   await page
-    .waitForSelector(
-      [
-        "#tab_01 #viewContent img[src]",
-        "#viewContent img[src]",
-        ".pic#viewContent img[src]",
-        "img[src*='image3.cheonyu.com']",
-      ].join(", "),
-      {
-        timeout: 8000,
+    .waitForFunction(
+      ({ selectors, attributes }) => {
+        // 이미지 크기와 무관하게 숨김 브라우저에서도 URL의 반영을 기다린다.
+        const hasContainer = document.querySelector(selectors.introImageContainers);
+        const images = document.querySelectorAll(
+          hasContainer ? selectors.introImages : selectors.legacyIntroImages,
+        );
+        return Array.from(images).some((image) =>
+          !image.closest(selectors.excludedIntroImageAreas) &&
+          attributes.some((attribute) => {
+            const value = (image.getAttribute(attribute) || "").trim();
+            return value && !/^data:|blank|noimg|loading|spinner/i.test(value);
+          }),
+        );
       },
+      {
+        selectors: CHEONYU_DETAIL.selectors,
+        attributes: [...IMAGE_SOURCE_ATTRIBUTES, "srcset", "data-srcset"],
+      },
+      { timeout: 8000 },
     )
     .catch(() => null);
 }
@@ -433,18 +466,19 @@ function parseDetailHtml(html, product, config) {
     ),
   ]);
 
+  // 식별한 상세 영역이 비어 있어도 다른 상품의 이미지로 채우지 않는다.
+  const hasIntroContainer = $(selectors.introImageContainers).length > 0;
+  const introSelector = hasIntroContainer
+    ? selectors.introImages
+    : selectors.legacyIntroImages;
   const introImageUrls = unique(
-    [
-      ...$(selectors.introImages)
-        .map((_, element) => getImageCandidateUrls($, element, config.baseUrl))
-        .get()
-        .flat(),
-
-      ...$("img[src*='image3.cheonyu.com'], img[data-src*='image3.cheonyu.com']")
-        .map((_, element) => getImageCandidateUrls($, element, config.baseUrl))
-        .get()
-        .flat(),
-    ],
+    $(introSelector)
+      .filter((_, image) => !$(image).closest(selectors.excludedIntroImageAreas).length)
+      .map((_, image) => getImageCandidateUrls($, image, config.baseUrl, {
+        allowExtensionless: hasIntroContainer,
+      }))
+      .get()
+      .flat(),
   );
 
   const specRows = parseSpecRows($, selectors.detailSpecRows);
@@ -814,4 +848,5 @@ module.exports = {
   collectCheonyuDetails,
   getRandomCheonyuDetailDelayMs,
   parseDetailHtml,
+  prepareDetailImages,
 };
