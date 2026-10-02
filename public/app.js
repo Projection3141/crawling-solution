@@ -140,9 +140,12 @@ const state = {
       running: false,
       lockedAccountKeys: [],
     },
+    productUpload: {
+      enabled: true, running: false, pending: false,
+      lastError: "", lastSuccessAt: null, nextRetryAt: null,
+    },
     shipping: {
       enabled: false,
-      collectionUploadEnabled: true,
       running: false,
       lastError: "",
       lastRecordCount: 0,
@@ -1380,7 +1383,7 @@ function renderShippingState(shipping = {}) {
   }
 
   elements.shippingToggleButton.title = enabled
-    ? "앱 실행 직후 전송하고 이후 1시간마다 반복합니다."
+    ? "전송을 켜면 즉시 실행하고, 작업 종료 1시간 후 다시 실행합니다."
     : "운송정보 자동 전송이 꺼져 있습니다.";
 
   if (elements.shippingStatusText) {
@@ -1391,11 +1394,11 @@ function renderShippingState(shipping = {}) {
 }
 
 /** 수집정보 아카이브 자동 전송 ON/OFF 상태를 표시한다. */
-function renderCollectionUploadState(shipping = {}) {
+function renderCollectionUploadState(upload = {}) {
   if (!elements.collectionUploadToggleButton) return;
 
-  const enabled = shipping.collectionUploadEnabled !== false;
-  const running = shipping.running === true;
+  const enabled = upload.enabled !== false;
+  const running = upload.running === true;
 
   elements.collectionUploadToggleButton.classList.toggle(
     "enabled",
@@ -1409,17 +1412,30 @@ function renderCollectionUploadState(shipping = {}) {
     "aria-pressed",
     String(enabled),
   );
-  elements.collectionUploadToggleButton.textContent = running && enabled
+  elements.collectionUploadToggleButton.textContent = running
     ? "수집정보 서버 전송 중..."
     : `수집정보 서버 전송 ${enabled ? "ON" : "OFF"}`;
-  elements.collectionUploadToggleButton.title = enabled
-    ? "앱 실행 직후 전송하고 이후 1시간마다 아카이브를 전송합니다."
-    : "수집정보 자동 전송이 꺼져 있습니다.";
+  const retryText = upload.nextRetryAt
+    ? new Date(upload.nextRetryAt).toLocaleString("ko-KR", { hour12: false })
+    : "";
+  elements.collectionUploadToggleButton.title = upload.lastError
+    ? `마지막 상품 전송 오류: ${upload.lastError}${retryText ? ` · 재시도: ${retryText}` : ""}`
+    : enabled
+      ? "수집 정상 완료 후 전체 아카이브를 1회 전송합니다. 실패하면 5분 뒤 재시도합니다."
+      : "자동 전송이 꺼져 있습니다. 완료 데이터는 보관하고 ON으로 바꾸면 전송합니다.";
 
   if (elements.collectionUploadStatusText) {
-    elements.collectionUploadStatusText.textContent = enabled
-      ? "수집정보 자동전송 동작 중"
-      : "수집정보 자동전송 중지";
+    elements.collectionUploadStatusText.textContent = running
+      ? "수집정보 전송 중"
+      : !enabled
+        ? (upload.pending ? "수집정보 전송 중지 · 대기 데이터 있음" : "수집정보 자동전송 중지")
+        : upload.lastError
+          ? (retryText ? `상품 전송 오류 · ${retryText} 재시도` : "상품 전송 오류 · 확인 필요")
+          : upload.pending
+            ? "수집정보 전송 대기"
+            : upload.lastSuccessAt
+              ? "수집정보 전송 완료 · 다음 수집 대기"
+              : "수집 완료 후 전송 대기";
   }
 }
 
@@ -1429,7 +1445,7 @@ async function toggleCollectionUploadEnabled() {
   clearSuccess();
 
   const currentEnabled =
-    state.applicationState?.shipping?.collectionUploadEnabled !== false;
+    state.applicationState?.productUpload?.enabled !== false;
   const nextEnabled = !currentEnabled;
 
   elements.collectionUploadToggleButton.disabled = true;
@@ -1948,7 +1964,7 @@ function handleStateChanged(applicationState) {
 
   renderRunList(state.applicationState);
   renderShippingState(state.applicationState.shipping);
-  renderCollectionUploadState(state.applicationState.shipping);
+  renderCollectionUploadState(state.applicationState.productUpload);
   scheduleRepeatRuns(state.applicationState);
 }
 

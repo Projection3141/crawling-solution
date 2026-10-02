@@ -280,6 +280,7 @@ async function requestJsonWithAudit({
 
 /** 상품·테스트는 type/data 객체로, 운송장은 기존 배열 그대로 POST한다. */
 async function postResultJson(type, data, {
+  url = getUploadApiUrl(),
   signal,
   legacyRaw = false,
   timeoutMs = RESULT_UPLOAD_TIMEOUT_MS,
@@ -291,7 +292,7 @@ async function postResultJson(type, data, {
   const payload = legacyRaw ? cleanedData : { type, data: cleanedData };
   const result = await requestJsonWithAudit({
     type,
-    url: getUploadApiUrl(),
+    url,
     payload,
     signal,
     timeoutMs,

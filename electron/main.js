@@ -47,6 +47,7 @@ const {
 const {
     createShippingScheduler,
 } = require("../src/shipping-scheduler");
+const { createProductUploadScheduler } = require("../src/product-upload-scheduler");
 const { loadEnvironment } = require("./environment");
 const { createCredentialStore } = require("./credential-store");
 const {
@@ -132,6 +133,7 @@ let closePromptOpen = false;
 let quitAfterRun = false;
 let allowImmediateQuit = false;
 let shippingScheduler = null;
+let productUploadScheduler = null;
 let wonToYenRateScheduler = null;
 let credentialStore = null;
 
@@ -295,6 +297,10 @@ function createPublicApplicationState() {
             running: Boolean(activeCartUpload),
             startedAtMs: activeCartUpload?.startedAtMs || null,
             lockedAccountCount: cartAccountLocks.size,
+        },
+        productUpload: productUploadScheduler?.getState() || {
+            enabled: true, running: false, pending: false,
+            nextRetryAt: null, lastSuccessAt: null, lastError: "",
         },
         shipping: shippingScheduler?.getState() || {
             enabled: false,
@@ -1249,6 +1255,7 @@ async function executeCollection(run, config) {
             },
         });
 
+        run.controller.signal.throwIfAborted();
         const resultDirectory = path.dirname(result.files.inventory);
         const finishedAtMs = Date.now();
         const excludedProductCount = Math.max(
@@ -1283,6 +1290,13 @@ async function executeCollection(run, config) {
                 elapsedText: formatMs(finishedAtMs - run.startedAtMs),
             },
         });
+        // 최종 아카이브·결과 파일 저장이 성공한 실행만 전송 대기열에 넣는다.
+        // 서버 장애는 수집 성공을 실패로 바꾸지 않고 전송 상태/내역으로 표시한다.
+        try {
+            await productUploadScheduler?.notifyCollectionCompleted();
+        } catch (error) {
+            console.error("[PRODUCT UPLOAD QUEUE]", getErrorMessage(error));
+        }
     } catch (error) {
         const canceled =
             run.controller.signal.aborted ||
@@ -1801,7 +1815,7 @@ function registerIpcHandlers() {
             }
 
             if (typeof payload?.collectionUploadEnabled === "boolean") {
-                return shippingScheduler.setCollectionUploadEnabled(
+                return productUploadScheduler.setEnabled(
                     payload.collectionUploadEnabled,
                 );
             }
@@ -2081,6 +2095,11 @@ async function bootstrap() {
             },
         });
 
+    productUploadScheduler = createProductUploadScheduler({
+        statePath: path.join(environmentInfo.userDataDir, "product-upload-state.json"),
+        onStateChanged: () => emitState(),
+    });
+
     wonToYenRateScheduler =
         createWonToYenRateScheduler();
 
@@ -2088,6 +2107,7 @@ async function bootstrap() {
     registerIpcHandlers();
     createMainWindow();
 
+    await productUploadScheduler.start();
     shippingScheduler.start();
     wonToYenRateScheduler.start();
 }
@@ -2144,6 +2164,7 @@ if (isSquirrelStartup) {
 
         app.on("before-quit", () => {
             shippingScheduler?.stop();
+            productUploadScheduler?.stop();
             wonToYenRateScheduler?.stop();
         });
 

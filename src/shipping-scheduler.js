@@ -1,13 +1,8 @@
 // src/shipping-scheduler.js
-// 목적: KSE 운송장을 수집·전송하고 상품 아카이브와 운송장 전송의 주기 실행을 관리한다.
+// 목적: KSE 운송장을 수집·전송하고 운송장만 1시간 간격으로 반복 실행한다.
 
 const path = require("node:path");
 const { chromium } = require("playwright");
-const {
-  archiveToProductArray,
-  readProductArchive,
-  ARCHIVE_PATH,
-} = require("./utils/product-archive");
 const {
   postResultJson,
 } = require("./utils/result-uploader");
@@ -239,25 +234,6 @@ async function uploadShippingRecords(
   return result.response;
 }
 
-/** 현재 통합 상품 아카이브 전체를 업로더에 POST한다. */
-async function uploadProductArchive() {
-  const archive =
-    await readProductArchive();
-  const archiveProducts =
-    archiveToProductArray(archive);
-  const archiveResponse =
-    await postResultJson(
-      "아카이브",
-      archiveProducts,
-      { archiveRef: ARCHIVE_PATH },
-    );
-
-  return {
-    archiveCount: archiveProducts.length,
-    archiveResponse,
-  };
-}
-
 /**
  * 세션이 없으면 표시된 브라우저에서 사용자의 로그인을 기다린다.
  *
@@ -345,7 +321,6 @@ async function ensureLoggedIn(
 async function collectAndUploadOnce(
   profileDirectory,
   {
-    uploadArchive = true,
     account = null,
   } = {},
 ) {
@@ -474,19 +449,9 @@ async function collectAndUploadOnce(
         shippingRecords,
       );
 
-    const archiveUpload = uploadArchive
-      ? await uploadProductArchive()
-      : {
-          archiveCount: 0,
-          archiveResponse: null,
-        };
-
     console.log(
       `[SHIPPING UPLOAD] ` +
-        `${shippingRecords.length}건 서버 전송 완료 · ` +
-        (uploadArchive
-          ? `아카이브 ${archiveUpload.archiveCount}개 전송 완료`
-          : "수집정보 전송 OFF"),
+        `${shippingRecords.length}건 서버 전송 완료`,
     );
 
     return {
@@ -494,10 +459,6 @@ async function collectAndUploadOnce(
         shippingRecords.length,
       response:
         uploadResult,
-      archiveCount:
-        archiveUpload.archiveCount,
-      archiveResponse:
-        archiveUpload.archiveResponse,
     };
   } finally {
     await context.close();
@@ -505,13 +466,12 @@ async function collectAndUploadOnce(
 }
 
 /**
- * 앱 실행 시 즉시 한 번 실행하고,
- * 완료 여부와 관계없이 1시간 후 다시 실행하는 스케줄러다.
+ * 운송장 전송을 켜면 즉시 한 번 실행하고,
+ * 성공·실패에 관계없이 작업 종료 1시간 후 다시 실행한다.
  */
 function createShippingScheduler({
   profileDirectory,
   getAccount = () => null,
-  uploadProducts = uploadProductArchive,
   collectShipping = collectAndUploadOnce,
   onStateChanged = () => {},
 }) {
@@ -521,7 +481,6 @@ function createShippingScheduler({
     );
 
   let enabled = false;
-  let collectionUploadEnabled = true;
   let running = false;
   let timer = null;
   let stopped = false;
@@ -537,7 +496,6 @@ function createShippingScheduler({
   ) {
     onStateChanged({
       enabled,
-      collectionUploadEnabled,
       running,
       ...patch,
     });
@@ -548,6 +506,7 @@ function createShippingScheduler({
       clearTimeout(timer);
       timer = null;
     }
+    nextRunAt = null;
   }
 
   function scheduleNext() {
@@ -555,7 +514,7 @@ function createShippingScheduler({
 
     if (
       stopped ||
-      (!enabled && !collectionUploadEnabled)
+      !enabled
     ) {
       return;
     }
@@ -579,7 +538,7 @@ function createShippingScheduler({
   async function runOnce() {
     if (
       stopped ||
-      (!enabled && !collectionUploadEnabled) ||
+      !enabled ||
       running
     ) {
       return;
@@ -595,30 +554,9 @@ function createShippingScheduler({
     });
 
     try {
-      // 운송 로그인 대기·재조회 실패가 이미 수집한 상품의 전송을 막지 않게 한다.
-      const failures = [];
-      const runProducts = collectionUploadEnabled;
-      const runShipping = enabled;
-      let result = { count: 0 };
-      if (runProducts) {
-        try {
-          result = { ...result, ...await uploadProducts() };
-        } catch (error) {
-          failures.push(`상품 전송: ${error?.message || String(error)}`);
-        }
-      }
-      if (runShipping) {
-        try {
-          const shippingResult = await collectShipping(resolvedProfileDirectory, {
-            uploadArchive: false, account: await getAccount(),
-          });
-          result = { ...result, count: shippingResult.count };
-          lastRecordCount = shippingResult.count;
-        } catch (error) {
-          failures.push(`운송장 전송: ${error?.message || String(error)}`);
-        }
-      }
-      if (failures.length) throw new Error(failures.join(" / "));
+      const result = await collectShipping(resolvedProfileDirectory, {
+        account: await getAccount(),
+      });
 
       emitState({
         lastError: "",
@@ -665,31 +603,13 @@ function createShippingScheduler({
        * OFF에서 ON으로 바꾸면 즉시 한 번 실행한다.
        */
       void runOnce();
-    } else if (collectionUploadEnabled) {
-      scheduleNext();
-    }
-  }
-
-  function setCollectionUploadEnabled(
-    nextEnabled,
-  ) {
-    collectionUploadEnabled =
-      nextEnabled === true;
-
-    clearTimer();
-    emitState();
-
-    if (collectionUploadEnabled) {
-      void runOnce();
-    } else if (enabled) {
-      scheduleNext();
     }
   }
 
   function start() {
     stopped = false;
 
-    if (enabled || collectionUploadEnabled) {
+    if (enabled) {
       /**
        * Electron 앱이 켜지면 즉시 한 번 실행한다.
        */
@@ -706,11 +626,9 @@ function createShippingScheduler({
     start,
     stop,
     setEnabled,
-    setCollectionUploadEnabled,
     runOnce,
     getState: () => ({
       enabled,
-      collectionUploadEnabled,
       running,
       lastStartedAt,
       lastFinishedAt,
