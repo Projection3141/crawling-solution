@@ -297,3 +297,154 @@ test("천유 외 쇼핑몰에서는 special이 null이며 천유 마크 갱신 �
   const result = await f.updateProductArchive(products, { source: "detail" });
   assert.equal(result.currentProducts[0].special, null);
 });
+
+test("전체 일반 수집의 미관측 후보는 판매 상태만 HIDDEN으로 저장하고 전송 결과에도 포함한다", async (t) => {
+  const createdAt = "2026-10-01T00:00:00.000Z";
+  const collectedAt = "2026-10-02T00:00:00.000Z";
+  const f = fixture(t, { cheonyu: [
+    { id: "1", sourceMall: "cheonyu", nameKo: "관측 상품", saleStatus: "ON_SALE" },
+    { id: "2", sourceMall: "cheonyu", nameKo: "미관측 상품", saleStatus: "SOLD_OUT",
+      createdAt, version: 3, stockQuantity: 8, stockStatus: "IN_STOCK", categoryId: "152",
+      special: "핫템", descriptionImageUrls: ["https://example.test/detail.jpg"],
+      options: [{ id: "red", nameKo: "빨강", stockQuantity: 8, status: "ACTIVE" }] },
+  ], ccdome: [] });
+  const before = f.archiveToProductArray(await f.readProductArchive()).find((p) => p.id === "2");
+  const result = await f.updateProductArchive([
+    { id: "1", sourceMall: "cheonyu", nameKo: "관측 상품", inventoryObserved: true, saleStatus: "ON_SALE" },
+  ], { source: "general", collectedAt, missingProductScan: {
+    startedAt: "2026-10-01T23:00:00.000Z",
+    sourceMall: "cheonyu", candidateProductIds: ["1", "2", "2"], observedProductIds: ["1"],
+  } });
+  const hidden = result.currentProducts.find((p) => p.id === "2");
+  assert.deepEqual(hidden, { ...before, saleStatus: "HIDDEN", updatedAt: collectedAt });
+  assert.deepEqual(f.readStored().cheonyu.find((p) => p.id === "2"), hidden);
+  assert.deepEqual(result.currentProducts.map((p) => p.id), ["1", "2"]);
+  assert.equal(result.stats.hiddenProductCount, 1);
+  assert.equal(result.stats.missingProductCount, 1);
+  assert.ok(result.stats.changedProductIds.includes("2"));
+  assert.equal(JSON.parse(JSON.stringify({ type: "아카이브", data: result.currentProducts })).data[1].saleStatus, "HIDDEN");
+});
+
+test("전체 수집이라도 타 쇼핑몰·실행 후 추가 상품·현재 관측 상품은 숨기지 않는다", async (t) => {
+  const f = fixture(t, { cheonyu: [
+    { id: "1", sourceMall: "cheonyu", saleStatus: "ON_SALE" },
+    { id: "2", sourceMall: "cheonyu", saleStatus: "SOLD_OUT" },
+    { id: "3", sourceMall: "cheonyu", saleStatus: "ON_SALE" },
+  ], ccdome: [{ id: "2", sourceMall: "ccdome", saleStatus: "ON_SALE" }] });
+  // 시작 후보에 없던 3은 동시 수집이 추가했을 수 있고, 1은 목록에만 관측될 수 있다.
+  const result = await f.updateProductArchive([], { source: "general", missingProductScan: {
+    startedAt: "2026-10-01T23:00:00.000Z",
+    sourceMall: "cheonyu", candidateProductIds: ["1", "2", "absent"], observedProductIds: ["1"],
+  } });
+  assert.deepEqual(result.currentProducts.map((p) => [p.sourceMall, p.id, p.saleStatus]), [
+    ["cheonyu", "2", "HIDDEN"],
+  ]);
+  const stored = f.readStored();
+  assert.equal(stored.cheonyu.find((p) => p.id === "1").saleStatus, "ON_SALE");
+  assert.equal(stored.cheonyu.find((p) => p.id === "3").saleStatus, "ON_SALE");
+  assert.equal(stored.ccdome[0].saleStatus, "ON_SALE");
+  assert.equal(stored.cheonyu.length, 3);
+});
+
+test("숨김 판정 옵션이 없는 일반 수집과 상세·번역은 누락 상품을 유지한다", async (t) => {
+  const f = fixture(t, { cheonyu: [{ id: "1", sourceMall: "cheonyu", saleStatus: "ON_SALE" }], ccdome: [] });
+  const missingProductScan = { sourceMall: "cheonyu", candidateProductIds: ["1"], observedProductIds: [],
+    startedAt: "2026-10-01T23:00:00.000Z" };
+  for (const options of [{ source: "general" }, { source: "detail", missingProductScan }, { source: "translation", missingProductScan }]) {
+    const result = await f.updateProductArchive([], options);
+    assert.deepEqual(result.currentProducts, []);
+    assert.equal(result.stats.hiddenProductCount, 0);
+    assert.equal(f.readStored().cheonyu[0].saleStatus, "ON_SALE");
+  }
+});
+
+test("이미 HIDDEN인 누락 상품도 전송 재시도에 포함하되 변경 시각은 유지한다", async (t) => {
+  const createdAt = "2026-10-01T00:00:00.000Z";
+  const updatedAt = "2026-10-01T01:00:00.000Z";
+  const f = fixture(t, { cheonyu: [{ id: "1", sourceMall: "cheonyu", saleStatus: "HIDDEN", createdAt, updatedAt }], ccdome: [] });
+  const result = await f.updateProductArchive([], { collectedAt: "2026-10-02T00:00:00.000Z", missingProductScan: {
+    startedAt: "2026-10-01T23:00:00.000Z",
+    sourceMall: "cheonyu", candidateProductIds: ["1", "1"], observedProductIds: [],
+  } });
+  assert.equal(result.currentProducts.length, 1);
+  assert.equal(result.currentProducts[0].saleStatus, "HIDDEN");
+  assert.equal(result.currentProducts[0].updatedAt, updatedAt);
+  assert.equal(result.stats.hiddenProductCount, 0);
+  assert.equal(result.stats.missingProductCount, 1);
+  assert.equal(result.stats.unchangedProductCount, 1);
+  assert.deepEqual(result.stats.changedProductIds, []);
+});
+
+test("관측 ID와 입력 상품이 불일치해도 실제 병합한 상품은 숨기지 않고 중복 전송하지 않는다", async (t) => {
+  const item = { id: "1", sourceMall: "cheonyu", saleStatus: "ON_SALE" };
+  const f = fixture(t, { cheonyu: [item], ccdome: [] });
+  const result = await f.updateProductArchive([item, item], { missingProductScan: {
+    startedAt: "2026-10-01T23:00:00.000Z",
+    sourceMall: "cheonyu", candidateProductIds: ["1"], observedProductIds: [],
+  } });
+  assert.equal(result.currentProducts.length, 1);
+  assert.equal(result.currentProducts[0].saleStatus, "ON_SALE");
+  assert.equal(result.stats.hiddenProductCount, 0);
+});
+
+test("잘못된 누락 판정 정보는 아카이브를 바꾸지 않는다", async (t) => {
+  const f = fixture(t, { cheonyu: [{ id: "1", sourceMall: "cheonyu", saleStatus: "ON_SALE" }], ccdome: [] });
+  const before = fs.readFileSync(f.ARCHIVE_PATH, "utf8");
+  for (const missingProductScan of [
+    {},
+    { sourceMall: "cheonyu", candidateProductIds: ["1"], startedAt: "2026-10-01T23:00:00.000Z" },
+    { sourceMall: "", candidateProductIds: ["1"], observedProductIds: [], startedAt: "2026-10-01T23:00:00.000Z" },
+    { sourceMall: "cheonyu", candidateProductIds: [1], observedProductIds: [], startedAt: "2026-10-01T23:00:00.000Z" },
+    { sourceMall: "cheonyu", candidateProductIds: ["1"], observedProductIds: [] },
+    { sourceMall: "cheonyu", candidateProductIds: ["1"], observedProductIds: [], startedAt: "invalid" },
+  ]) {
+    await assert.rejects(f.updateProductArchive([], { missingProductScan }), /Invalid missingProductScan/);
+    assert.equal(fs.readFileSync(f.ARCHIVE_PATH, "utf8"), before);
+  }
+});
+
+test("숨긴 상품이 일반 목록에 재등장하면 재고 수집 실패에도 판매 상태만 복원한다", async (t) => {
+  for (const saleStatus of ["ON_SALE", "SOLD_OUT"]) {
+    const item = { id: "1", sourceMall: "cheonyu", saleStatus: "HIDDEN", stockQuantity: 7,
+      stockStatus: "IN_STOCK", options: [{ id: "red", stockQuantity: 7, status: "ACTIVE" }] };
+    const f = fixture(t, { cheonyu: [item], ccdome: [] });
+    const result = await f.updateProductArchive([{ id: "1", sourceMall: "cheonyu", saleStatus,
+      listingObserved: true, inventoryObserved: false, inventoryUnavailable: false,
+      stockQuantity: null, stockStatus: "", type: "SINGLE", options: [],
+    }]);
+    const product = result.currentProducts[0];
+    assert.equal(product.saleStatus, saleStatus);
+    assert.equal(product.stockQuantity, 7);
+    assert.equal(product.stockStatus, "IN_STOCK");
+    assert.equal(product.options[0].stockQuantity, 7);
+    assert.equal(product.type, "OPTION");
+    assert.equal(Object.hasOwn(product, "listingObserved"), false);
+    assert.equal(Object.hasOwn(f.readStored().cheonyu[0], "listingObserved"), false);
+  }
+});
+
+test("재고와 목록을 관측하지 못했거나 상세·번역만 실행하면 HIDDEN을 해제하지 않는다", async (t) => {
+  const item = { id: "1", sourceMall: "cheonyu", saleStatus: "HIDDEN" };
+  const f = fixture(t, { cheonyu: [item], ccdome: [] });
+  for (const [source, listingObserved] of [["general", false], ["detail", true], ["translation", true]]) {
+    const result = await f.updateProductArchive([{ ...item, saleStatus: "ON_SALE", listingObserved }], { source });
+    assert.equal(result.currentProducts[0].saleStatus, "HIDDEN");
+  }
+});
+
+test("전체 수집 시작 이후 다른 실행이 생성하거나 다시 확인한 후보는 숨기지 않는다", async (t) => {
+  const before = "2026-10-01T00:00:00.000Z";
+  const startedAt = "2026-10-02T00:00:00.000Z";
+  const later = "2026-10-02T00:01:00.000Z";
+  const f = fixture(t, { cheonyu: [
+    { id: "1", sourceMall: "cheonyu", saleStatus: "ON_SALE", createdAt: before, updatedAt: later },
+    { id: "2", sourceMall: "cheonyu", saleStatus: "ON_SALE", createdAt: later },
+    { id: "3", sourceMall: "cheonyu", saleStatus: "ON_SALE", createdAt: before },
+  ], ccdome: [] });
+  const result = await f.updateProductArchive([], { collectedAt: "2026-10-02T01:00:00.000Z", missingProductScan: {
+    sourceMall: "cheonyu", candidateProductIds: ["1", "2", "3"], observedProductIds: [], startedAt,
+  } });
+  assert.deepEqual(result.currentProducts.map((p) => p.id), ["3"]);
+  assert.equal(result.stats.hiddenProductCount, 1);
+  assert.deepEqual(f.readStored().cheonyu.map((p) => p.saleStatus), ["ON_SALE", "ON_SALE", "HIDDEN"]);
+});

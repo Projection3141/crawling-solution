@@ -505,7 +505,59 @@ function createStats(source) {
     skippedOptionCount: 0,
     changedFieldCount: 0,
     changedProductIds: [],
+    hiddenProductCount: 0,
+    missingProductCount: 0,
   };
+}
+
+/** 전체 일반 수집이 확인한 시작 시점 후보와 실제 관측 ID만 숨김 판정에 사용한다. */
+function normalizeMissingProductScan(value) {
+  if (value === null || value === undefined) return null;
+  const sourceMall = typeof value.sourceMall === "string"
+    ? normalizeText(value.sourceMall).toLowerCase()
+    : "";
+  if (!sourceMall || !value.startedAt || normalizeProductTimestamp(value.startedAt) !== value.startedAt ||
+      ![value.observedProductIds, value.candidateProductIds].every(
+    (ids) => Array.isArray(ids) && ids.every((id) => typeof id === "string" && hasText(id)),
+  )) {
+    throw new TypeError("Invalid missingProductScan: sourceMall, startedAt and product ID arrays are required");
+  }
+  return {
+    sourceMall,
+    startedAt: value.startedAt,
+    observedProductIds: new Set(value.observedProductIds.map(normalizeText)),
+    candidateProductIds: new Set(value.candidateProductIds.map(normalizeText)),
+  };
+}
+
+/** 미관측 기존 상품의 판매 상태만 바꾸고 전송 재시도를 위해 이미 숨긴 상품도 반환한다. */
+function markMissingProductsHidden(archive, scan, currentProductIds, stats, collectedAt) {
+  if (!scan) return;
+  const currentKeys = new Set(currentProductIds);
+  for (const id of scan.candidateProductIds) {
+    const productKey = getProductArchiveKey({ id, sourceMall: scan.sourceMall });
+    const product = archive.products[productKey];
+    if (!product || getProductSourceMall(product) !== scan.sourceMall ||
+        scan.observedProductIds.has(id) || currentKeys.has(productKey)) {
+      continue;
+    }
+    // 같은 몰의 다른 실행이 이후에 확인한 상품은 이 실행의 누락으로 덮지 않는다.
+    if ([product.createdAt, product.updatedAt].some((timestamp) => timestamp && timestamp > scan.startedAt)) {
+      continue;
+    }
+
+    stats.missingProductCount += 1;
+    if (setChangedField(product, "saleStatus", "HIDDEN", stats)) {
+      setChangedField(product, product.createdAt ? "updatedAt" : "createdAt", collectedAt, stats);
+      stats.hiddenProductCount += 1;
+      stats.updatedProductCount += 1;
+      stats.changedProductIds.push(id);
+    } else {
+      stats.unchangedProductCount += 1;
+    }
+    currentProductIds.push(productKey);
+    currentKeys.add(productKey);
+  }
 }
 
 /** 필드 하나를 값이 실제로 달라졌을 때만 갱신한다. */
@@ -789,11 +841,14 @@ function mergeProduct(
         continue;
       }
 
+      // 목록에 재등장한 HIDDEN 상품은 판매 상태만 복원하고 미관측 재고는 보존한다.
       if (
         source === "general" &&
         !inventoryObserved &&
         !inventoryUnavailable &&
-        ["type", "stockQuantity", "stockStatus", "saleStatus"].includes(field)
+        ["type", "stockQuantity", "stockStatus", "saleStatus"].includes(field) &&
+        !(field === "saleStatus" && result.saleStatus === "HIDDEN" &&
+          incomingProduct?.listingObserved === true)
       ) {
         continue;
       }
@@ -1040,6 +1095,7 @@ function updateProductArchive(products, {
   source = "general",
   conversion = null,
   collectedAt = new Date().toISOString(),
+  missingProductScan = null,
 } = {}) {
   return runWithArchiveLock(async () => {
     if ((source === "general" || source === "detail") &&
@@ -1064,6 +1120,7 @@ function updateProductArchive(products, {
       }
     }
 
+    const scan = source === "general" ? normalizeMissingProductScan(missingProductScan) : null;
     const archive = await readArchiveUnlocked();
     const stats = createStats(source);
     const currentProductIds = [];
@@ -1098,6 +1155,9 @@ function updateProductArchive(products, {
       }
     }
 
+    const inputProductCount = currentProductIds.length;
+    markMissingProductsHidden(archive, scan, currentProductIds, stats, collectedAt);
+
     /**
      * 이전 배열·wrapper 형식 archive도 한 번의 실행으로
      * 쇼핑몰별 배열 형식으로 변환되도록 항상 저장한다.
@@ -1106,7 +1166,7 @@ function updateProductArchive(products, {
     await writeArchiveUnlocked(archive);
 
     console.log(`[ARCHIVE] ${source} 병합 완료`, {
-      inputProductCount: currentProductIds.length,
+      inputProductCount,
       newProductCount: stats.newProductCount,
       updatedProductCount: stats.updatedProductCount,
       unchangedProductCount: stats.unchangedProductCount,
@@ -1114,13 +1174,15 @@ function updateProductArchive(products, {
       updatedOptionCount: stats.updatedOptionCount,
       skippedOptionCount: stats.skippedOptionCount,
       changedFieldCount: stats.changedFieldCount,
+      hiddenProductCount: stats.hiddenProductCount,
+      missingProductCount: stats.missingProductCount,
     });
 
     return {
       archive,
       currentProducts: archiveToProductArray(
         archive,
-        currentProductIds,
+        [...new Set(currentProductIds)],
       ),
       stats,
       archivePath: ARCHIVE_PATH,

@@ -20,8 +20,11 @@ const {
   createBackendProducts,
 } = require("./utils/backend-product");
 const {
+  readProductArchive,
   updateProductArchive,
 } = require("./utils/product-archive");
+const { getProductSourceMall } = require("./utils/product-schema");
+const { isFullCatalogRequested, getCompletedFullCatalogScan } = require("./utils/full-catalog-scan");
 const {
   observeDetailProducts,
   recordDetailOutcomes,
@@ -641,6 +644,14 @@ async function runCollection(
   }
 
   const files = createRunFiles(config.baseOutDir, config.mall, runId);
+  const catalogScanStartedAt = new Date().toISOString();
+  // 실행 중 새로 추가된 상품을 오인하지 않도록 시작 시점의 동일 쇼핑몰 상품만 비교한다.
+  const missingProductCandidates = isFullCatalogRequested(config)
+    ? Object.values((await readProductArchive()).products)
+      .filter((product) => getProductSourceMall(product) === config.mall)
+      .map((product) => String(product.id))
+    : [];
+  throwIfAborted(signal);
   const cycleArchivedProducts = new Map();
   const missingWholesalePriceIds = new Set();
   const missingConsumerPriceIds = new Set();
@@ -885,13 +896,35 @@ async function runCollection(
    * 일반·상세·번역 결과를 productId와 optionId 기준으로 통합한다.
    * 현재 수집에서 비어 있는 필드는 기존 archive 값을 유지한다.
    */
+  const completedFullCatalogScan = getCompletedFullCatalogScan(config, result);
   const archiveUpdate = await updateProductArchive(
     backendProducts,
     {
       source: config.collectionMode,
       conversion,
+      missingProductScan: completedFullCatalogScan
+        ? { ...completedFullCatalogScan, candidateProductIds: missingProductCandidates, startedAt: catalogScanStartedAt }
+        : null,
     },
   );
+  Object.assign(rawPayload.summary, {
+    fullCatalogScanCompleted: Boolean(completedFullCatalogScan),
+    hiddenProductCount: archiveUpdate.stats.hiddenProductCount || 0,
+    missingProductCount: archiveUpdate.stats.missingProductCount || 0,
+  });
+  if (completedFullCatalogScan) {
+    onProgress({
+      stage: "missing-products",
+      message: `전체 목록 확인을 마쳤습니다. 미발견 상품 ${archiveUpdate.stats.missingProductCount || 0}개를 HIDDEN으로 반영합니다.`,
+      hiddenProductCount: archiveUpdate.stats.hiddenProductCount || 0,
+      missingProductCount: archiveUpdate.stats.missingProductCount || 0,
+    });
+  } else if (isFullCatalogRequested(config)) {
+    onProgress({
+      stage: "missing-products", level: "warn",
+      message: "전체 페이지와 상품 수가 일치하는지 확인하지 못해 미발견 상품의 판매 상태를 유지합니다.",
+    });
+  }
   const detailMergedBackendProducts = archiveUpdate.currentProducts;
   let mergedBackendProducts = detailMergedBackendProducts;
 

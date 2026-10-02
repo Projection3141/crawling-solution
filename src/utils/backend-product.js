@@ -732,6 +732,7 @@ if (!isDetail) {
         (row) => typeof row?.hasOption === "boolean",
       ),
       inventoryUnavailable: productUnavailable,
+      listingObserved: !isDetail && productMap.has(productId),
       barcode: normalizeText(detailItem?.barcode) || null,
       type,
       nameKo,

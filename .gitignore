@@ -19,4 +19,6 @@ tests/*
 !tests/product-category.test.js
 !tests/category-parsers.test.js
 !tests/cheonyu-special.test.js
+!tests/full-catalog-scan.test.js
+!tests/full-catalog-run.test.js
 docs/
