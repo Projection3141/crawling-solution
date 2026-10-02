@@ -1,7 +1,8 @@
 // src/malls/cheonyu/detail.js
-// 목적: 천유 상품 상세 페이지에서 이미지·가격·옵션·스펙을 추출하고 상세정보 수집을 실행한다.
+// 목적: 천유 상품 상세 페이지에서 카테고리·이미지·가격·옵션·스펙을 추출하고 상세정보 수집을 실행한다.
 
 const cheerio = require("cheerio");
+const { normalizeCategoryId } = require("../../utils/product-schema");
 const {
   normalizeWhitespace,
   sleep,
@@ -43,6 +44,8 @@ const CHEONYU_DETAIL = {
     category1: "#navCateTit1",
     category2: "#navCateTit2",
     category3: "#navCateTit3",
+    category4: "#navCateTit4",
+    category5: "#navCateTit5",
     productName: ".info_wrap .pdt_name span",
     topInfo: ".pdt-top-info",
     infoNumber: ".pdt-top-info .info-number",
@@ -416,6 +419,68 @@ async function prepareDetailImages(page) {
     .catch(() => null);
 }
 
+/** 현재 카테고리 링크의 cateIDX만 읽는다. 무관한 링크는 undefined, 잘못된 ID는 null이다. */
+function readCategoryLinkId(href, baseUrl) {
+  if (!href || !/[?&]cateIDX(?:=|&|$)/.test(href)) return undefined;
+
+  try {
+    const url = new URL(href, baseUrl);
+    const values = url.searchParams.getAll("cateIDX");
+
+    if (
+      url.origin !== new URL(baseUrl).origin ||
+      url.pathname !== "/product/list.html" ||
+      values.length !== 1
+    ) return null;
+
+    return normalizeCategoryId(values[0]);
+  } catch {
+    return null;
+  }
+}
+
+/** 최심 단계의 선택 드롭다운에서 ID를 읽고, 불명확하면 상위·전체 메뉴로 대체하지 않는다. */
+function parseCategoryId($, categoryDepths, baseUrl) {
+  const depth = categoryDepths.findLastIndex(Boolean) + 1;
+  if (!depth) return null;
+
+  const title = $(`#navCateTit${depth}`);
+  if (title.length !== 1) return null;
+
+  const label = categoryDepths[depth - 1];
+  const ids = [];
+  const titleLinkId = readCategoryLinkId(title.closest("a").attr("href"), baseUrl);
+  if (titleLinkId !== undefined) ids.push(titleLinkId);
+
+  const menus = title.closest(".select-list-group").find(`#navCate${depth}`);
+  if (menus.length > 1) return null;
+
+  if (menus.length === 1) {
+    const items = menus.children("li");
+    const selected = items.filter(".selected");
+    const itemLabel = (item) => {
+      const text = item.find(".txt").first();
+      return normalizeWhitespace(text.length ? text.text() : item.children("a").first().text());
+    };
+    const candidates = selected.length ? selected : items.filter((_, item) => itemLabel($(item)) === label);
+
+    // 같은 이름의 항목이 여럿이면 명시된 선택 표시가 있어야 식별할 수 있다.
+    if (candidates.length !== 1 || itemLabel(candidates.first()) !== label) return null;
+
+    const candidate = candidates.first();
+    const dataId = candidate.attr("data-cateid");
+    if (dataId !== undefined) ids.push(normalizeCategoryId(dataId));
+
+    candidate.find("a[href]").each((_, link) => {
+      const id = readCategoryLinkId($(link).attr("href"), baseUrl);
+      if (id !== undefined) ids.push(id);
+    });
+  }
+
+  const uniqueIds = new Set(ids);
+  return uniqueIds.size === 1 && !uniqueIds.has(null) ? ids[0] : null;
+}
+
 /** 천유 상품 상세 HTML을 허브용 상세 row로 정규화한다. */
 function parseDetailHtml(html, product, config) {
   const $ = cheerio.load(html);
@@ -424,6 +489,8 @@ function parseDetailHtml(html, product, config) {
   const categoryDepth1 = normalizeWhitespace($(selectors.category1).first().text());
   const categoryDepth2 = normalizeWhitespace($(selectors.category2).first().text());
   const categoryDepth3 = normalizeWhitespace($(selectors.category3).first().text());
+  const categoryDepth4 = normalizeWhitespace($(selectors.category4).first().text());
+  const categoryDepth5 = normalizeWhitespace($(selectors.category5).first().text());
 
   const infoNumbers = $(selectors.infoNumber)
     .map((_, element) => normalizeWhitespace($(element).text()))
@@ -500,6 +567,11 @@ function parseDetailHtml(html, product, config) {
     categoryDepth1,
     categoryDepth2,
     categoryDepth3,
+    categoryDepth4,
+    categoryDepth5,
+    categoryId: parseCategoryId($, [
+      categoryDepth1, categoryDepth2, categoryDepth3, categoryDepth4, categoryDepth5,
+    ], config.baseUrl),
     productNo,
     barcode,
     outerBoxText,

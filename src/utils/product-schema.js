@@ -1,12 +1,30 @@
 // src/utils/product-schema.js
 // 목적: 모든 쇼핑몰에서 공유하는 상품 필드와 사이트 식별·아카이브 키·SKU 생성 규칙을 정의한다.
 
+/** 카테고리 이름은 구분자로 나누지 않고 최대 다섯 단계의 문자열·null로 정리한다. */
+function normalizeProductCategory(value) {
+  return Object.fromEntries(Array.from({ length: 5 }, (_, index) => {
+    const key = `depth${index + 1}`;
+    const label = value?.[key];
+    return [key, typeof label === "string" ? label.replace(/\s+/g, " ").trim() || null : null];
+  }));
+}
+
+/** 카테고리 코드는 앞자리 0을 보존하는 문자열로 통일하고 미확인·이름 값은 null로 둔다. */
+function normalizeCategoryId(value) {
+  if (typeof value === "number" && (!Number.isSafeInteger(value) || value <= 0)) return null;
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const text = String(value).trim();
+  return /^\d+$/.test(text) && /[1-9]/.test(text) ? text : null;
+}
+
 function createProduct(id = "") {
   return {
     id: String(id),
     badges: [],
     brandId: "",
-    categoryId: "",
+    category: normalizeProductCategory(),
+    categoryId: null,
     createdAt: null,
     currency: "KRW",
     descriptionEn: "",
@@ -105,4 +123,4 @@ function applyProductSkus(product) {
   return product;
 }
 
-module.exports = { createProduct, PRODUCT_FIELDS, getProductSourceMall, getProductArchiveKey, normalizeProductTimestamp, applyProductSkus };
+module.exports = { createProduct, PRODUCT_FIELDS, getProductSourceMall, getProductArchiveKey, normalizeProductTimestamp, normalizeProductCategory, normalizeCategoryId, applyProductSkus };

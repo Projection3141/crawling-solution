@@ -16,4 +16,6 @@ tests/*
 !tests/renderer-settings.test.js
 !tests/shipping-scheduler.test.js
 !tests/product-archive.test.js
+!tests/product-category.test.js
+!tests/category-parsers.test.js
 docs/

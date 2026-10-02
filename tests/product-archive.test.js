@@ -148,3 +148,85 @@ test("이전 버전에서 이관할 때 원본은 보존하고 현재 버전만 
   assert.deepEqual(f.readStored().ccdome, []);
   assert.equal(fs.readFileSync(previousPath, "utf8"), previous);
 });
+
+test("category를 아카이브·결과에 저장하고 일반·번역·미관측 상세 수집에서는 보존한다", async (t) => {
+  const f = fixture(t, { cheonyu: [], ccdome: [] });
+  const category = { depth1: "패션잡화", depth2: "여름 / 겨울 /시즌 상품",
+    depth3: "마스크 / 장갑 / 안대", depth4: "방한", depth5: "성인용" };
+  const item = { id: "79136", sourceMall: "cheonyu", nameKo: "상품" };
+  const added = await f.updateProductArchive([{ ...item, category }], { source: "detail" });
+  assert.deepEqual(added.currentProducts[0].category, category);
+  assert.deepEqual(f.readStored().cheonyu[0].category, category);
+  for (const source of ["general", "translation", "detail"]) {
+    await f.updateProductArchive([{ ...item, category: {} }], { source });
+    assert.deepEqual(f.readStored().cheonyu[0].category, category);
+  }
+  const shortened = { ...category, depth4: null, depth5: null };
+  await f.updateProductArchive([{ ...item, category: shortened }], { source: "detail" });
+  assert.deepEqual(f.archiveToProductArray(await f.readProductArchive())[0].category, shortened);
+});
+
+test("이전 이름 형태 categoryId를 null로 바꾸고 상위 경로를 임의 추정하지 않는다", async (t) => {
+  const f = fixture(t, [{ id: "79136", sourceMall: "cheonyu", categoryId: "마스크 / 장갑 / 안대" }]);
+  await f.updateProductArchive([]);
+  assert.deepEqual(f.readStored().cheonyu[0].category, {
+    depth1: null, depth2: null, depth3: null, depth4: null, depth5: null,
+  });
+  assert.equal(f.readStored().cheonyu[0].categoryId, null);
+});
+
+test("문자열 categoryId를 저장·전송용 배열에 유지하고 미관측 수집으로 지우지 않는다", async (t) => {
+  const category = { depth1: "패션잡화", depth2: "파우치 / 지갑", depth3: "캐릭터 파우치", depth4: null, depth5: null };
+  const item = { id: "95371", sourceMall: "cheonyu", nameKo: "미피 코리 동전지갑", category };
+  const f = fixture(t, { cheonyu: [{ ...item, categoryId: "캐릭터 파우치" }], ccdome: [] });
+  const result = await f.updateProductArchive([{ ...item, categoryId: "152" }], { source: "detail" });
+  assert.equal(result.currentProducts[0].categoryId, "152");
+  assert.equal(f.readStored().cheonyu[0].categoryId, "152");
+  for (const source of ["general", "translation", "detail"]) {
+    await f.updateProductArchive([{ ...item, categoryId: null }], { source });
+    assert.equal(f.readStored().cheonyu[0].categoryId, "152");
+    assert.deepEqual(f.readStored().cheonyu[0].category, category);
+  }
+  assert.equal(f.archiveToProductArray(await f.readProductArchive())[0].categoryId, "152");
+});
+
+test("기존 숫자 ID는 문자열로 변환하고 과자생각 문자열의 앞자리 0은 읽고 저장할 때 보존한다", async (t) => {
+  const f = fixture(t, {
+    cheonyu: [{ id: "95371", sourceMall: "cheonyu", categoryId: 152 }],
+    ccdome: [{ id: "1000005467", sourceMall: "ccdome", categoryId: "021001" }],
+  });
+  const products = f.archiveToProductArray(await f.readProductArchive());
+  assert.equal(products[0].categoryId, "152");
+  assert.equal(products[1].categoryId, "021001");
+  await f.updateProductArchive([]);
+  assert.equal(f.readStored().cheonyu[0].categoryId, "152");
+  assert.equal(f.readStored().ccdome[0].categoryId, "021001");
+});
+
+test("새 상세 경로가 달라지고 번호를 못 읽으면 예전 카테고리 번호를 연결하지 않는다", async (t) => {
+  const item = { id: "95371", sourceMall: "cheonyu" };
+  const category = { depth1: "패션잡화", depth2: "파우치 / 지갑", depth3: "캐릭터 파우치", depth4: null, depth5: null };
+  const f = fixture(t, { cheonyu: [{ ...item, category, categoryId: 152 }], ccdome: [] });
+  await f.updateProductArchive([{ ...item, categoryId: null }], { source: "detail" });
+  assert.equal(f.readStored().cheonyu[0].categoryId, "152");
+  const changedCategory = { ...category, depth3: "동전지갑" };
+  await f.updateProductArchive([{ ...item, category: changedCategory, categoryId: null }], { source: "detail" });
+  assert.equal(f.readStored().cheonyu[0].categoryId, null);
+  assert.deepEqual(f.readStored().cheonyu[0].category, changedCategory);
+});
+
+test("과자생각 상세 코드의 앞자리 0을 병합·보존하고 다음 상세에서 실제 코드로 교체한다", async (t) => {
+  const item = { id: "1000005467", sourceMall: "ccdome", category: { depth1: "간식", depth2: "과자" } };
+  const f = fixture(t, { cheonyu: [], ccdome: [{ ...item, categoryId: 21001 }] });
+  // 숫자로 저장해 잃은 0을 추정하지 않고, 상세에서 읽은 원문으로 교체한다.
+  assert.equal(f.archiveToProductArray(await f.readProductArchive())[0].categoryId, "21001");
+  const result = await f.updateProductArchive([{ ...item, categoryId: "021001" }], { source: "detail" });
+  assert.equal(result.currentProducts[0].categoryId, "021001");
+  assert.equal(f.readStored().ccdome[0].categoryId, "021001");
+  for (const source of ["general", "translation", "detail"]) {
+    await f.updateProductArchive([{ ...item, categoryId: null }], { source });
+    assert.equal(f.readStored().ccdome[0].categoryId, "021001");
+  }
+  const payload = { type: "아카이브", data: f.archiveToProductArray(await f.readProductArchive()) };
+  assert.equal(JSON.parse(JSON.stringify(payload)).data[0].categoryId, "021001");
+});

@@ -30,7 +30,7 @@ const VERSIONED_ARCHIVE_FILE_PATTERN =
 
 let archiveQueue = Promise.resolve();
 
-const { createProduct, PRODUCT_FIELDS, getProductSourceMall, getProductArchiveKey, normalizeProductTimestamp, applyProductSkus } = require("./product-schema");
+const { createProduct, PRODUCT_FIELDS, getProductSourceMall, getProductArchiveKey, normalizeProductTimestamp, normalizeProductCategory, normalizeCategoryId, applyProductSkus } = require("./product-schema");
 
 const OPTION_FIELDS = [
   "id",
@@ -63,6 +63,7 @@ const DETAIL_FIELDS = new Set([
   "nameKo",
   "nameJa",
   "nameEn",
+  "category",
   "categoryId",
   "subcategoryId",
   "brandId",
@@ -286,6 +287,8 @@ function normalizeIncomingProduct(product = {}) {
 
   normalized.id = id;
   normalized.sourceMall = getProductSourceMall(product);
+  normalized.category = normalizeProductCategory(product.category);
+  normalized.categoryId = normalizeCategoryId(product.categoryId);
   // 구버전 환산 시각을 이전한다. 제거된 필드는 PRODUCT_FIELDS에 없어 출력되지 않는다.
   normalized.createdAt = normalizeProductTimestamp(product.createdAt)
     || normalizeProductTimestamp(product.convertTime);
@@ -551,6 +554,13 @@ function canUpdateProductField(source, field, value) {
       return hasArrayItems(value);
     }
 
+    // 경로 전체가 미관측이면 기존 카테고리를 보존한다.
+    if (field === "category") {
+      return Object.values(normalizeProductCategory(value)).some(hasText);
+    }
+
+    if (field === "categoryId") return normalizeCategoryId(value) !== null;
+
     if (["originalPrice", "wholesalePrice", "salePrice"].includes(field)) {
       return hasFiniteArchiveNumber(value);
     }
@@ -759,6 +769,13 @@ function mergeProduct(
       stats,
     ) || changed;
   } else {
+    // 경로가 바뀌었는데 새 번호를 못 읽었다면 이전 경로의 번호를 연결하지 않는다.
+    if (source === "detail" && incoming.categoryId === null &&
+        Object.values(incoming.category).some(hasText) &&
+        !isSameJson(result.category, incoming.category)) {
+      changed = setChangedField(result, "categoryId", null, stats) || changed;
+    }
+
     for (const field of PRODUCT_FIELDS) {
       if (["id", "options"].includes(field)) {
         continue;
@@ -774,15 +791,6 @@ function mergeProduct(
       }
 
       if (!canUpdateProductField(source, field, incoming[field])) {
-        continue;
-      }
-
-      /** 상세에서 확보한 카테고리가 있으면 일반 추정값으로 덮지 않는다. */
-      if (
-        source === "general" &&
-        field === "categoryId" &&
-        hasText(result.categoryId)
-      ) {
         continue;
       }
 
@@ -912,6 +920,8 @@ function materializeProduct(product) {
     ...cloneJson(product),
   });
   const result = {};
+  source.category = normalizeProductCategory(source.category);
+  source.categoryId = normalizeCategoryId(source.categoryId);
 
   for (const field of PRODUCT_FIELDS) {
     if (field === "options") {

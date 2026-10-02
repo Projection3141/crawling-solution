@@ -1,7 +1,7 @@
 // src/utils/backend-product.js
 // 목적: 수집한 상품·옵션·재고·상세·번역 결과를 서버 전송용 공통 상품 객체로 조합한다.
 
-const { createProduct, getProductSourceMall, applyProductSkus } = require("./product-schema");
+const { createProduct, getProductSourceMall, normalizeProductCategory, normalizeCategoryId, applyProductSkus } = require("./product-schema");
 const { getCcdomeSpecLabelJa } = require("../malls/ccdome/spec-labels");
 
 /** 문자열을 공백이 정리된 값으로 변환한다. */
@@ -127,27 +127,13 @@ function createTranslationMap(items = []) {
   );
 }
 
-/** 카테고리 경로 문자열에서 마지막 카테고리명만 반환한다. */
-function getLastCategory(detailItem = {}, productItem = {}) {
-  const category = normalizeText(
-    detailItem.categoryDepth3 ||
-      detailItem.categoryDepth2 ||
-      detailItem.categoryDepth1 ||
-      productItem.categoryHint ||
-      productItem.categoryCode ||
-      "",
-  );
-
-  if (!category) {
-    return "";
-  }
-
-  const parts = category
-    .split(/\s*(?:>|›|»|\|)\s*/)
-    .map((value) => normalizeText(value))
-    .filter(Boolean);
-
-  return parts.at(-1) || category;
+/** 상세 페이지에서 관측한 단계만 사용하며 상품명 추정값을 경로로 만들지 않는다. */
+function getDetailCategory(detailItem = {}) {
+  return normalizeProductCategory(detailItem.category || Object.fromEntries(
+    Array.from({ length: 5 }, (_, index) => [
+      `depth${index + 1}`, detailItem[`categoryDepth${index + 1}`],
+    ]),
+  ));
 }
 
 /** 상세 데이터의 메인 이미지와 상세 이미지를 분리해 정리한다. */
@@ -747,9 +733,10 @@ if (!isDetail) {
       nameKo,
       nameJa,
       nameEn,
+      category: isDetail ? getDetailCategory(detailItem) : normalizeProductCategory(),
       categoryId: isDetail
-        ? getLastCategory(detailItem, productItem)
-        : "",
+        ? normalizeCategoryId(detailItem.categoryId)
+        : null,
 
       /** 상세 수집에서 확보한 brandHint 값을 백엔드 brandId로 전달한다. */
       brandId: isDetail

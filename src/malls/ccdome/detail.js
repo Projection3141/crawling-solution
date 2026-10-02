@@ -1,5 +1,5 @@
 // src/malls/ccdome/detail.js
-// 목적: 과자생각 상품 상세 페이지에서 이미지·가격·스펙을 추출하고 상세정보 수집을 실행한다.
+// 목적: 과자생각 상품 상세 페이지에서 카테고리·이미지·가격·스펙을 추출하고 상세정보 수집을 실행한다.
 
 const cheerio = require("cheerio");
 const { getCcdomeSpecLabelJa } = require("./spec-labels");
@@ -421,6 +421,21 @@ async function readCcdomeProductMetaFromPage(page) {
   });
 }
 
+/** 현재 상품 폼의 카테고리 코드만 읽고 선행 0을 포함한 원문 숫자열을 유지한다. */
+function parseCcdomeCategoryId($) {
+  const forms = $("form#frmView");
+  if (forms.length !== 1) return null;
+
+  const inputs = forms.find('input[name="cateCd"]').filter((_, input) => {
+    const formId = $(input).attr("form");
+    return formId === undefined || formId === "frmView";
+  });
+  if (inputs.length !== 1) return null;
+
+  const value = String(inputs.attr("value") || "").trim();
+  return /^\d+$/.test(value) && /[1-9]/.test(value) ? value : null;
+}
+
 /** 과자생각 상품 상세 HTML을 표준 상세 row로 변환한다. */
 function parseCcdomeDetailHtml(html, product, config) {
   const $ = cheerio.load(html);
@@ -476,6 +491,9 @@ function parseCcdomeDetailHtml(html, product, config) {
     categoryDepth1: categoryItems[0] || "",
     categoryDepth2: categoryItems[1] || "",
     categoryDepth3: categoryItems[2] || "",
+    categoryDepth4: categoryItems[3] || "",
+    categoryDepth5: categoryItems[4] || "",
+    categoryId: parseCcdomeCategoryId($),
 
     productNo: String(product.productId || ""),
     barcode: "",
