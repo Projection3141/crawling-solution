@@ -1,15 +1,17 @@
+// src/shipping-scheduler.js
+// 목적: KSE 운송장을 수집·전송하고 상품 아카이브와 운송장 전송의 주기 실행을 관리한다.
+
 const path = require("node:path");
 const { chromium } = require("playwright");
 const {
   archiveToProductArray,
   readProductArchive,
+  ARCHIVE_PATH,
 } = require("./utils/product-archive");
 const {
   postResultJson,
 } = require("./utils/result-uploader");
-const {
-  getUploadApiUrl,
-} = require("./utils/upload-api-settings");
+const { fillShippingLogin, getShippingProfileDirectory } = require("./utils/shipping-login");
 
 const SOURCE_BASE_URL =
   "https://www.kseoms.com/cs_partner/xhr/getGridData";
@@ -231,45 +233,10 @@ async function fetchGridData(
 async function uploadShippingRecords(
   records,
 ) {
-  const response = await fetch(
-    getUploadApiUrl(),
-    {
-      method: "POST",
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      headers: {
-        Accept:
-          "application/json, text/plain, */*",
-        "Content-Type":
-          "application/json",
-      },
-      body:
-        JSON.stringify(records),
-    },
-  );
-
-  const responseText =
-    await response.text();
-
-  if (!response.ok) {
-    throw new Error(
-      `서버 전송 실패: HTTP ` +
-        `${response.status} ` +
-        `${response.statusText}\n` +
-        responseText,
-    );
-  }
-
-  if (!responseText.trim()) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(
-      responseText,
-    );
-  } catch {
-    return responseText;
-  }
+  const result = await postResultJson("운송장", records, {
+    legacyRaw: true, timeoutMs: REQUEST_TIMEOUT_MS,
+  });
+  return result.response;
 }
 
 /** 현재 통합 상품 아카이브 전체를 업로더에 POST한다. */
@@ -282,6 +249,7 @@ async function uploadProductArchive() {
     await postResultJson(
       "아카이브",
       archiveProducts,
+      { archiveRef: ARCHIVE_PATH },
     );
 
   return {
@@ -299,6 +267,7 @@ async function uploadProductArchive() {
 async function ensureLoggedIn(
   page,
   sourceUrl,
+  account = null,
 ) {
   await page.goto(sourceUrl, {
     waitUntil:
@@ -311,9 +280,9 @@ async function ensureLoggedIn(
     await page
       .locator(
         [
-          'input[name="user_id"]',
-          'input[name="password"]',
-          'input[type="password"]',
+          'input[name="user_id"]:visible',
+          'input[name="password"]:visible',
+          'input[type="password"]:visible',
         ].join(", "),
       )
       .first()
@@ -330,9 +299,13 @@ async function ensureLoggedIn(
     return;
   }
 
-  console.log(
-    "[SHIPPING LOGIN] 열린 브라우저에서 KSE OMS 로그인을 완료해주세요.",
-  );
+  const filled = await fillShippingLogin(page, account).catch(() => {
+    console.warn("[SHIPPING LOGIN] 자동 입력하지 못했습니다. 열린 브라우저에서 직접 로그인해 주세요.");
+    return false;
+  });
+  console.log(filled
+    ? "[SHIPPING LOGIN] 등록한 계정을 입력했습니다. 열린 브라우저에서 로그인 버튼을 눌러주세요."
+    : "[SHIPPING LOGIN] 열린 브라우저에서 KSE OMS 로그인을 완료해주세요.");
 
   /**
    * 로그인 완료 후 메인 페이지로 이동하고
@@ -340,16 +313,10 @@ async function ensureLoggedIn(
    */
   await page.waitForFunction(
     () => {
-      const hasLoginForm =
-        Boolean(
-          document.querySelector(
-            [
-              'input[name="user_id"]',
-              'input[name="password"]',
-              'input[type="password"]',
-            ].join(", "),
-          ),
-        );
+      const hasLoginForm = Array.from(document.querySelectorAll(
+        'input[name="user_id"], input[name="password"], input[type="password"]',
+      )).some((input) => input.getClientRects().length > 0 &&
+        getComputedStyle(input).visibility !== "hidden");
 
       return !hasLoginForm;
     },
@@ -379,6 +346,7 @@ async function collectAndUploadOnce(
   profileDirectory,
   {
     uploadArchive = true,
+    account = null,
   } = {},
 ) {
   const {
@@ -403,7 +371,7 @@ async function collectAndUploadOnce(
 
   const context =
     await chromium.launchPersistentContext(
-      profileDirectory,
+      getShippingProfileDirectory(profileDirectory, account),
       {
         headless: false,
         viewport: {
@@ -427,6 +395,7 @@ async function collectAndUploadOnce(
     await ensureLoggedIn(
       page,
       sourceUrl,
+      account,
     );
 
     /**
@@ -449,6 +418,7 @@ async function collectAndUploadOnce(
           await ensureLoggedIn(
             page,
             sourceUrl,
+            account,
           );
         }
 
@@ -498,9 +468,7 @@ async function collectAndUploadOnce(
         `${shippingRecords.length}건`,
     );
 
-    /**
-     * JSON 파일은 만들지 않고 추출 배열을 그대로 POST한다.
-     */
+    // 조회 결과를 별도 아카이브 저장 없이 기존 API로 전송한다.
     const uploadResult =
       await uploadShippingRecords(
         shippingRecords,
@@ -520,15 +488,6 @@ async function collectAndUploadOnce(
           ? `아카이브 ${archiveUpload.archiveCount}개 전송 완료`
           : "수집정보 전송 OFF"),
     );
-
-    if (
-      uploadResult !== null
-    ) {
-      console.log(
-        "[SHIPPING RESPONSE]",
-        uploadResult,
-      );
-    }
 
     return {
       count:
@@ -551,6 +510,9 @@ async function collectAndUploadOnce(
  */
 function createShippingScheduler({
   profileDirectory,
+  getAccount = () => null,
+  uploadProducts = uploadProductArchive,
+  collectShipping = collectAndUploadOnce,
   onStateChanged = () => {},
 }) {
   const resolvedProfileDirectory =
@@ -624,6 +586,7 @@ function createShippingScheduler({
     }
 
     running = true;
+    lastError = "";
     clearTimer();
 
     emitState({
@@ -633,19 +596,29 @@ function createShippingScheduler({
 
     try {
       // 운송 로그인 대기·재조회 실패가 이미 수집한 상품의 전송을 막지 않게 한다.
-      const archiveResult = collectionUploadEnabled ? await uploadProductArchive() : {};
-      const result = enabled
-        ? { ...(await collectAndUploadOnce(
-            resolvedProfileDirectory,
-            {
-              uploadArchive: false,
-            },
-          )), ...archiveResult }
-        : {
-            count: 0,
-            response: null,
-            ...archiveResult,
-          };
+      const failures = [];
+      const runProducts = collectionUploadEnabled;
+      const runShipping = enabled;
+      let result = { count: 0 };
+      if (runProducts) {
+        try {
+          result = { ...result, ...await uploadProducts() };
+        } catch (error) {
+          failures.push(`상품 전송: ${error?.message || String(error)}`);
+        }
+      }
+      if (runShipping) {
+        try {
+          const shippingResult = await collectShipping(resolvedProfileDirectory, {
+            uploadArchive: false, account: await getAccount(),
+          });
+          result = { ...result, count: shippingResult.count };
+          lastRecordCount = shippingResult.count;
+        } catch (error) {
+          failures.push(`운송장 전송: ${error?.message || String(error)}`);
+        }
+      }
+      if (failures.length) throw new Error(failures.join(" / "));
 
       emitState({
         lastError: "",
@@ -655,15 +628,14 @@ function createShippingScheduler({
           (lastRecordCount = result.count),
       });
     } catch (error) {
+      lastError = error?.message || String(error);
       console.error(
         "[SHIPPING ERROR]",
         error?.message || error,
       );
 
       emitState({
-        lastError:
-          error?.message ||
-          String(error),
+        lastError,
       });
     } finally {
       running = false;

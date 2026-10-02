@@ -1,4 +1,5 @@
-//src/malls/cheonyu/config.js
+// src/malls/cheonyu/config.js
+// 목적: 천유 전용 주소·화면 선택자·출력 항목을 정의하고 환경변수로 수집 설정을 구성한다.
 
 const path = require("node:path");
 const { readBoolean, readNumber } = require("../../utils/common");

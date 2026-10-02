@@ -1,4 +1,5 @@
 // src/utils/inventory.js
+// 목적: 상품명·가격·포장·재고 상태를 정규화하고 옵션별 재고 및 상품 요약 목록을 만든다.
 
 const { normalizeWhitespace } = require("./common");
 

@@ -1,4 +1,5 @@
 // src/config.js
+// 목적: 쇼핑몰별 기본값과 입력값을 검증하고 수집·프록시·번역·서버 실행 설정을 구성한다.
 
 const path = require("node:path");
 const {

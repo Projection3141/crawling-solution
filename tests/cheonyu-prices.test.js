@@ -139,7 +139,9 @@ test("두 원화 가격과 10엔 올림값을 일반 수집의 아카이브·res
     });
     const result = await updateProductArchive(backend, { source: "general", conversion: snapshot });
     writeJson(resultPath, result.currentProducts);
-    assert.deepEqual(JSON.parse(fs.readFileSync(resultPath, "utf8")), JSON.parse(fs.readFileSync(ARCHIVE_PATH, "utf8")));
+    const storedArchive = JSON.parse(fs.readFileSync(ARCHIVE_PATH, "utf8"));
+    assert.deepEqual(JSON.parse(fs.readFileSync(resultPath, "utf8")), storedArchive.cheonyu);
+    assert.deepEqual(storedArchive.ccdome, []);
     assert.deepEqual(result.currentProducts[0].descriptionImageUrls, [image]);
     const item = result.currentProducts[0];
     return [item.originalPrice, item.wholesalePrice, item.yenOriginalsalePrice, item.yenWholesalePrice];
@@ -156,7 +158,7 @@ test("두 원화 가격과 10엔 올림값을 일반 수집의 아카이브·res
   } finally {
     if (previousDirectory === undefined) delete process.env.PRODUCT_ARCHIVE_DIRECTORY;
     else process.env.PRODUCT_ARCHIVE_DIRECTORY = previousDirectory;
-    for (const file of [ARCHIVE_PATH, resultPath]) if (fs.existsSync(file)) fs.unlinkSync(file);
+    for (const file of [ARCHIVE_PATH, `${ARCHIVE_PATH}.before-mall-groups.bak`, resultPath]) if (fs.existsSync(file)) fs.unlinkSync(file);
     fs.rmdirSync(directory);
   }
 });

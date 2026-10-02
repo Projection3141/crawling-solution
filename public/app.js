@@ -76,6 +76,8 @@ const elements = {
   uploadApiUrl: document.querySelector("#uploadApiUrl"),
   uploadApiUrlHelp: document.querySelector("#uploadApiUrlHelp"),
   saveUploadApiUrlButton: document.querySelector("#saveUploadApiUrlButton"),
+  sendTestNotificationButton: document.querySelector("#sendTestNotificationButton"),
+  testNotificationStatus: document.querySelector("#testNotificationStatus"),
   pageStart: document.querySelector("#pageStart"),
   pageEnd: document.querySelector("#pageEnd"),
   pageEndHelp: document.querySelector("#pageEndHelp"),
@@ -122,6 +124,7 @@ const state = {
   defaults: null,
   collectionUploadLogPage: 1,
   collectionUploadLogTotalPages: 1,
+  savedUploadSettings: null,
   accounts: [],
   credentialProfiles: {
     proxies: [],
@@ -2249,9 +2252,36 @@ async function openSettingsDirectory() {
 function renderUploadApiSettings(settings = {}) {
   const uploadApiUrl = String(settings.uploadApiUrl || "").trim();
   elements.uploadApiUrl.value = uploadApiUrl;
+  state.savedUploadSettings = readUploadSettingsForm();
   elements.uploadApiUrlHelp.textContent = settings.isDefault
-    ? "기본 URL을 사용 중입니다. 장바구니 조회, 운송정보, 수집정보 전송에 공통 적용됩니다."
-    : "사용자 설정 URL을 사용 중입니다. 세 가지 업로드 요청에 즉시 공통 적용됩니다.";
+    ? "기본 URL입니다. 장바구니 조회와 서버 전송에 공통으로 사용합니다."
+    : "저장한 URL입니다. 장바구니 조회와 서버 전송에 공통으로 사용합니다.";
+  elements.testNotificationStatus.textContent = `저장된 전송 API: ${uploadApiUrl}`;
+}
+
+function readUploadSettingsForm() {
+  return {
+    uploadApiUrl: elements.uploadApiUrl.value.trim(),
+  };
+}
+
+async function sendTestNotification() {
+  if (elements.sendTestNotificationButton.disabled) return;
+  if (JSON.stringify(readUploadSettingsForm()) !== JSON.stringify(state.savedUploadSettings)) {
+    elements.testNotificationStatus.textContent = "변경한 전송 설정을 먼저 저장한 뒤 테스트하세요.";
+    return;
+  }
+  elements.sendTestNotificationButton.disabled = true;
+  elements.testNotificationStatus.textContent = "테스트 알림 전송 중…";
+  try {
+    const result = await window.collectorApp.sendTestNotification();
+    elements.testNotificationStatus.textContent = `서버 응답 수신 완료 · HTTP ${result.status}`;
+  } catch (error) {
+    elements.testNotificationStatus.textContent = `테스트 알림 실패: ${error.message}`;
+  } finally {
+    elements.sendTestNotificationButton.disabled = false;
+    await loadCollectionUploadLogs(1);
+  }
 }
 
 async function loadUploadApiSettings() {
@@ -2265,6 +2295,7 @@ async function saveUploadApiSettings(event) {
   clearSuccess();
 
   const requestedUrl = elements.uploadApiUrl.value.trim();
+  const requestedSettings = readUploadSettingsForm();
 
   if (requestedUrl) {
     let parsed;
@@ -2288,20 +2319,14 @@ async function saveUploadApiSettings(event) {
   elements.saveUploadApiUrlButton.textContent = "저장 중";
 
   try {
-    const settings = await window.collectorApp.saveUploadApiSettings({
-      uploadApiUrl: requestedUrl,
-    });
+    const settings = await window.collectorApp.saveUploadApiSettings(requestedSettings);
     renderUploadApiSettings(settings);
-    showSuccess(
-      requestedUrl
-        ? "Upload API URL을 저장했습니다."
-        : "Upload API URL을 기본값으로 복원했습니다.",
-    );
+    showSuccess("서버 전송 설정을 저장했습니다.");
   } catch (error) {
     showError(error.message);
   } finally {
     elements.saveUploadApiUrlButton.disabled = false;
-    elements.saveUploadApiUrlButton.textContent = "저장";
+    elements.saveUploadApiUrlButton.textContent = "전송 설정 저장";
   }
 }
 
@@ -2347,7 +2372,7 @@ function renderCollectionUploadLogs(result) {
       title.textContent = `${item.type || "수집정보"} · ${formatCollectionUploadSentAt(item.sentAt)}`;
       const badge = document.createElement("span");
       badge.className = `upload-log-status ${item.success ? "success" : "error"}`;
-      badge.textContent = item.success ? "전송 성공" : "전송 실패";
+      badge.textContent = item.success ? "요청 성공" : "요청 실패";
       heading.append(title, badge);
 
       const details = document.createElement("p");
@@ -2358,13 +2383,13 @@ function renderCollectionUploadLogs(result) {
       const status = item.status === null
         ? "응답 없음"
         : `HTTP ${item.status}`;
-      details.textContent = `데이터 ${itemCount} · ${status} · ${item.dateDirectory}/${item.fileName}`;
+      details.textContent = `${item.method || "POST"} · 데이터 ${itemCount} · ${status} · ${item.dateDirectory}/${item.fileName}`;
       article.append(heading, details);
 
       if (item.sampleProductIds?.length > 0) {
         const sample = document.createElement("p");
         sample.className = "upload-log-sample";
-        sample.textContent = `상품 ID 예시: ${item.sampleProductIds.join(", ")}`;
+        sample.textContent = `데이터 ID 예시: ${item.sampleProductIds.join(", ")}`;
         article.append(sample);
       }
 
@@ -2437,6 +2462,7 @@ elements.closeOpenAiManagerButton.addEventListener("click", closeOpenAiManager);
 elements.cancelOpenAiManagerButton.addEventListener("click", closeOpenAiManager);
 elements.saveOpenAiProfileButton.addEventListener("click", saveOpenAiProfile);
 elements.uploadApiSettingsForm.addEventListener("submit", saveUploadApiSettings);
+elements.sendTestNotificationButton.addEventListener("click", sendTestNotification);
 elements.collectionUploadLogPreviousButton.addEventListener("click", () => {
   void loadCollectionUploadLogs(state.collectionUploadLogPage - 1);
 });

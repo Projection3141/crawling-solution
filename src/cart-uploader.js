@@ -1,4 +1,5 @@
 // src/cart-uploader.js
+// 목적: 천유·과자생각 계정으로 브라우저를 열고 요청한 상품을 장바구니에 담는 작업을 실행한다.
 
 const {
   chromium,

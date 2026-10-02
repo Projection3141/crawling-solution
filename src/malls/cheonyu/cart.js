@@ -1,4 +1,5 @@
-//src/malls/cheonyu/cart.js
+// src/malls/cheonyu/cart.js
+// 목적: 천유 장바구니 HTML에서 상품·옵션·재고 정보를 읽고 장바구니 항목 삭제를 처리한다.
 
 const cheerio = require("cheerio");
 const { sleep, toNumber } = require("../../utils/common");

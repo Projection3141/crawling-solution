@@ -1,4 +1,5 @@
 // src/malls/ccdome/index.js
+// 목적: 과자생각 상품 목록·판매 상태·상세정보 수집 흐름과 브라우저 세션 및 결과 집계를 관리한다.
 
 const { performance } = require("node:perf_hooks");
 const { chromium } = require("playwright");

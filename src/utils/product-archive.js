@@ -1,4 +1,5 @@
-/** src/utils/product-archive.js */
+// src/utils/product-archive.js
+// 목적: 버전별 상품 아카이브를 읽고 이관·병합·저장하며 전송 및 번역용 목록으로 변환한다.
 
 const fs = require("node:fs/promises");
 const os = require("node:os");
@@ -297,13 +298,50 @@ function normalizeIncomingProduct(product = {}) {
   return applyProductSkus(normalized);
 }
 
-/** 읽은 JSON을 내부 productId key 문서 구조로 변환한다. */
+/** 이전 products wrapper를 쇼핑몰별 그룹과 구분한다. */
+function isLegacyArchiveWrapper(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    Object.hasOwn(value, "products") && value.products !== null &&
+    typeof value.products === "object" &&
+    Object.keys(value).every((key) => ["products", "version", "updatedAt"].includes(key));
+}
+
+/** 최상위에 쇼핑몰별 배열이 있는 저장 형식인지 확인한다. */
+function isGroupedArchive(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    !isLegacyArchiveWrapper(value) &&
+    Object.values(value).some(Array.isArray);
+}
+
+/** 구형·쇼핑몰별 JSON을 내부 쇼핑몰+상품 ID 문서 구조로 변환한다. */
 function normalizeArchiveDocument(value) {
-  const products = {};
+  if (isLegacyArchiveWrapper(value)) value = value.products;
+  const products = Object.create(null);
+  const mallNames = new Set(["cheonyu", "ccdome"]);
+  const grouped = isGroupedArchive(value);
   let sourceProducts = [];
 
   if (Array.isArray(value)) {
     sourceProducts = value;
+  } else if (grouped) {
+    for (const [key, items] of Object.entries(value)) {
+      const mall = normalizeText(key).toLowerCase();
+      if (!mall || !Array.isArray(items)) {
+        throw new Error(`쇼핑몰별 아카이브 형식이 올바르지 않습니다: ${key}`);
+      }
+      mallNames.add(mall);
+      for (const item of items) {
+        if (!item || typeof item !== "object" || Array.isArray(item) ||
+            !normalizeText(item.id || item.productId)) {
+          throw new Error(`상품 ID가 없는 아카이브 항목입니다: ${mall}`);
+        }
+        const explicitMall = normalizeText(item.sourceMall).toLowerCase();
+        if (explicitMall && explicitMall !== mall) {
+          throw new Error(`아카이브 쇼핑몰과 sourceMall이 다릅니다: ${mall}/${item.id || item.productId}`);
+        }
+        sourceProducts.push({ ...item, sourceMall: mall });
+      }
+    }
   } else if (value && typeof value === "object") {
     const rawProducts =
       value.products && typeof value.products === "object"
@@ -325,10 +363,14 @@ function normalizeArchiveDocument(value) {
       continue;
     }
 
-    products[getProductArchiveKey(normalized)] = normalized;
+    const productKey = getProductArchiveKey(normalized);
+    if (grouped && Object.hasOwn(products, productKey)) {
+      throw new Error(`아카이브에 중복 상품이 있습니다: ${productKey}`);
+    }
+    products[productKey] = normalized;
   }
 
-  return { products };
+  return { products, mallNames: [...mallNames] };
 }
 
 /** 두 릴리즈 버전을 숫자 단위로 비교한다. */
@@ -361,11 +403,11 @@ async function readArchiveFileUnlocked(filePath) {
   const text = await fs.readFile(filePath, "utf8");
   const normalizedText = text.replace(/^\uFEFF/, "").trim();
 
-  if (!normalizedText) {
-    return normalizeArchiveDocument([]);
-  }
-
-  return normalizeArchiveDocument(JSON.parse(normalizedText));
+  const value = normalizedText ? JSON.parse(normalizedText) : [];
+  const archive = normalizeArchiveDocument(value);
+  // 현재 파일의 형식을 바꾸는 경우에만 최초 저장 전 원본을 백업한다.
+  archive.needsGroupedMigration = filePath === ARCHIVE_PATH && !isGroupedArchive(value);
+  return archive;
 }
 
 /** 현재 버전보다 낮은 가장 최신 archive 또는 기존 단일 archive를 찾는다. */
@@ -902,8 +944,26 @@ function archiveToProductArray(archive, productIds = null) {
     .map((product) => materializeProduct(product));
 }
 
-/** 현재 릴리즈 archive를 상품 객체 배열 형식 그대로 저장한다. */
+/** 상품 스키마를 유지하면서 저장용 쇼핑몰별 배열을 만든다. */
+function archiveToMallGroups(archive) {
+  const groups = Object.create(null);
+  for (const mall of archive.mallNames || ["cheonyu", "ccdome"]) {
+    groups[mall] = [];
+  }
+  for (const product of archiveToProductArray(archive)) {
+    const mall = getProductSourceMall(product);
+    if (!mall) {
+      throw new Error(`아카이브 상품의 쇼핑몰을 확인할 수 없습니다. sourceMall을 지정하세요: ${product.id}`);
+    }
+    if (!Object.hasOwn(groups, mall)) groups[mall] = [];
+    groups[mall].push(product);
+  }
+  return groups;
+}
+
+/** 현재 릴리즈 archive를 sourceMall을 포함한 쇼핑몰별 배열로 저장한다. */
 async function writeArchiveUnlocked(archive) {
+  const grouped = archiveToMallGroups(archive);
   await fs.mkdir(ARCHIVE_DIRECTORY, {
     recursive: true,
   });
@@ -911,8 +971,13 @@ async function writeArchiveUnlocked(archive) {
   const temporaryPath = `${ARCHIVE_PATH}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await fs.writeFile(temporaryPath,
-      `${JSON.stringify(archiveToProductArray(archive), null, 2)}\n`, "utf8");
+      `${JSON.stringify(grouped, null, 2)}\n`, "utf8");
+    if (archive.needsGroupedMigration) {
+      await fs.copyFile(ARCHIVE_PATH, `${ARCHIVE_PATH}.before-mall-groups.bak`, fs.constants.COPYFILE_EXCL)
+        .catch((error) => { if (error.code !== "EEXIST") throw error; });
+    }
     await fs.rename(temporaryPath, ARCHIVE_PATH);
+    archive.needsGroupedMigration = false;
   } finally {
     await fs.unlink(temporaryPath).catch((error) => {
       if (error.code !== "ENOENT") console.warn("[ARCHIVE] 임시 파일 정리 실패", error.message);
@@ -950,7 +1015,7 @@ function readProductArchive() {
 
 /**
  * 상품 배열을 productId와 optionId 기준으로 통합 archive에 병합한다.
- * 버전별 archive에는 wrapper 없이 전체 백엔드 상품 객체 배열만 저장한다.
+ * 버전별 archive에는 상품 필드를 유지한 쇼핑몰별 배열을 저장한다.
  */
 function updateProductArchive(products, {
   source = "general",
@@ -1015,8 +1080,8 @@ function updateProductArchive(products, {
     }
 
     /**
-     * 이전 wrapper 형식 archive도 한 번의 실행으로
-     * 전체 상품 객체 배열 형식으로 변환되도록 항상 저장한다.
+     * 이전 배열·wrapper 형식 archive도 한 번의 실행으로
+     * 쇼핑몰별 배열 형식으로 변환되도록 항상 저장한다.
      * 실제 필드값은 달라진 항목만 mergeProduct에서 갱신된다.
      */
     await writeArchiveUnlocked(archive);

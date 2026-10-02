@@ -1,4 +1,5 @@
 // src/malls/cheonyu/cart-stock.js
+// 목적: 천유 장바구니 담기와 재고 확인을 수행하고 장바구니·옵션 팝업 정보를 재고 데이터로 정리한다.
 
 const {
   sleep,

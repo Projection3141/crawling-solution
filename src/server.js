@@ -1,4 +1,5 @@
 // src/server.js
+// 목적: 웹 화면과 상품 수집 작업의 실행·상태 조회·결과 다운로드 API를 제공하는 HTTP 서버다.
 
 require("dotenv").config({ quiet: true });
 

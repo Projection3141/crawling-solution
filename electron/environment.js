@@ -1,3 +1,6 @@
+// electron/environment.js
+// 목적: 사용자 설정 폴더와 앱 경로의 환경변수 파일을 우선순위에 따라 불러온다.
+
 const fs = require("node:fs");
 const path = require("node:path");
 const dotenv = require("dotenv");

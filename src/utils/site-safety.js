@@ -1,4 +1,5 @@
 // src/utils/site-safety.js
+// 목적: 사이트 요청의 차단·오류를 감지하고 재시도·대기·취소 및 페이지 복구를 처리한다.
 
 const { throwIfAborted } = require("./common");
 

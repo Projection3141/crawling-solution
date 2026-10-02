@@ -1,4 +1,5 @@
 // src/crawler.js
+// 목적: 쇼핑몰별 상품 수집부터 결과 정규화·번역·아카이브 및 파일 저장까지 전체 흐름을 조율한다.
 
 const path = require("node:path");
 const { toSafeConfig } = require("./config");

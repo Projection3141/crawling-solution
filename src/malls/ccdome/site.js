@@ -1,3 +1,6 @@
+// src/malls/ccdome/site.js
+// 목적: 과자생각 로그인과 상품 목록 페이지 탐색을 수행하고 판매중·품절 상품 정보를 수집한다.
+
 const cheerio = require("cheerio");
 const { performance } = require("node:perf_hooks");
 const { fillFirstAvailable } = require("../../utils/browser");

@@ -1,4 +1,5 @@
-//src/cli.js
+// src/cli.js
+// 목적: 명령행 인자와 환경설정으로 상품 수집을 실행하는 CLI 진입점이다.
 
 /** Playwright Chromium을 프로젝트 내부 번들 경로에서 찾도록 고정한다. */
 process.env.PLAYWRIGHT_BROWSERS_PATH ||= "0";

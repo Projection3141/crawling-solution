@@ -1,4 +1,5 @@
-/** src/utils/detail-collection-state.js */
+// src/utils/detail-collection-state.js
+// 목적: 상품별 상세 수집 시도와 결과를 저장하고 다음에 수집할 미완료 상품을 선별한다.
 
 const fs = require("node:fs/promises");
 const path = require("node:path");

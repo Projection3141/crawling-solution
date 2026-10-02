@@ -1,3 +1,6 @@
+// src/utils/upload-api-settings.js
+// 목적: 서버 API 주소를 검증하고 현재 전송 설정을 관리한다.
+
 const DEFAULT_UPLOAD_API_URL =
   "https://www.web3.io.kr/joahstore/crawling/uploader";
 
@@ -22,17 +25,32 @@ function normalizeUploadApiUrl(value) {
   return parsed.toString();
 }
 
-let activeUploadApiUrl = normalizeUploadApiUrl(
-  process.env.UPLOAD_API_URL || DEFAULT_UPLOAD_API_URL,
-);
+function normalizeUploadApiSettings(value = {}) {
+  return {
+    uploadApiUrl: normalizeUploadApiUrl(value.uploadApiUrl),
+  };
+}
+
+let activeSettings = normalizeUploadApiSettings({
+  uploadApiUrl: process.env.UPLOAD_API_URL || DEFAULT_UPLOAD_API_URL,
+});
 
 function getUploadApiUrl() {
-  return activeUploadApiUrl;
+  return activeSettings.uploadApiUrl;
 }
 
 function setUploadApiUrl(value) {
-  activeUploadApiUrl = normalizeUploadApiUrl(value);
-  return activeUploadApiUrl;
+  activeSettings = { ...activeSettings, uploadApiUrl: normalizeUploadApiUrl(value) };
+  return activeSettings.uploadApiUrl;
+}
+
+function getUploadApiSettings() {
+  return { ...activeSettings };
+}
+
+function setUploadApiSettings(value) {
+  activeSettings = normalizeUploadApiSettings(value);
+  return getUploadApiSettings();
 }
 
 module.exports = {
@@ -40,4 +58,7 @@ module.exports = {
   getUploadApiUrl,
   normalizeUploadApiUrl,
   setUploadApiUrl,
+  getUploadApiSettings,
+  normalizeUploadApiSettings,
+  setUploadApiSettings,
 };

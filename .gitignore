@@ -9,4 +9,11 @@ tests/*
 !tests/cheonyu-detail-images.test.js
 !tests/cheonyu-prices.test.js
 !tests/popup-price.test.js
+!tests/shipping-accounts.test.js
+!tests/shipping-login.test.js
+!tests/result-uploader.test.js
+!tests/upload-api-settings.test.js
+!tests/renderer-settings.test.js
+!tests/shipping-scheduler.test.js
+!tests/product-archive.test.js
 docs/

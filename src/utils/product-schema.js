@@ -1,4 +1,6 @@
-/** 모든 쇼핑몰의 수집 결과·아카이브·전송에 사용하는 공통 상품 형식. */
+// src/utils/product-schema.js
+// 목적: 모든 쇼핑몰에서 공유하는 상품 필드와 사이트 식별·아카이브 키·SKU 생성 규칙을 정의한다.
+
 function createProduct(id = "") {
   return {
     id: String(id),

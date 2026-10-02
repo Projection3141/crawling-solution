@@ -1472,6 +1472,8 @@ button:disabled {
   background: rgba(7, 20, 36, 0.55);
 }
 
+#testNotificationStatus { overflow-wrap: anywhere; }
+
 .upload-log-item p {
   margin: 7px 0 0;
 }

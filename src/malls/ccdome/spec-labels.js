@@ -1,3 +1,6 @@
+// src/malls/ccdome/spec-labels.js
+// 목적: 과자생각 상품 상세 스펙의 한국어 항목명을 고정 일본어 라벨로 변환한다.
+
 /** 과자생각 상세 스펙의 고정 일본어 라벨. */
 const SPEC_LABELS_JA = Object.freeze({
   소비기한: "消費期限",

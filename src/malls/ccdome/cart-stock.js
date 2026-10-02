@@ -1,4 +1,5 @@
 // src/malls/ccdome/cart-stock.js
+// 목적: 과자생각 상품을 장바구니에 담고 실제 장바구니의 상품·수량을 확인한다.
 
 const cheerio = require("cheerio");
 const {

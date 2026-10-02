@@ -1,4 +1,6 @@
-/** src/utils/backend-product.js */
+// src/utils/backend-product.js
+// 목적: 수집한 상품·옵션·재고·상세·번역 결과를 서버 전송용 공통 상품 객체로 조합한다.
+
 const { createProduct, getProductSourceMall, applyProductSkus } = require("./product-schema");
 const { getCcdomeSpecLabelJa } = require("../malls/ccdome/spec-labels");
 

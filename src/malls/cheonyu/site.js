@@ -1,4 +1,5 @@
-//src/malls/cheonyu/site.js
+// src/malls/cheonyu/site.js
+// 목적: 천유 로그인, 상품 목록 탐색과 일괄 장바구니 담기 및 옵션 팝업 처리를 담당한다.
 
 const cheerio = require("cheerio");
 const { performance } = require("node:perf_hooks");

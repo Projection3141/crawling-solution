@@ -1,4 +1,5 @@
 // electron/preload.js
+// 목적: 렌더러에서 사용할 앱 기능과 상태 알림을 제한된 IPC API로 공개한다.
 
 const { contextBridge, ipcRenderer } = require("electron");
 
@@ -18,6 +19,10 @@ const CHANNELS = Object.freeze({
   getCredentialProfiles: "collector:get-credential-profiles",
   getUploadApiSettings: "collector:get-upload-api-settings",
   saveUploadApiSettings: "collector:save-upload-api-settings",
+  sendTestNotification: "collector:send-test-notification",
+  saveShippingAccount: "collector:save-shipping-account",
+  deleteShippingAccount: "collector:delete-shipping-account",
+  selectShippingAccount: "collector:select-shipping-account",
   getCollectionUploadLogs: "collector:get-collection-upload-logs",
   openCollectionUploadLogDirectory: "collector:open-collection-upload-log-directory",
   saveProxyProfile: "collector:save-proxy-profile",
@@ -82,6 +87,10 @@ contextBridge.exposeInMainWorld(
     getUploadApiSettings: () => invoke(CHANNELS.getUploadApiSettings),
     saveUploadApiSettings: (settings) =>
       invoke(CHANNELS.saveUploadApiSettings, settings),
+    sendTestNotification: () => invoke(CHANNELS.sendTestNotification),
+    saveShippingAccount: (account) => invoke(CHANNELS.saveShippingAccount, account),
+    deleteShippingAccount: (id) => invoke(CHANNELS.deleteShippingAccount, { id }),
+    selectShippingAccount: (id) => invoke(CHANNELS.selectShippingAccount, { id }),
     getCollectionUploadLogs: (page = 1) =>
       invoke(CHANNELS.getCollectionUploadLogs, { page }),
     openCollectionUploadLogDirectory: () =>

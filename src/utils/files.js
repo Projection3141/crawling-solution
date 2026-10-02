@@ -1,4 +1,5 @@
 // src/utils/files.js
+// 목적: 수집 결과의 디렉터리와 파일 경로를 만들고 텍스트·JSON·CSV 저장을 지원한다.
 
 const fs = require("node:fs");
 const path = require("node:path");

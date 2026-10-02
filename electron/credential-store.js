@@ -1,4 +1,5 @@
 // electron/credential-store.js
+// 목적: 프록시·OpenAI API 키·운송장 계정의 등록 정보를 암호화하여 저장하고 관리한다.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -22,6 +23,8 @@ function createEmptyData() {
     version: STORE_VERSION,
     proxies: [],
     openAiKeys: [],
+    shippingAccounts: [],
+    selectedShippingAccountId: "",
   };
 }
 
@@ -38,6 +41,8 @@ function normalizeStoredData(value) {
     version: STORE_VERSION,
     proxies: Array.isArray(value.proxies) ? value.proxies : [],
     openAiKeys: Array.isArray(value.openAiKeys) ? value.openAiKeys : [],
+    shippingAccounts: Array.isArray(value.shippingAccounts) ? value.shippingAccounts : [],
+    selectedShippingAccountId: String(value.selectedShippingAccountId || ""),
   };
 }
 
@@ -47,7 +52,7 @@ function createCredentialStore({ safeStorage, userDataDir, normalizeProxyCredent
   function ensureEncryptionAvailable() {
     if (!safeStorage?.isEncryptionAvailable?.()) {
       throw new Error(
-        "Windows 보안 저장소를 사용할 수 없어 프록시/API 키를 저장할 수 없습니다.",
+        "Windows 보안 저장소를 사용할 수 없어 계정/프록시/API 키를 저장할 수 없습니다.",
       );
     }
   }
@@ -63,7 +68,7 @@ function createCredentialStore({ safeStorage, userDataDir, normalizeProxyCredent
       return normalizeStoredData(JSON.parse(plainText));
     } catch {
       throw new Error(
-        "등록된 프록시/API 키 정보를 읽을 수 없습니다. 설정 파일이 손상되었거나 다른 Windows 사용자로 생성되었습니다.",
+        "등록된 계정/프록시/API 키 정보를 읽을 수 없습니다. 설정 파일이 손상되었거나 다른 Windows 사용자로 생성되었습니다.",
       );
     }
   }
@@ -103,6 +108,15 @@ function createCredentialStore({ safeStorage, userDataDir, normalizeProxyCredent
         createdAt: profile.createdAt,
         updatedAt: profile.updatedAt,
       })),
+      shippingAccounts: data.shippingAccounts.map((profile) => ({
+        id: profile.id,
+        name: profile.name,
+        loginId: profile.loginId,
+        hasPassword: Boolean(profile.password),
+        createdAt: profile.createdAt,
+        updatedAt: profile.updatedAt,
+      })),
+      selectedShippingAccountId: data.selectedShippingAccountId,
     };
   }
 
@@ -211,6 +225,65 @@ function createCredentialStore({ safeStorage, userDataDir, normalizeProxyCredent
     };
   }
 
+  function saveShippingAccount(input = {}) {
+    const data = readData();
+    const id = String(input.id || "").trim();
+    const existing = id ? data.shippingAccounts.find((profile) => profile.id === id) : null;
+    if (id && !existing) throw new Error("수정할 운송장 계정을 찾을 수 없습니다.");
+
+    const name = normalizeText(input.name, "운송장 계정 등록 이름", 80);
+    const loginId = String(input.loginId || "").trim();
+    const passwordProvided = typeof input.password === "string" && input.password !== "";
+    const password = passwordProvided ? input.password : String(existing?.password || "");
+    if (!loginId) throw new Error("운송장 계정 ID를 입력하세요.");
+    if (loginId.length > 256 || /[\r\n\0]/.test(loginId)) {
+      throw new Error("운송장 계정 ID 형식이 올바르지 않습니다.");
+    }
+    if (!password) throw new Error("운송장 계정 비밀번호를 입력하세요.");
+    if (password.length > 2048 || /[\r\n\0]/.test(password)) {
+      throw new Error("운송장 계정 비밀번호 형식이 올바르지 않습니다.");
+    }
+    assertUniqueName(data.shippingAccounts, id, name, "운송장 계정");
+
+    const now = new Date().toISOString();
+    const sameCredentials = existing?.loginId === loginId && existing?.password === password;
+    const profile = {
+      id: existing?.id || `shipping_${randomUUID()}`,
+      name,
+      loginId,
+      password,
+      // ID/PW가 변경되면 이전 계정으로 로그인된 브라우저 세션을 재사용하지 않는다.
+      authRevision: sameCredentials && existing.authRevision ? existing.authRevision : randomUUID(),
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+    data.shippingAccounts = existing
+      ? data.shippingAccounts.map((item) => item.id === id ? profile : item)
+      : [...data.shippingAccounts, profile];
+    data.selectedShippingAccountId = profile.id;
+    writeData(data);
+    return { summary: createSummary(data), selectedId: profile.id };
+  }
+
+  function selectShippingAccount(id) {
+    const profileId = String(id || "").trim();
+    const data = readData();
+    if (profileId && !data.shippingAccounts.some((profile) => profile.id === profileId)) {
+      throw new Error("선택한 운송장 계정을 찾을 수 없습니다. 다시 선택하세요.");
+    }
+    data.selectedShippingAccountId = profileId;
+    writeData(data);
+    return createSummary(data);
+  }
+
+  function getSelectedShippingAccount() {
+    const data = readData();
+    if (!data.selectedShippingAccountId) return null;
+    const profile = data.shippingAccounts.find((item) => item.id === data.selectedShippingAccountId);
+    if (!profile) throw new Error("선택한 운송장 계정을 찾을 수 없습니다. 다시 선택하세요.");
+    return { ...profile };
+  }
+
   function deleteProfile(collectionKey, id, label) {
     const profileId = String(id || "").trim();
     const data = readData();
@@ -221,6 +294,9 @@ function createCredentialStore({ safeStorage, userDataDir, normalizeProxyCredent
     }
 
     data[collectionKey] = items.filter((profile) => profile.id !== profileId);
+    if (collectionKey === "shippingAccounts" && data.selectedShippingAccountId === profileId) {
+      data.selectedShippingAccountId = "";
+    }
     writeData(data);
     return createSummary(data);
   }
@@ -243,6 +319,10 @@ function createCredentialStore({ safeStorage, userDataDir, normalizeProxyCredent
     getOpenAiKey: (id) => getProfile("openAiKeys", id, "OpenAI API 키"),
     saveProxy,
     saveOpenAiKey,
+    saveShippingAccount,
+    selectShippingAccount,
+    getSelectedShippingAccount,
+    deleteShippingAccount: (id) => deleteProfile("shippingAccounts", id, "운송장 계정"),
     deleteProxy: (id) => deleteProfile("proxies", id, "프록시"),
     deleteOpenAiKey: (id) => deleteProfile("openAiKeys", id, "OpenAI API 키"),
   });

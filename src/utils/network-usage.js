@@ -1,3 +1,6 @@
+// src/utils/network-usage.js
+// 목적: 브라우저 요청의 데이터 사용량을 자원 종류와 프록시별로 집계한다.
+
 const BYTES_PER_GB = 1024 ** 3;
 const RESOURCE_CATEGORIES = ["html", "js", "img", "xhr", "other"];
 

@@ -1,4 +1,5 @@
-//src/utils/browser.js
+// src/utils/browser.js
+// 목적: 브라우저 경량 실행·요청 차단·입력·클릭·대화상자 처리와 취소 연결을 지원한다.
 
 const DEFAULT_BLOCKED_URL_FRAGMENTS = [
   "googletagmanager.com",

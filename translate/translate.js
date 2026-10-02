@@ -1,4 +1,5 @@
-/** translate/translate.js */
+// translate/translate.js
+// 목적: 상품명과 옵션명을 OpenAI로 일본어·영어 번역하고 기존 번역 아카이브를 재사용·갱신한다.
 
 const fs = require("node:fs/promises");
 const path = require("node:path");

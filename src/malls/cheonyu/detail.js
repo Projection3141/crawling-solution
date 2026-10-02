@@ -1,4 +1,5 @@
 // src/malls/cheonyu/detail.js
+// 목적: 천유 상품 상세 페이지에서 이미지·가격·옵션·스펙을 추출하고 상세정보 수집을 실행한다.
 
 const cheerio = require("cheerio");
 const {

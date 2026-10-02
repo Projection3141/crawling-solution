@@ -1,4 +1,5 @@
 // src/malls/ccdome/config.js
+// 목적: 과자생각 전용 주소·화면 선택자·출력 항목을 정의하고 환경변수로 수집 설정을 구성한다.
 
 const path = require("node:path");
 const { toBoolean, toInteger } = require("../../utils/common");

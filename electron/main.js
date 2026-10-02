@@ -1,4 +1,5 @@
 // electron/main.js
+// 목적: Electron 앱의 창과 IPC를 관리하고 상품 수집·장바구니 처리·운송장 전송 및 설정을 연결한다.
 
 process.env.PLAYWRIGHT_BROWSERS_PATH ||= "0";
 
@@ -38,6 +39,7 @@ const {
 } = require("../src/cart-uploader");
 const { runCollection } = require("../src/crawler");
 const { setResultUploadLogRoot } = require("../src/utils/result-uploader");
+const { sendTestNotification } = require("../src/utils/test-notification");
 const collectionUploadLogFs = require("node:fs/promises");
 const {
     createWonToYenRateScheduler,
@@ -50,8 +52,9 @@ const { createCredentialStore } = require("./credential-store");
 const {
     DEFAULT_UPLOAD_API_URL,
     getUploadApiUrl,
-    normalizeUploadApiUrl,
-    setUploadApiUrl,
+    getUploadApiSettings,
+    normalizeUploadApiSettings,
+    setUploadApiSettings,
 } = require("../src/utils/upload-api-settings");
 
 const APP_SCHEME = "mall-collector";
@@ -78,6 +81,10 @@ const CHANNELS = Object.freeze({
     getCredentialProfiles: "collector:get-credential-profiles",
     getUploadApiSettings: "collector:get-upload-api-settings",
     saveUploadApiSettings: "collector:save-upload-api-settings",
+    sendTestNotification: "collector:send-test-notification",
+    saveShippingAccount: "collector:save-shipping-account",
+    deleteShippingAccount: "collector:delete-shipping-account",
+    selectShippingAccount: "collector:select-shipping-account",
     getCollectionUploadLogs: "collector:get-collection-upload-logs",
     openCollectionUploadLogDirectory: "collector:open-collection-upload-log-directory",
     saveProxyProfile: "collector:save-proxy-profile",
@@ -137,6 +144,7 @@ function getUploadApiSettingsPath() {
 
 function createUploadApiSettingsResult(uploadApiUrl, source) {
     return {
+        ...getUploadApiSettings(),
         uploadApiUrl,
         defaultUploadApiUrl: DEFAULT_UPLOAD_API_URL,
         isDefault: uploadApiUrl === DEFAULT_UPLOAD_API_URL,
@@ -163,10 +171,12 @@ function getCollectionUploadLogRoot() {
 function loadUploadApiSettings() {
     const settingsPath = getUploadApiSettingsPath();
     let storedUrl = "";
+    let storedSettings = {};
 
     try {
         if (isFile(settingsPath)) {
             const stored = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+            storedSettings = stored && typeof stored === "object" ? stored : {};
             storedUrl = String(stored?.uploadApiUrl || "").trim();
         }
     } catch (error) {
@@ -185,16 +195,17 @@ function loadUploadApiSettings() {
     let uploadApiUrl;
 
     try {
-        uploadApiUrl = setUploadApiUrl(
-            storedUrl || environmentUrl || DEFAULT_UPLOAD_API_URL,
-        );
+        uploadApiUrl = setUploadApiSettings({
+            ...storedSettings,
+            uploadApiUrl: storedUrl || environmentUrl || DEFAULT_UPLOAD_API_URL,
+        }).uploadApiUrl;
     } catch (error) {
         console.warn(
             `[UPLOAD API] 저장된 URL이 올바르지 않아 기본값으로 복원합니다: ` +
                 `${error?.message || error}`,
         );
         source = "default";
-        uploadApiUrl = setUploadApiUrl(DEFAULT_UPLOAD_API_URL);
+        uploadApiUrl = setUploadApiSettings({ uploadApiUrl: DEFAULT_UPLOAD_API_URL }).uploadApiUrl;
     }
 
     return createUploadApiSettingsResult(uploadApiUrl, source);
@@ -202,18 +213,19 @@ function loadUploadApiSettings() {
 
 async function saveUploadApiSettings(payload) {
     const requestedUrl = String(payload?.uploadApiUrl || "").trim();
-    const uploadApiUrl = normalizeUploadApiUrl(
-        requestedUrl || DEFAULT_UPLOAD_API_URL,
-    );
+    const settings = normalizeUploadApiSettings({ ...getUploadApiSettings(), ...payload, uploadApiUrl: requestedUrl });
+    const { uploadApiUrl } = settings;
     const settingsPath = getUploadApiSettingsPath();
 
     ensureDir(path.dirname(settingsPath));
-    await fs.promises.writeFile(
-        settingsPath,
-        `${JSON.stringify({ uploadApiUrl }, null, 2)}\n`,
-        "utf8",
-    );
-    setUploadApiUrl(uploadApiUrl);
+    const temporaryPath = `${settingsPath}.${randomUUID()}.tmp`;
+    try {
+        await fs.promises.writeFile(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+        await fs.promises.rename(temporaryPath, settingsPath);
+    } finally {
+        await fs.promises.rm(temporaryPath, { force: true });
+    }
+    setUploadApiSettings(settings);
 
     console.log(`[UPLOAD API] URL 설정 저장: ${uploadApiUrl}`);
     return createUploadApiSettingsResult(
@@ -484,10 +496,12 @@ function assertTrustedSender(event) {
 }
 
 function summarizeCollectionUploadLog(log, dateDirectory, fileName) {
-    const products = Array.isArray(log?.request?.data)
+    const products = Array.isArray(log?.request)
+        ? log.request
+        : Array.isArray(log?.request?.data)
         ? log.request.data
         : [];
-    const sampleProductIds = products
+    const sampleProductIds = Array.isArray(log?.sampleIds) ? log.sampleIds : products
         .map(
             (product) =>
                 product?.productId ?? product?.product_id ?? product?.id,
@@ -513,6 +527,8 @@ function summarizeCollectionUploadLog(log, dateDirectory, fileName) {
         uploadApiUrl: log?.uploadApiUrl || "",
         status: log?.response?.status ?? null,
         error: log?.error || "",
+        method: log?.method || "POST",
+        archiveRef: log?.archiveRef || "",
         sampleProductIds,
     };
 }
@@ -1702,12 +1718,27 @@ function registerIpcHandlers() {
         ensureCredentialStore().getSummary(),
     );
 
+    for (const method of ["saveShippingAccount", "deleteShippingAccount", "selectShippingAccount"]) {
+        registerIpcHandler(CHANNELS[method], (payload) => {
+            if (shippingScheduler?.getState().running) {
+                throw new Error("현재 자동 전송이 진행 중입니다. 완료 후 운송장 계정을 변경하세요.");
+            }
+            return ensureCredentialStore()[method](
+                method === "saveShippingAccount" ? payload : payload?.id,
+            );
+        });
+    }
+
     registerIpcHandler(CHANNELS.getUploadApiSettings, () =>
         loadUploadApiSettings(),
     );
 
     registerIpcHandler(CHANNELS.saveUploadApiSettings, (payload) =>
         saveUploadApiSettings(payload),
+    );
+
+    registerIpcHandler(CHANNELS.sendTestNotification, () =>
+        sendTestNotification({ appVersion: app.getVersion() }),
     );
 
     registerIpcHandler(CHANNELS.getCollectionUploadLogs, (payload) =>
@@ -2043,6 +2074,7 @@ async function bootstrap() {
                 environmentInfo.userDataDir,
                 "kse-profile",
             ),
+            getAccount: () => ensureCredentialStore().getSelectedShippingAccount(),
 
             onStateChanged: () => {
                 emitState();

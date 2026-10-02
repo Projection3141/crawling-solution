@@ -1,4 +1,5 @@
-/** translate/convert.js */
+// translate/convert.js
+// 목적: 씨티은행 엔화 환율을 주기적으로 갱신·기록하고 원화 가격을 엔화로 환산한다.
 
 const fs = require("node:fs/promises");
 const path = require("node:path");

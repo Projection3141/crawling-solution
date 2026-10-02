@@ -1,4 +1,5 @@
 // src/malls/cheonyu/index.js
+// 목적: 천유의 상품·재고·상세정보 수집 흐름과 브라우저 세션 및 진행 상태를 관리한다.
 
 const { performance } = require("node:perf_hooks");
 const { chromium } = require("playwright");
