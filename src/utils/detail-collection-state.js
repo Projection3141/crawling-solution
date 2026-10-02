@@ -9,8 +9,8 @@ const {
 } = require("./product-archive");
 
 const DETAIL_STATE_SCHEMA_VERSION = 1;
-// 카테고리 ID 추가 이전의 상세 성공도 다음 상세 수집 범위 내에서 다시 확인한다.
-const DETAIL_DATA_SCHEMA_VERSION = 5;
+// 특별 마크(special) 추가 이전의 상세 성공도 다음 상세 수집 범위 내에서 다시 확인한다.
+const DETAIL_DATA_SCHEMA_VERSION = 6;
 const DETAIL_STATE_PATH = path.join(
   ARCHIVE_DIRECTORY,
   "detail-collection-state.json",

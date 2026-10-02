@@ -18,6 +18,11 @@ function normalizeCategoryId(value) {
   return /^\d+$/.test(text) && /[1-9]/.test(text) ? text : null;
 }
 
+/** 특별 마크 이름은 문자열로 저장하고 미확인·빈 값은 null로 정리한다. */
+function normalizeProductSpecial(value) {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() || null : null;
+}
+
 function createProduct(id = "") {
   return {
     id: String(id),
@@ -25,6 +30,7 @@ function createProduct(id = "") {
     brandId: "",
     category: normalizeProductCategory(),
     categoryId: null,
+    special: null,
     createdAt: null,
     currency: "KRW",
     descriptionEn: "",
@@ -123,4 +129,4 @@ function applyProductSkus(product) {
   return product;
 }
 
-module.exports = { createProduct, PRODUCT_FIELDS, getProductSourceMall, getProductArchiveKey, normalizeProductTimestamp, normalizeProductCategory, normalizeCategoryId, applyProductSkus };
+module.exports = { createProduct, PRODUCT_FIELDS, getProductSourceMall, getProductArchiveKey, normalizeProductTimestamp, normalizeProductCategory, normalizeCategoryId, normalizeProductSpecial, applyProductSkus };

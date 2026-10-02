@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { createBackendProducts } = require("../src/utils/backend-product");
 
 function fixture(t, initial) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mall-archive-test-"));
@@ -229,4 +230,70 @@ test("과자생각 상세 코드의 앞자리 0을 병합·보존하고 다음 �
   }
   const payload = { type: "아카이브", data: f.archiveToProductArray(await f.readProductArchive()) };
   assert.equal(JSON.parse(JSON.stringify(payload)).data[0].categoryId, "021001");
+});
+
+test("기존 아카이브에는 special을 null로 보완하고 내부 관측 플래그를 저장하지 않는다", async (t) => {
+  const f = fixture(t, { cheonyu: [{ id: "93796", sourceMall: "cheonyu" }], ccdome: [] });
+  assert.equal(f.archiveToProductArray(await f.readProductArchive())[0].special, null);
+  await f.updateProductArchive([]);
+  assert.equal(f.readStored().cheonyu[0].special, null);
+  assert.equal(Object.hasOwn(f.readStored().cheonyu[0], "specialObserved"), false);
+});
+
+test("천유 특별 마크를 저장·전송하고 정상 상세에서 마크가 사라지면 null로 갱신한다", async (t) => {
+  const f = fixture(t, { cheonyu: [], ccdome: [] });
+  for (const special of ["핫템", "착한 상품", null]) {
+    const products = await createBackendProducts({ collectionMode: "detail", detailItems: [{
+      productId: "93796", sourceMall: "cheonyu", consumerPrice: 1000,
+      special, specialObserved: true,
+    }] });
+    assert.equal(products[0].special, special);
+    assert.equal(products[0].specialObserved, true);
+    const result = await f.updateProductArchive(products, { source: "detail" });
+    assert.equal(result.currentProducts[0].special, special);
+    assert.equal(f.readStored().cheonyu[0].special, special);
+    assert.equal(Object.hasOwn(result.currentProducts[0], "specialObserved"), false);
+    const payload = { type: "아카이브", data: f.archiveToProductArray(await f.readProductArchive()) };
+    const sent = JSON.parse(JSON.stringify(payload)).data[0];
+    assert.equal(sent.special, special);
+    assert.equal(Object.hasOwn(sent, "specialObserved"), false);
+  }
+});
+
+test("일반·번역·실패하거나 미관측인 상세 수집은 기존 특별 마크를 유지한다", async (t) => {
+  const item = { id: "93796", sourceMall: "cheonyu", special: "핫템" };
+  const f = fixture(t, { cheonyu: [item], ccdome: [] });
+  for (const source of ["general", "translation"]) {
+    await f.updateProductArchive([{ ...item, special: null, specialObserved: true }], { source });
+    assert.equal(f.readStored().cheonyu[0].special, "핫템");
+  }
+  for (const detail of [
+    {},
+    { special: null, specialObserved: false, consumerPrice: 1000 },
+    { special: "착한 상품", specialObserved: false, consumerPrice: 1000 },
+    { special: null, specialObserved: true, consumerPrice: 1000, detailError: "상세 수집 실패" },
+    { special: "착한 상품", specialObserved: true, consumerPrice: 1000, detailError: "상세 수집 실패" },
+    { special: null, specialObserved: true, consumerPrice: 0 },
+  ]) {
+    const products = await createBackendProducts({ collectionMode: "detail", detailItems: [{
+      productId: item.id, sourceMall: "cheonyu", ...detail,
+    }] });
+    assert.equal(products[0].specialObserved, false);
+    await f.updateProductArchive(products, { source: "detail" });
+    assert.equal(f.readStored().cheonyu[0].special, "핫템");
+  }
+  await f.updateProductArchive([{ ...item, special: null }], { source: "detail" });
+  assert.equal(f.readStored().cheonyu[0].special, "핫템");
+});
+
+test("천유 외 쇼핑몰에서는 special이 null이며 천유 마크 갱신 규칙을 적용하지 않는다", async (t) => {
+  const f = fixture(t, { cheonyu: [], ccdome: [] });
+  const products = await createBackendProducts({ collectionMode: "detail", detailItems: [{
+    productId: "1000005467", sourceMall: "ccdome", consumerPrice: 1000,
+    special: "핫템", specialObserved: true,
+  }] });
+  assert.equal(products[0].special, null);
+  assert.equal(products[0].specialObserved, false);
+  const result = await f.updateProductArchive(products, { source: "detail" });
+  assert.equal(result.currentProducts[0].special, null);
 });

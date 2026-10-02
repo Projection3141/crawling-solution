@@ -30,7 +30,7 @@ const VERSIONED_ARCHIVE_FILE_PATTERN =
 
 let archiveQueue = Promise.resolve();
 
-const { createProduct, PRODUCT_FIELDS, getProductSourceMall, getProductArchiveKey, normalizeProductTimestamp, normalizeProductCategory, normalizeCategoryId, applyProductSkus } = require("./product-schema");
+const { createProduct, PRODUCT_FIELDS, getProductSourceMall, getProductArchiveKey, normalizeProductTimestamp, normalizeProductCategory, normalizeCategoryId, normalizeProductSpecial, applyProductSkus } = require("./product-schema");
 
 const OPTION_FIELDS = [
   "id",
@@ -65,6 +65,7 @@ const DETAIL_FIELDS = new Set([
   "nameEn",
   "category",
   "categoryId",
+  "special",
   "subcategoryId",
   "brandId",
   "originalPrice",
@@ -289,6 +290,7 @@ function normalizeIncomingProduct(product = {}) {
   normalized.sourceMall = getProductSourceMall(product);
   normalized.category = normalizeProductCategory(product.category);
   normalized.categoryId = normalizeCategoryId(product.categoryId);
+  normalized.special = normalizeProductSpecial(product.special);
   // 구버전 환산 시각을 이전한다. 제거된 필드는 PRODUCT_FIELDS에 없어 출력되지 않는다.
   normalized.createdAt = normalizeProductTimestamp(product.createdAt)
     || normalizeProductTimestamp(product.convertTime);
@@ -560,6 +562,7 @@ function canUpdateProductField(source, field, value) {
     }
 
     if (field === "categoryId") return normalizeCategoryId(value) !== null;
+    if (field === "special") return value === null || typeof value === "string";
 
     if (["originalPrice", "wholesalePrice", "salePrice"].includes(field)) {
       return hasFiniteArchiveNumber(value);
@@ -745,6 +748,7 @@ function mergeProduct(
   collectedAt,
 ) {
   const inventoryObserved = incomingProduct?.inventoryObserved === true;
+  const specialObserved = incomingProduct?.specialObserved === true;
   const inventoryUnavailable =
     incomingProduct?.inventoryUnavailable === true;
   const incoming = normalizeIncomingProduct(incomingProduct);
@@ -778,6 +782,10 @@ function mergeProduct(
 
     for (const field of PRODUCT_FIELDS) {
       if (["id", "options"].includes(field)) {
+        continue;
+      }
+
+      if (field === "special" && (!specialObserved || incoming.sourceMall !== "cheonyu")) {
         continue;
       }
 
@@ -922,6 +930,7 @@ function materializeProduct(product) {
   const result = {};
   source.category = normalizeProductCategory(source.category);
   source.categoryId = normalizeCategoryId(source.categoryId);
+  source.special = normalizeProductSpecial(source.special);
 
   for (const field of PRODUCT_FIELDS) {
     if (field === "options") {

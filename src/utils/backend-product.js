@@ -1,7 +1,7 @@
 // src/utils/backend-product.js
 // 목적: 수집한 상품·옵션·재고·상세·번역 결과를 서버 전송용 공통 상품 객체로 조합한다.
 
-const { createProduct, getProductSourceMall, normalizeProductCategory, normalizeCategoryId, applyProductSkus } = require("./product-schema");
+const { createProduct, getProductSourceMall, normalizeProductCategory, normalizeCategoryId, normalizeProductSpecial, applyProductSkus } = require("./product-schema");
 const { getCcdomeSpecLabelJa } = require("../malls/ccdome/spec-labels");
 
 /** 문자열을 공백이 정리된 값으로 변환한다. */
@@ -718,6 +718,10 @@ if (!isDetail) {
     const nameJa = normalizeText(
       translationItem?.nameJa,
     );
+    // 정상 상세에서 마크가 없음을 확인한 경우에만 과거 마크를 지울 수 있다.
+    const specialObserved = isDetail && sourceMall === "cheonyu" &&
+      detailItem.specialObserved === true &&
+      !normalizeText(detailItem.detailError) && Number(detailItem.consumerPrice) > 0;
 
     return applyProductSkus({
       ...createProduct(productId),
@@ -737,6 +741,8 @@ if (!isDetail) {
       categoryId: isDetail
         ? normalizeCategoryId(detailItem.categoryId)
         : null,
+      special: specialObserved ? normalizeProductSpecial(detailItem.special) : null,
+      specialObserved,
 
       /** 상세 수집에서 확보한 brandHint 값을 백엔드 brandId로 전달한다. */
       brandId: isDetail

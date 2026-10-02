@@ -121,6 +121,7 @@ const CSV_HEADERS = {
     "categoryDepth4",
     "categoryDepth5",
     "categoryId",
+    "special",
     "productNo",
     "barcode",
     "outerBoxText",

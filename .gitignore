@@ -18,4 +18,5 @@ tests/*
 !tests/product-archive.test.js
 !tests/product-category.test.js
 !tests/category-parsers.test.js
+!tests/cheonyu-special.test.js
 docs/

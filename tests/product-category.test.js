@@ -96,7 +96,7 @@ test("이전 상세 성공 상품을 선택 범위에서 재수집하고 새 규
     fs.rmSync(directory, { recursive: true, force: true });
   });
   fs.writeFileSync(state.DETAIL_STATE_PATH, JSON.stringify({ schemaVersion: 1, products: {
-    "cheonyu:79136": { mall: "cheonyu", productId: "79136", detailStatus: "success", detailDataSchemaVersion: 4 },
+    "cheonyu:79136": { mall: "cheonyu", productId: "79136", detailStatus: "success", detailDataSchemaVersion: 5 },
     "cheonyu:2": { mall: "cheonyu", productId: "2", detailStatus: "success", detailDataSchemaVersion: 4 },
     "cheonyu:3": { mall: "cheonyu", productId: "3", detailStatus: "success", detailDataSchemaVersion: state.DETAIL_DATA_SCHEMA_VERSION },
   } }));

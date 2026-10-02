@@ -1,5 +1,5 @@
 // src/malls/cheonyu/detail.js
-// 목적: 천유 상품 상세 페이지에서 카테고리·이미지·가격·옵션·스펙을 추출하고 상세정보 수집을 실행한다.
+// 목적: 천유 상품 상세 페이지에서 카테고리·특별상품 마크·이미지·가격·옵션·스펙을 추출하고 상세정보 수집을 실행한다.
 
 const cheerio = require("cheerio");
 const { normalizeCategoryId } = require("../../utils/product-schema");
@@ -46,6 +46,9 @@ const CHEONYU_DETAIL = {
     category3: "#navCateTit3",
     category4: "#navCateTit4",
     category5: "#navCateTit5",
+    specialPhoto:
+      "#productView > .detaile_info_wrap > .photo_wrap > .large_photo, " +
+      "#productView > .detail_info_wrap > .photo_wrap > .large_photo",
     productName: ".info_wrap .pdt_name span",
     topInfo: ".pdt-top-info",
     infoNumber: ".pdt-top-info .info-number",
@@ -77,6 +80,21 @@ const CHEONYU_DETAIL = {
 };
 
 const CHEONYU_BLOCKING_HTTP_STATUS_CODES = new Set([403, 429]);
+const CHEONYU_SPECIAL_MARKS = Object.freeze({
+  5: "가챠",
+  6: "super 초특가",
+  7: "도전최저가",
+  8: "핫템",
+  10: "눈물의 땡처리",
+  11: "시즌오프",
+  12: "블랙딜",
+  14: "마지막 반값",
+  15: "랜덤가챠",
+  16: "착한 상품",
+  17: "반짝할인",
+  18: "직수입",
+  20: "크리스마스",
+});
 
 /** 기준 상세 지연의 70~160% 범위에서 다음 요청 간격을 선택한다. */
 function getRandomCheonyuDetailDelayMs(baseDelayMs, random = Math.random) {
@@ -481,6 +499,35 @@ function parseCategoryId($, categoryDepths, baseUrl) {
   return uniqueIds.size === 1 && !uniqueIds.has(null) ? ids[0] : null;
 }
 
+/** 대표 사진 영역의 마크만 읽고 페이지 미확인과 정상적인 마크 없음을 구분한다. */
+function parseSpecialMark($, baseUrl) {
+  const photos = $(CHEONYU_DETAIL.selectors.specialPhoto);
+  if (photos.length !== 1) return { special: null, specialObserved: false };
+
+  const result = { special: null, specialObserved: true };
+  const marks = photos.find(".mark_area");
+  if (marks.length !== 1) return result;
+
+  const style = marks.attr("style") || "";
+  const declarations = Array.from(style.matchAll(/(?:^|;)\s*background-image\s*:\s*([^;]*)/gi));
+  if (declarations.length !== 1) return result;
+
+  const value = declarations[0][1].replace(/\s*!important\s*$/i, "").trim();
+  const image = value.match(/^url\(\s*(?:"([^"]*)"|'([^']*)'|([^'"()\s]+))\s*\)$/i);
+  if (!image) return result;
+
+  try {
+    const url = new URL((image[1] ?? image[2] ?? image[3]).trim(), baseUrl);
+    if (!["http:", "https:"].includes(url.protocol)) return result;
+    const filename = url.pathname.match(/(?:^|\/)circle400_(\d+)\.png$/i);
+    result.special = filename ? CHEONYU_SPECIAL_MARKS[filename[1]] ?? null : null;
+  } catch {
+    // 이미지 주소가 잘못되면 이름을 추측하지 않는다.
+  }
+
+  return result;
+}
+
 /** 천유 상품 상세 HTML을 허브용 상세 row로 정규화한다. */
 function parseDetailHtml(html, product, config) {
   const $ = cheerio.load(html);
@@ -562,6 +609,7 @@ function parseDetailHtml(html, product, config) {
     productId: String(product.productId || productNo || ""),
     productUrl: product.productUrl,
     productName,
+    ...parseSpecialMark($, config.baseUrl),
     brandHint: product.brandHint || inferBrand(productName),
     categoryHint: inferCategory(productName),
     categoryDepth1,
