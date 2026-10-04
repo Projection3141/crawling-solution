@@ -502,10 +502,14 @@ function assertTrustedSender(event) {
 }
 
 function summarizeCollectionUploadLog(log, dateDirectory, fileName) {
+    const type = log?.type || log?.request?.type || "수집정보";
     const products = Array.isArray(log?.request)
         ? log.request
         : Array.isArray(log?.request?.data)
         ? log.request.data
+        : type === "아카이브" && log?.request?.data &&
+            typeof log.request.data === "object"
+        ? Object.values(log.request.data).filter(Array.isArray).flat()
         : [];
     const sampleProductIds = Array.isArray(log?.sampleIds) ? log.sampleIds : products
         .map(
@@ -526,7 +530,7 @@ function summarizeCollectionUploadLog(log, dateDirectory, fileName) {
         fileName,
         sentAt: log?.sentAt || null,
         success: log?.success === true,
-        type: log?.type || log?.request?.type || "수집정보",
+        type,
         itemCount: Number.isFinite(log?.itemCount)
             ? log.itemCount
             : products.length,

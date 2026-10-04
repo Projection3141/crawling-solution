@@ -1,18 +1,48 @@
 // src/product-upload-scheduler.js
-// 목적: 수집 완료 시 전체 상품을 전송하고 실패한 전송 데이터를 보관·재시도한다.
+// 목적: 수집 완료 시 쇼핑몰별 상품 아카이브를 전송하고 실패한 데이터를 보관·재시도한다.
 
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
-const { archiveToProductArray, readProductArchive, ARCHIVE_PATH } = require("./utils/product-archive");
+const { archiveToMallGroups, readProductArchive, ARCHIVE_PATH } = require("./utils/product-archive");
+const { getProductSourceMall } = require("./utils/product-schema");
 const { postResultJson } = require("./utils/result-uploader");
 const { getUploadApiUrl } = require("./utils/upload-api-settings");
 
 const RETRY_INTERVAL_MS = 5 * 60 * 1000;
+const UPLOAD_STATE_VERSION = 2;
+
+/** 구형 대기 배열만 쇼핑몰별로 묶고, 새 대기 데이터는 아카이브 구조 그대로 보존한다. */
+function normalizeUploadData(value, legacyArray = false) {
+  if (legacyArray) {
+    if (!Array.isArray(value)) throw new Error("구형 전송 대기 상품 배열이 올바르지 않습니다.");
+    const groups = Object.assign(Object.create(null), { cheonyu: [], ccdome: [] });
+    for (const product of value) {
+      const mall = product && typeof product === "object" && !Array.isArray(product)
+        ? getProductSourceMall(product) : "";
+      if (!mall) throw new Error("전송 대기 상품의 쇼핑몰을 확인할 수 없습니다.");
+      if (!Object.hasOwn(groups, mall)) groups[mall] = [];
+      groups[mall].push(product);
+    }
+    value = groups;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("전송할 쇼핑몰별 상품 아카이브가 올바르지 않습니다.");
+  }
+  for (const [mall, products] of Object.entries(value)) {
+    if (!mall.trim() || !Array.isArray(products) || products.some(product =>
+      !product || typeof product !== "object" || Array.isArray(product) ||
+      !String(product.id || product.productId || "").trim() ||
+      (product.sourceMall && product.sourceMall !== mall))) {
+      throw new Error(`전송할 쇼핑몰별 상품 배열이 올바르지 않습니다: ${mall}`);
+    }
+  }
+  return JSON.parse(JSON.stringify(value));
+}
 
 function createProductUploadScheduler({
   statePath,
-  readProducts = async () => archiveToProductArray(await readProductArchive()),
+  readProducts = async () => archiveToMallGroups(await readProductArchive()),
   uploadProducts = (products, options) => postResultJson("아카이브", products, options),
   getDestination = getUploadApiUrl,
   onStateChanged = () => {},
@@ -29,7 +59,7 @@ function createProductUploadScheduler({
 
   const getState = () => ({
     enabled, running, pending: Boolean(pending),
-    pendingProductCount: pending?.products.length || 0,
+    pendingProductCount: pending ? Object.values(pending.data).reduce((sum, products) => sum + products.length, 0) : 0,
     nextRetryAt, lastSuccessAt, lastError,
   });
   const emitState = () => onStateChanged(getState());
@@ -44,7 +74,7 @@ function createProductUploadScheduler({
   async function saveState() {
     await fs.mkdir(path.dirname(statePath), { recursive: true });
     const temporaryPath = `${statePath}.tmp`;
-    await fs.writeFile(temporaryPath, JSON.stringify({ version: 1, enabled, pending }), "utf8");
+    await fs.writeFile(temporaryPath, JSON.stringify({ version: UPLOAD_STATE_VERSION, enabled, pending }), "utf8");
     await fs.rename(temporaryPath, statePath);
   }
 
@@ -82,7 +112,7 @@ function createProductUploadScheduler({
         return pending;
       });
       if (!sent) return;
-      await uploadProducts(sent.products, { url: sent.url, archiveRef: sent.archiveRef });
+      await uploadProducts(sent.data, { url: sent.url, archiveRef: sent.archiveRef });
       await serialize(async () => {
         // 이전 요청의 성공 응답으로 그 사이 완료된 새 전송을 지우지 않는다.
         if (pending?.id === sent.id) {
@@ -116,12 +146,11 @@ function createProductUploadScheduler({
   async function notifyCollectionCompleted() {
     try {
       await serialize(async () => {
-        const products = await readProducts();
-        if (!Array.isArray(products)) throw new Error("전송할 상품 아카이브를 읽지 못했습니다.");
+        const data = normalizeUploadData(await readProducts());
         pending = {
           id: randomUUID(), url: getDestination(), archiveRef: ARCHIVE_PATH,
           createdAt: new Date().toISOString(),
-          products: JSON.parse(JSON.stringify(products)),
+          data,
         };
         // 전체 아카이브이므로 아직 보내지 못한 이전 완료 데이터는 최신본으로 대체한다.
         await saveState();
@@ -158,13 +187,18 @@ function createProductUploadScheduler({
     await serialize(async () => {
       try {
         const saved = JSON.parse(await fs.readFile(statePath, "utf8"));
-        if (saved.version !== 1 || typeof saved.enabled !== "boolean" ||
+        if (![1, UPLOAD_STATE_VERSION].includes(saved.version) || typeof saved.enabled !== "boolean" ||
             (saved.pending !== null && (!saved.pending?.id ||
-              typeof saved.pending.url !== "string" || !Array.isArray(saved.pending.products)))) {
+              typeof saved.pending.url !== "string"))) {
           throw new Error("전송 대기 파일 형식이 올바르지 않습니다.");
         }
+        const restored = saved.pending === null ? null : {
+          id: saved.pending.id, url: saved.pending.url,
+          archiveRef: saved.pending.archiveRef, createdAt: saved.pending.createdAt,
+          data: normalizeUploadData(saved.version === 1 ? saved.pending.products : saved.pending.data, saved.version === 1),
+        };
         enabled = saved.enabled;
-        pending = saved.pending;
+        pending = restored;
       } catch (error) {
         if (error.code !== "ENOENT") lastError = `전송 대기 복원 실패: ${error.message}`;
       }

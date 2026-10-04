@@ -163,7 +163,11 @@ async function requestJsonWithAudit({
 
   const auditEntry = (success, error) => {
     const items = Array.isArray(requestPayload) ? requestPayload
-      : Array.isArray(requestPayload?.data) ? requestPayload.data : validatedData;
+      : Array.isArray(requestPayload?.data) ? requestPayload.data
+      : type === "아카이브" && requestPayload?.data &&
+          typeof requestPayload.data === "object"
+        ? Object.values(requestPayload.data).filter(Array.isArray).flat()
+        : validatedData;
     return {
       success,
       type,

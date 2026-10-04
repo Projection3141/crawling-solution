@@ -1194,6 +1194,7 @@ module.exports = {
   ARCHIVE_DIRECTORY,
   ARCHIVE_PATH,
   ARCHIVE_VERSION,
+  archiveToMallGroups,
   archiveToProductArray,
   archiveToTranslationItems,
   readProductArchive,
