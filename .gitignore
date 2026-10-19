@@ -6,4 +6,5 @@ release/
 .DS_Store
 Thumbs.db
 tests/*
+!tests/result-upload-log-cleanup.test.js
 docs/

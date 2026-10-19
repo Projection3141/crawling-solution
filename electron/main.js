@@ -39,6 +39,10 @@ const {
 } = require("../src/cart-uploader");
 const { runCollection } = require("../src/crawler");
 const { setResultUploadLogRoot } = require("../src/utils/result-uploader");
+const {
+    cleanupResultUploadLogs,
+    RESULT_UPLOAD_LOG_CLEANUP_INTERVAL_MS,
+} = require("../src/utils/result-upload-log-cleanup");
 const { sendTestNotification } = require("../src/utils/test-notification");
 const collectionUploadLogFs = require("node:fs/promises");
 const {
@@ -156,6 +160,7 @@ function createUploadApiSettingsResult(uploadApiUrl, source) {
 
 const COLLECTION_UPLOAD_LOG_DIRECTORY_NAME = "collection-upload-logs";
 let collectionUploadLogRoot = "";
+let collectionUploadLogCleanupTimer = null;
 
 function getCollectionUploadLogRoot() {
     if (collectionUploadLogRoot) return collectionUploadLogRoot;
@@ -2061,10 +2066,16 @@ async function bootstrap() {
     Menu.setApplicationMenu(null);
 
     collectionUploadLogRoot = getCollectionUploadLogRoot();
+    // 대기 데이터 복구·재전송보다 먼저 오래된 로그를 정리해 공간을 확보한다.
+    await cleanupResultUploadLogs(collectionUploadLogRoot);
     await collectionUploadLogFs.mkdir(collectionUploadLogRoot, {
         recursive: true,
     });
     setResultUploadLogRoot(collectionUploadLogRoot);
+    collectionUploadLogCleanupTimer = setInterval(() => {
+        void cleanupResultUploadLogs(collectionUploadLogRoot);
+    }, RESULT_UPLOAD_LOG_CLEANUP_INTERVAL_MS);
+    collectionUploadLogCleanupTimer.unref();
 
     environmentInfo = loadEnvironment(app);
     loadUploadApiSettings();
@@ -2167,6 +2178,7 @@ if (isSquirrelStartup) {
         });
 
         app.on("before-quit", () => {
+            clearInterval(collectionUploadLogCleanupTimer);
             shippingScheduler?.stop();
             productUploadScheduler?.stop();
             wonToYenRateScheduler?.stop();
