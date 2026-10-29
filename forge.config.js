@@ -1,9 +1,5 @@
-const fs = require("node:fs");
 const path = require("node:path");
 const { version } = require("./package.json");
-
-const iconBase = path.resolve(__dirname, "assets", "icon");
-const windowsIcon = `${iconBase}.ico`;
 
 /**
  * Electron Forge 패키징 설정이다.

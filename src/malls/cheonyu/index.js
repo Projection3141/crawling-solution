@@ -34,49 +34,12 @@ const {
   resetCheonyuPopupWorkloadTracker,
 } = require("./site");
 
-const CHEONYU_LOG_COLORS = {
-  reset: "\x1b[0m",
-  error: "\x1b[31m",
-  warn: "\x1b[33m",
-  success: "\x1b[32m",
-  info: "\x1b[90m",
-};
-const CHEONYU_LOG_LABELS = {
-  error: "[ERROR]",
-  warn: "[WARN]",
-  success: "[SUCCESS]",
-  info: "[INFO]",
-};
-const CHEONYU_LOG_ENABLED_COLOR = process.stdout?.isTTY;
-
-function logCheonyu(level, message, details) {
-  const color = CHEONYU_LOG_ENABLED_COLOR ? CHEONYU_LOG_COLORS[level] : "";
-  const reset = CHEONYU_LOG_ENABLED_COLOR ? CHEONYU_LOG_COLORS.reset : "";
-  const label = CHEONYU_LOG_LABELS[level] || "[INFO]";
-  const line = `${color}${label} ${message}${reset}`;
-
-  if (details !== undefined) {
-    if (level === "error" && console.error) {
-      console.error(line, details);
-      return;
-    }
-
-    console.log(line, details);
-    return;
-  }
-
-  if (level === "error") {
-    console.error(line);
-    return;
-  }
-
-  console.log(line);
-}
-
-const logCheonyuError = (message, details) => logCheonyu("error", message, details);
-const logCheonyuWarn = (message, details) => logCheonyu("warn", message, details);
-const logCheonyuSuccess = (message, details) => logCheonyu("success", message, details);
-const logCheonyuInfo = (message, details) => logCheonyu("info", message, details);
+const {
+  logCheonyuError,
+  logCheonyuWarn,
+  logCheonyuSuccess,
+  logCheonyuInfo,
+} = require("./logger");
 
 const CHEONYU_COLLECTION_CHUNK_SIZE = 2000;
 const CHEONYU_CYCLE_RELOAD_HEALTH_WINDOW = 5;

@@ -2,6 +2,7 @@
 // 목적: 천유 로그인, 상품 목록 탐색과 일괄 장바구니 담기 및 옵션 팝업 처리를 담당한다.
 
 const cheerio = require("cheerio");
+const { extractPageNumber } = require("../shared/parsing");
 const { performance } = require("node:perf_hooks");
 const { fillFirstAvailable } = require("../../utils/browser");
 const {
@@ -27,49 +28,11 @@ const {
   withSiteRetry,
 } = require("../../utils/site-safety");
 
-const CHEONYU_LOG_COLORS = {
-  reset: "\x1b[0m",
-  error: "\x1b[31m",
-  warn: "\x1b[33m",
-  success: "\x1b[32m",
-  info: "\x1b[90m",
-};
-const CHEONYU_LOG_LABELS = {
-  error: "[ERROR]",
-  warn: "[WARN]",
-  success: "[SUCCESS]",
-  info: "[INFO]",
-};
-const CHEONYU_LOG_ENABLED_COLOR = process.stdout?.isTTY;
-
-function logCheonyu(level, message, details) {
-  const color = CHEONYU_LOG_ENABLED_COLOR ? CHEONYU_LOG_COLORS[level] : "";
-  const reset = CHEONYU_LOG_ENABLED_COLOR ? CHEONYU_LOG_COLORS.reset : "";
-  const label = CHEONYU_LOG_LABELS[level] || "[INFO]";
-  const line = `${color}${label} ${message}${reset}`;
-
-  if (details !== undefined) {
-    if (level === "error" && console.error) {
-      console.error(line, details);
-      return;
-    }
-
-    console.log(line, details);
-    return;
-  }
-
-  if (level === "error") {
-    console.error(line);
-    return;
-  }
-
-  console.log(line);
-}
-
-const logCheonyuError = (message, details) => logCheonyu("error", message, details);
-const logCheonyuWarn = (message, details) => logCheonyu("warn", message, details);
-const logCheonyuSuccess = (message, details) => logCheonyu("success", message, details);
-const logCheonyuInfo = (message, details) => logCheonyu("info", message, details);
+const {
+  logCheonyuWarn,
+  logCheonyuSuccess,
+  logCheonyuInfo,
+} = require("./logger");
 
 const CHEONYU_PAGE_PACING_BUDGET_MS = 2 * 60 * 1000;
 const CHEONYU_PAGE_HARD_COOLDOWN_MS = 30 * 1000;
@@ -477,26 +440,6 @@ function parseTotalProductCount(html) {
   }
 
   return 0;
-}
-
-/** href 또는 onclick 문자열에서 페이지 번호를 추출한다. */
-function extractPageNumber(value, baseUrl) {
-  const text = String(value || "").trim();
-
-  if (!text) return 0;
-
-  try {
-    const pageNo = Number(new URL(text, baseUrl).searchParams.get("page"));
-    if (Number.isInteger(pageNo) && pageNo > 0) return pageNo;
-  } catch {
-    /** JavaScript 링크는 정규식으로 다시 확인한다. */
-  }
-
-  const match = text.match(
-    /[?&]page=(\d+)|\bpage\s*[=:,]\s*["']?(\d+)|(?:goPage|movePage|pageMove|paging)\s*\(\s*["']?(\d+)/i,
-  );
-
-  return Number(match?.[1] || match?.[2] || match?.[3]) || 0;
 }
 
 /** 이미 확보한 상품 목록을 페이지별로 묶는다. */

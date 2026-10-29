@@ -3,11 +3,7 @@
 
 const { createProduct, getProductSourceMall, normalizeProductCategory, normalizeCategoryId, normalizeProductSpecial, applyProductSkus } = require("./product-schema");
 const { getCcdomeSpecLabelJa } = require("../malls/ccdome/spec-labels");
-
-/** 문자열을 공백이 정리된 값으로 변환한다. */
-function normalizeText(value) {
-  return String(value ?? "").replace(/\s+/g, " ").trim();
-}
+const { normalizeWhitespace: normalizeText } = require("./common");
 
 /** 비어 있지 않은 유효 숫자를 반환한다. */
 function toNullableNumber(value) {

@@ -65,10 +65,6 @@
   --surface-soft: #1a2a42;
   --surface-muted: #122039;
   --surface-elevated: #162b48;
-  --text: #e8eefc;
-  --text-muted: #98a8c1;
-  --text-weak: #7c8ba2;
-  --muted: var(--text-muted);
   --font-sans: Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", "Segoe UI", sans-serif;
   --line: #2c415d;
   --line-strong: #354a67;
@@ -89,7 +85,6 @@
   --accent-ink: #081315;
   --progress-track: #303b40;
   --selected: #183236;
-  --progress: #7398ff;
 
   --primary: #7398ff;
   --primary-hover: #92afff;

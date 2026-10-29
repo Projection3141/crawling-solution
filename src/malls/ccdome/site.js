@@ -2,6 +2,7 @@
 // 목적: 과자생각 로그인과 상품 목록 페이지 탐색을 수행하고 판매중·품절 상품 정보를 수집한다.
 
 const cheerio = require("cheerio");
+const { extractPageNumber, toAbsoluteUrl } = require("../shared/parsing");
 const { performance } = require("node:perf_hooks");
 const { fillFirstAvailable } = require("../../utils/browser");
 const {
@@ -339,26 +340,6 @@ async function gotoWithNavigationRetry(
   });
 }
 
-/** href 또는 onclick 문자열에서 페이지 번호를 추출한다. */
-function extractPageNumber(value, baseUrl) {
-  const text = String(value || "").trim();
-
-  if (!text) return 0;
-
-  try {
-    const pageNo = Number(new URL(text, baseUrl).searchParams.get("page"));
-    if (Number.isInteger(pageNo) && pageNo > 0) return pageNo;
-  } catch {
-    /** JavaScript 링크는 정규식으로 다시 확인한다. */
-  }
-
-  const match = text.match(
-    /[?&]page=(\d+)|\bpage\s*[=:,]\s*["']?(\d+)|(?:goPage|movePage|pageMove|paging)\s*\(\s*["']?(\d+)/i,
-  );
-
-  return Number(match?.[1] || match?.[2] || match?.[3]) || 0;
-}
-
 /** 목록 HTML의 `상품 N개` 문구에서 전체 상품 수를 읽는다. */
 function parseTotalProductCount(html) {
   const $ = cheerio.load(html);
@@ -457,19 +438,6 @@ function findMainProductScope($) {
   });
 
   return bestScope;
-}
-
-/** 상대 URL을 절대 URL로 정리한다. */
-function toAbsoluteUrl(value, baseUrl) {
-  const raw = String(value || "").trim();
-
-  if (!raw || raw.startsWith("data:")) return "";
-
-  try {
-    return new URL(raw, baseUrl).toString();
-  } catch {
-    return "";
-  }
 }
 
 /** 상품 가격 문자열에서 첫 번째 금액을 정수로 변환한다. */

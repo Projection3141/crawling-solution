@@ -8,4 +8,6 @@ Thumbs.db
 tests/*
 !tests/result-upload-log-cleanup.test.js
 !tests/cheonyu-barcodes.test.js
+!tests/grouped-product-upload.test.js
+!tests/grouped-upload-audit.test.js
 docs/

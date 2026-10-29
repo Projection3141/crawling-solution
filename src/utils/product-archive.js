@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { version: PACKAGE_VERSION } = require("../../package.json");
+const { normalizeWhitespace: normalizeText } = require("./common");
 const {
   convertWonToYen,
 } = require("../../translate/convert");
@@ -99,11 +100,6 @@ function normalizeArchiveVersion(value) {
   }
 
   return matched.slice(1, 4).map(Number).join(".");
-}
-
-/** 문자열을 공백이 정리된 값으로 변환한다. */
-function normalizeText(value) {
-  return String(value ?? "").replace(/\s+/g, " ").trim();
 }
 
 /** JSON에 저장 가능한 값으로 깊은 복사한다. */

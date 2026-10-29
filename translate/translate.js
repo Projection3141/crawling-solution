@@ -7,6 +7,7 @@ const OpenAI = require("openai");
 const { zodTextFormat } = require("openai/helpers/zod");
 const { z } = require("zod");
 const { DEFAULT_OPENAI_MODEL } = require("../src/config");
+const { sleep } = require("../src/utils/common");
 const { getProductSourceMall } = require("../src/utils/product-schema");
 const {
   ARCHIVE_PATH,
@@ -62,11 +63,6 @@ const TranslationProduct = z.object({
 const TranslationBatchResult = z.object({
   items: z.array(TranslationProduct),
 });
-
-/** 지정 시간만큼 대기한다. */
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /** 배열을 지정한 크기로 나눈다. */
 function chunk(items, size) {

@@ -2,6 +2,7 @@
 // 목적: 과자생각 상품 상세 페이지에서 카테고리·이미지·가격·스펙을 추출하고 상세정보 수집을 실행한다.
 
 const cheerio = require("cheerio");
+const { toAbsoluteUrl, pickByIncludes } = require("../shared/parsing");
 const { getCcdomeSpecLabelJa } = require("./spec-labels");
 const {
   normalizeWhitespace,
@@ -59,19 +60,6 @@ const CCDOME_DETAIL = {
     detailTextScope: "#detail .detail_cont, .detail_cont, .item_goods_sec",
   },
 };
-
-/** 상대/프로토콜 생략 URL을 절대 URL로 정리한다. */
-function toAbsoluteUrl(value, baseUrl) {
-  const raw = String(value || "").trim();
-
-  if (!raw || raw.startsWith("data:")) return "";
-
-  try {
-    return new URL(raw, baseUrl).toString();
-  } catch {
-    return "";
-  }
-}
 
 /** 중복과 빈 값을 제거한다. */
 function unique(values) {
@@ -197,18 +185,6 @@ function createSpecRows(itemInfo = {}) {
       sortOrder: index * 10,
     }))
     .filter((row) => row.labelKo && row.valueKo);
-}
-
-/** key 이름 후보로 객체 값을 찾는다. */
-function pickByIncludes(source, keywords) {
-  const entries = Object.entries(source || {});
-
-  for (const keyword of keywords) {
-    const found = entries.find(([key]) => key.includes(keyword));
-    if (found) return found[1];
-  }
-
-  return "";
 }
 
 /** 가격 문자열에서 첫 금액을 정수로 추출한다. */

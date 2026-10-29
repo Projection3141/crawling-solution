@@ -2,6 +2,7 @@
 // 목적: 천유 상품 상세 페이지에서 카테고리·특별상품 마크·이미지·가격·옵션·스펙을 추출하고 상세정보 수집을 실행한다.
 
 const cheerio = require("cheerio");
+const { toAbsoluteUrl, pickByIncludes } = require("../shared/parsing");
 const { normalizeCategoryId } = require("../../utils/product-schema");
 const {
   normalizeWhitespace,
@@ -131,19 +132,6 @@ function createCheonyuCircuitError(error) {
       stage: "cheonyu-detail",
     },
   );
-}
-
-/** 상대/절대 이미지 경로를 절대 URL로 정규화한다. */
-function toAbsoluteUrl(value, baseUrl) {
-  const raw = String(value || "").trim();
-
-  if (!raw || raw.startsWith("data:")) return "";
-
-  try {
-    return new URL(raw, baseUrl).toString();
-  } catch {
-    return "";
-  }
 }
 
 function isCheonyuDetailImageUrl(url) {
@@ -314,19 +302,6 @@ function parseSpecRows($, selector) {
   });
 
   return rows;
-}
-
-/** key 이름 일부가 일치하는 상세값을 가져온다. */
-function pickByIncludes(source, keywords) {
-  const entries = Object.entries(source || {});
-
-  for (const keyword of keywords) {
-    const found = entries.find(([key]) => key.includes(keyword));
-
-    if (found) return found[1];
-  }
-
-  return "";
 }
 
 /** 상세 옵션 영역의 체크 가능한 옵션을 보조적으로 수집한다. */
