@@ -7,4 +7,5 @@ release/
 Thumbs.db
 tests/*
 !tests/result-upload-log-cleanup.test.js
+!tests/cheonyu-barcodes.test.js
 docs/

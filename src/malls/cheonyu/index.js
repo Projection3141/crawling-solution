@@ -24,6 +24,7 @@ const {
 const { clearCartAll } = require("./cart");
 const {
   createCheonyuPopupInventoryItems,
+  mergeCheonyuDetailInventoryItems,
   probeCheonyuCartStock,
 } = require("./cart-stock");
 const { collectCheonyuDetails } = require("./detail");
@@ -1113,14 +1114,43 @@ async function runCheonyu(
       );
 
       cartHtml = cycleCartResult.cartHtml || cartHtml;
-      const cycleInventoryItems = [
-        ...cyclePopupInventoryItems,
-        ...(cycleCartResult.inventoryItems || []),
-      ];
+      const cycleInventoryItems = config.collectionMode === "detail"
+        ? mergeCheonyuDetailInventoryItems(
+            cyclePopupInventoryItems,
+            cycleCartResult.inventoryItems,
+          )
+        : [
+            ...cyclePopupInventoryItems,
+            ...(cycleCartResult.inventoryItems || []),
+          ];
       const cycleCoverage = mergeCheonyuCycleCoverages([
         { coverage: popupCoverage },
         cycleCartResult,
       ]);
+      if (config.collectionMode === "detail") {
+        // 상세 옵션은 팝업과 장바구니 양쪽에 있으므로 중복 집계하지 않는다.
+        cycleCoverage.expectedProductCount = cycleCoverage.expectedProductIds.length;
+        cycleCoverage.actualProductCount = cycleCoverage.actualProductIds.length;
+        cycleCoverage.expectedRowCount = mergeCheonyuDetailInventoryItems(
+          cyclePopupInventoryItems,
+          cyclePopupOptionRows.filter((row) => row.selectedForCart === true &&
+            cycleCartSubmittedProductIdSet.has(String(row.productId))),
+        ).length;
+        cycleCoverage.actualRowCount = cycleInventoryItems.length;
+        const missingBarcodeRows = cycleInventoryItems.filter((row) =>
+          row.hasOption === true && !String(row.barcode || "").trim(),
+        );
+        if (missingBarcodeRows.length > 0) {
+          onProgress({
+            stage: "option-barcode",
+            level: "warn",
+            cycleNo,
+            missingOptionBarcodeCount: missingBarcodeRows.length,
+            message: `천유 옵션 ${missingBarcodeRows.length}개의 바코드를 확인하지 못했습니다. ` +
+              "품절·선택 불가 또는 장바구니 바코드 누락 옵션은 기존 바코드를 유지합니다.",
+          });
+        }
+      }
       inventoryItems.push(...cycleInventoryItems);
       cycleCartCoverages.push({
         cycleNo,

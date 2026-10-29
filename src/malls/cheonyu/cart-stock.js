@@ -422,6 +422,8 @@ async function probeCheonyuCartStock(
   let cartHtml = "";
   let inventoryItems = [];
   let coverage = null;
+  const hasRequiredCoverage = (value) => value?.complete &&
+    (config.collectionMode !== "detail" || value.optionCoverageComplete);
 
   if (targetIds.size < 1) {
     coverage = analyzeCheonyuCartCoverage({
@@ -484,7 +486,7 @@ async function probeCheonyuCartStock(
       unavailableProductIds,
     });
 
-    if (coverage.complete) {
+    if (hasRequiredCoverage(coverage)) {
       break;
     }
 
@@ -511,7 +513,7 @@ async function probeCheonyuCartStock(
     }
   }
 
-  if (!coverage?.complete) {
+  if (!hasRequiredCoverage(coverage)) {
     const expectedRows = coverage?.expectedRowCount;
     const actualRows = coverage?.actualRowCount ?? inventoryItems.length;
     const rowSummary = expectedRows === null
@@ -674,7 +676,29 @@ function createCheonyuPopupInventoryItems({
   return Array.from(inventoryMap.values());
 }
 
+/** 상세 수집은 팝업의 품절 옵션을 보존하고 장바구니에서 확인한 옵션 바코드를 우선한다. */
+function mergeCheonyuDetailInventoryItems(popupItems = [], cartItems = []) {
+  const keyFor = (row) => {
+    const optionId = String(row.optionId ?? "0");
+    const optionKey = row.hasOption === true && (!optionId || optionId === "0")
+      ? `missing:${row.submitOptionId || ""}:${normalizeCoverageOptionText(row.optionText)}`
+      : optionId;
+    return `${row.productId}::${optionKey}`;
+  };
+  const rows = new Map(popupItems.map((row) => [keyFor(row), {
+    ...row,
+    // 팝업에 있는 상품 대표 바코드를 옵션 바코드로 사용하지 않는다.
+    ...(row.hasOption === true ? { barcode: null } : {}),
+  }]));
+  for (const row of cartItems) {
+    const key = keyFor(row);
+    rows.set(key, { ...rows.get(key), ...row });
+  }
+  return Array.from(rows.values());
+}
+
 module.exports = {
+  mergeCheonyuDetailInventoryItems,
   addCheonyuProductsToCart,
   analyzeCheonyuCartCoverage,
   collectCheonyuCartStock,

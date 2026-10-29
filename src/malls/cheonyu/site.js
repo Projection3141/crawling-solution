@@ -2085,9 +2085,14 @@ async function addCheonyuProductBatchesToCart(
       );
 
       if (fallbackProducts.length > 0) {
-        logCheonyuWarn(
-          `[BULK ${pageNo}] 팝업 재고가 불완전한 ` +
-            `${fallbackProducts.length}개 상품만 장바구니로 확인합니다.`,
+        const logCartCheck = config.collectionMode === "detail"
+          ? logCheonyuInfo : logCheonyuWarn;
+        logCartCheck(
+          `[BULK ${pageNo}] ` +
+            (config.collectionMode === "detail"
+              ? "옵션 바코드 수집 또는 팝업 재고 보완을 위해 "
+              : "팝업 재고가 불완전한 ") +
+            `${fallbackProducts.length}개 상품을 장바구니로 확인합니다.`,
         );
         pendingBatches.push({
           products: fallbackProducts,
@@ -2138,6 +2143,24 @@ function parsePopupHtml(html) {
   };
 }
 
+
+/** 상세 수집은 재고가 확인된 옵션 상품도 장바구니에서 바코드를 읽는다. */
+function getCheonyuCartFallbackProductIds({
+  collectionMode,
+  selectableProducts = [],
+  popupOptionRows = [],
+  completePopupProductIds = [],
+}) {
+  const completeIds = new Set(completePopupProductIds.map(String));
+  const optionProductIds = new Set(
+    popupOptionRows.filter((row) => row.hasOption === true)
+      .map((row) => String(row.productId)),
+  );
+  return selectableProducts
+    .map((product) => String(product.productId || ""))
+    .filter((productId) => !completeIds.has(productId) ||
+      (collectionMode === "detail" && optionProductIds.has(productId)));
+}
 
 /** 옵션 팝업에서 disabled/품절 옵션을 제외하고 선택 가능한 옵션만 체크한다. */
 async function parseAndPreparePopupOptions(
@@ -3457,10 +3480,12 @@ async function clickBulkCartAndConfirm(
             );
           })
           .map((product) => String(product.productId || ""));
-        const completePopupProductIdSet = new Set(completePopupProductIds);
-        const cartFallbackProductIds = selectableRequestedProducts
-          .map((product) => String(product.productId || ""))
-          .filter((productId) => !completePopupProductIdSet.has(productId));
+        const cartFallbackProductIds = getCheonyuCartFallbackProductIds({
+          collectionMode: config.collectionMode,
+          selectableProducts: selectableRequestedProducts,
+          popupOptionRows,
+          completePopupProductIds,
+        });
         const combinedUnavailablePopupResult = {
           ...unavailablePopupResult,
           unavailableProductIds: Array.from(unavailableProductIds),
@@ -4348,6 +4373,7 @@ module.exports = {
   collectListCandidates,
   detectCatalog,
   findCheonyuProductsByIds,
+  getCheonyuCartFallbackProductIds,
   loginCheonyu,
   parseCatalogInfo,
   parseListHtml,

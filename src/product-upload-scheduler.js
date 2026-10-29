@@ -9,7 +9,7 @@ const { getProductSourceMall } = require("./utils/product-schema");
 const { postResultJson } = require("./utils/result-uploader");
 const { getUploadApiUrl } = require("./utils/upload-api-settings");
 
-const RETRY_INTERVAL_MS = 10 * 60 * 1000;
+const RETRY_INTERVAL_MS = 60 * 60 * 1000;
 const UPLOAD_STATE_VERSION = 2;
 
 /** 구형 대기 배열만 쇼핑몰별로 묶고, 새 대기 데이터는 아카이브 구조 그대로 보존한다. */

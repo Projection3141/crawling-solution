@@ -1421,7 +1421,7 @@ function renderCollectionUploadState(upload = {}) {
   elements.collectionUploadToggleButton.title = upload.lastError
     ? `마지막 상품 전송 오류: ${upload.lastError}${retryText ? ` · 재시도: ${retryText}` : ""}`
     : enabled
-      ? "수집 정상 완료 후 전체 아카이브를 1회 전송합니다. 실패하면 10분 뒤 재시도합니다."
+      ? "수집 정상 완료 후 전체 아카이브를 1회 전송합니다. 실패하면 60분 뒤 재시도합니다."
       : "자동 전송이 꺼져 있습니다. 완료 데이터는 보관하고 ON으로 바꾸면 전송합니다.";
 
   if (elements.collectionUploadStatusText) {
