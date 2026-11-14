@@ -19,6 +19,7 @@ const {
   buildAvailabilitySummaries,
 } = require("../../utils/inventory");
 const { createNetworkUsageTracker } = require("../../utils/network-usage");
+const { registerDiagnosticContext } = require("../../utils/collection-diagnostics");
 const { collectCcdomeDetails } = require("./detail");
 const { collectCcdomeProducts, loginCcdome } = require("./site");
 
@@ -29,6 +30,7 @@ async function runCcdome(
     browserType = chromium,
     onProgress = () => { },
     onCycleArchive,
+    onDetailPage,
     signal,
   } = {},
 ) {
@@ -54,7 +56,7 @@ async function runCcdome(
 
     browser = await browserType.launch({
       headless: config.headless,
-      args: getLightweightLaunchArgs({ showBrowser: config.showBrowser }),
+      args: getLightweightLaunchArgs(config),
     });
     releaseAbort = bindAbortToBrowser(signal, browser);
     ensureNotAborted();
@@ -63,10 +65,12 @@ async function runCcdome(
       viewport: config.viewport,
       userAgent: config.userAgent,
     });
+    registerDiagnosticContext(context, { proxyProfileName: "직접 연결" });
     await networkUsageTracker.trackContext(context, directUsage);
 
     await installLightweightNetworkPolicy(context, {
       showBrowser: config.showBrowser,
+      blockImages: config.blockImages,
     });
 
     const page = await context.newPage();
@@ -137,6 +141,12 @@ async function runCcdome(
           });
         },
         signal,
+        typeof onDetailPage === "function"
+          ? ({ pageNo, products, detailItems }) => onDetailPage({
+            pageNo, products, detailItems, pageRange: result.pageRange,
+            inventoryItems: buildAvailabilityInventory(products),
+          })
+          : null,
       );
 
       ensureNotAborted();

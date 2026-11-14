@@ -2,6 +2,7 @@
 // 목적: 천유 상품 상세 페이지에서 카테고리·특별상품 마크·이미지·가격·옵션·스펙을 추출하고 상세정보 수집을 실행한다.
 
 const cheerio = require("cheerio");
+const { describeDiagnosticContext } = require("../../utils/collection-diagnostics");
 const { toAbsoluteUrl, pickByIncludes } = require("../shared/parsing");
 const { normalizeCategoryId } = require("../../utils/product-schema");
 const {
@@ -80,7 +81,7 @@ const CHEONYU_DETAIL = {
   },
 };
 
-const CHEONYU_BLOCKING_HTTP_STATUS_CODES = new Set([403, 429]);
+const CHEONYU_BLOCKING_HTTP_STATUS_CODES = new Set([403, 407, 429]);
 const CHEONYU_SPECIAL_MARKS = Object.freeze({
   5: "가챠",
   6: "super 초특가",
@@ -119,15 +120,18 @@ function isCheonyuBlockingError(error) {
 /** 차단 응답을 자동 IP 변경 없이 전체 상세 수집 중단 오류로 변환한다. */
 function createCheonyuCircuitError(error) {
   const statusCode = Number(error?.statusCode || error?.status || 0);
+  const proxyAuthenticationFailed = statusCode === 407;
 
   return markSiteError(
     new Error(
-      `천유가 요청을 거부하거나 제한했습니다(HTTP ${statusCode}). ` +
-      "IP를 자동 변경하지 않고 상세 수집을 중단합니다.",
+      proxyAuthenticationFailed
+        ? "프록시 인증이 거절되었습니다(HTTP 407). 인증정보와 접속 제한을 확인할 때까지 상세 수집을 중단합니다."
+        : `천유가 요청을 거부하거나 제한했습니다(HTTP ${statusCode}). ` +
+          "IP를 자동 변경하지 않고 상세 수집을 중단합니다.",
     ),
     {
       retryable: false,
-      code: "CHEONYU_DETAIL_CIRCUIT_OPEN",
+      code: proxyAuthenticationFailed ? "PROXY_AUTHENTICATION_REQUIRED" : "CHEONYU_DETAIL_CIRCUIT_OPEN",
       statusCode,
       stage: "cheonyu-detail",
     },
@@ -304,23 +308,26 @@ function parseSpecRows($, selector) {
   return rows;
 }
 
-/** 상세 옵션 영역의 체크 가능한 옵션을 보조적으로 수집한다. */
+/** 상세페이지의 낱개 옵션 ID와 이름을 수집한다. */
 function parseDetailOptions($) {
   const options = [];
+  const seenIds = new Set();
 
-  $(".info_wrap input[type='checkbox'], .info_wrap input[type='radio']").each((index, input) => {
+  $(".option_wrap input[id='optionCHK'], #opSelectedList input[id='optionCHK']").each((_, input) => {
     const item = $(input);
-    const parentText = normalizeWhitespace(item.closest("label, li, tr, div").text());
+    const optionId = normalizeWhitespace(item.attr("value"));
+    if (!/^\d+$/.test(optionId) || !/[1-9]/.test(optionId) || seenIds.has(optionId)) return;
     const optionName =
+      normalizeWhitespace(item.closest("tr").find(".option_txt").first().text()) ||
       normalizeWhitespace(item.attr("title")) ||
-      normalizeWhitespace(item.attr("value")) ||
-      parentText;
+      normalizeWhitespace(item.closest("label").text());
 
-    if (!optionName) return;
-
+    seenIds.add(optionId);
     options.push({
-      optionIndex: index,
+      optionIndex: options.length,
+      optionId,
       optionName,
+      // 비로그인 화면의 disabled는 구매 제어 상태이며 품절 여부가 아니다.
       disabled: item.is(":disabled") || item.attr("disabled") !== undefined,
       checked: item.is(":checked") || item.attr("checked") !== undefined,
     });
@@ -522,7 +529,7 @@ function parseDetailHtml(html, product, config) {
   const productNo = infoNumbers[0] || product.productId || "";
   const barcode = infoNumbers[1] || "";
   const productName =
-    normalizeProductName($(selectors.productName).first().text()) ||
+    normalizeProductName($(selectors.productName).toArray().map(element => $(element).text().trim()).find(Boolean)) ||
     normalizeProductName(product.productName);
   const outerBoxText = normalizeWhitespace($(selectors.outerBox).first().text());
   const outerBoxQty = toNumber(outerBoxText.match(/(\d+)\s*EA/i)?.[1] || "");
@@ -733,7 +740,7 @@ async function collectCheonyuDetails(
       detailConcurrency: concurrency,
     });
 
-    circuitController.abort();
+    circuitController.abort(circuitError);
     await Promise.all(
       workers.map((worker) => worker.page.close().catch(() => null)),
     );
@@ -806,6 +813,7 @@ async function collectCheonyuDetails(
         {
           label: `천유 상세 상품 ${product.productId}`,
           maxAttempts: retryCount,
+          diagnosticDetails: { ...describeDiagnosticContext(context), productId: product.productId },
           signal: workerSignal,
           shouldRetry: async (error) => {
             if (isCheonyuBlockingError(error)) {

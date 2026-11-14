@@ -38,6 +38,8 @@ const {
     runCartUpload,
 } = require("../src/cart-uploader");
 const { runCollection } = require("../src/crawler");
+const { createCollectionDiagnostics } = require("../src/utils/collection-diagnostics");
+const { classifyCollectionFailure } = require("../src/utils/collection-failure");
 const { setResultUploadLogRoot } = require("../src/utils/result-uploader");
 const {
     cleanupResultUploadLogs,
@@ -54,23 +56,55 @@ const {
 const { createProductUploadScheduler } = require("../src/product-upload-scheduler");
 const { loadEnvironment } = require("./environment");
 const { createCredentialStore } = require("./credential-store");
-const {
-    DEFAULT_UPLOAD_API_URL,
-    getUploadApiUrl,
-    getUploadApiSettings,
-    normalizeUploadApiSettings,
-    setUploadApiSettings,
-} = require("../src/utils/upload-api-settings");
+const { createConnectionTester } = require("./connection-test");
+const { createHtmlProductTester } = require("./html-product-test");
+const { createTestAccountStore } = require("./test-account-store");
+const { runTestAccountSignup } = require("./test-account-signup");
+const testAccountSignupShutdown = new AbortController();
+const { createBrandCollector } = require("./brand-collector");
+const { createCommerceCollector } = require("./commerce-collector");
+const commerceDirectory = () => path.join(app.getPath("userData"), "commerce-products");
+const commerceCollector = createCommerceCollector({
+    directory: commerceDirectory,
+    onProgress: (progress) => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(CHANNELS.commerceProgress, progress);
+    },
+});
+const brandCollector = createBrandCollector({
+    directory: () => path.join(app.getPath("userData"), "brand-collection"),
+    getProxy: (id) => ensureCredentialStore().getProxy(id),
+});
+const htmlProductTester = createHtmlProductTester({
+    getProxy: (id) => ensureCredentialStore().getProxy(id),
+    archiveDirectory: () => process.env.PRODUCT_ARCHIVE_DIRECTORY || path.join(os.homedir(), "MallCollector", "archive"),
+    diagnosticDirectory: () => path.join(app.getPath("userData"), "connection-diagnostics"),
+});
+const connectionTester = createConnectionTester({
+    getProxy: (id) => ensureCredentialStore().getProxy(id),
+    diagnosticDirectory: () => path.join(app.getPath("userData"), "connection-diagnostics"),
+});
+const { createUploadApiSettingsStore } = require("./upload-api-settings-store");
+const { listCollectionUploadLogs } = require("./collection-upload-logs");
+const { getUploadApiUrl } = require("../src/utils/upload-api-settings");
 
 const APP_SCHEME = "mall-collector";
 const APP_ORIGIN = `${APP_SCHEME}://app`;
 const APP_URL = `${APP_ORIGIN}/index.html`;
-const UPLOAD_API_SETTINGS_FILE_NAME = "upload-api-settings.json";
 const RENDERER_DIR = path.resolve(__dirname, "..", "public");
 
 const CHANNELS = Object.freeze({
     getDefaults: "collector:get-defaults",
     getState: "collector:get-state",
+    testConnection: "collector:test-connection",
+    testProductHtml: "collector:test-product-html",
+    runTestAccountSignup: "collector:run-test-account-signup",
+    getBrands: "collector:get-brands",
+    collectCommerce: "collector:collect-commerce",
+    commerceProgress: "collector:commerce-progress",
+    openCommerceDirectory: "collector:open-commerce-directory",
+    refreshBrands: "collector:refresh-brands",
+    collectBrands: "collector:collect-brands",
+    openBrandDirectory: "collector:open-brand-directory",
     start: "collector:start",
     cancel: "collector:cancel",
     deleteRun: "collector:delete-run",
@@ -141,22 +175,9 @@ let productUploadScheduler = null;
 let wonToYenRateScheduler = null;
 let credentialStore = null;
 
-function getUploadApiSettingsPath() {
-    return path.join(
-        environmentInfo?.userDataDir || app.getPath("userData"),
-        UPLOAD_API_SETTINGS_FILE_NAME,
-    );
-}
-
-function createUploadApiSettingsResult(uploadApiUrl, source) {
-    return {
-        ...getUploadApiSettings(),
-        uploadApiUrl,
-        defaultUploadApiUrl: DEFAULT_UPLOAD_API_URL,
-        isDefault: uploadApiUrl === DEFAULT_UPLOAD_API_URL,
-        source,
-    };
-}
+const { loadUploadApiSettings, saveUploadApiSettings } = createUploadApiSettingsStore({
+    getUserDataDir: () => environmentInfo?.userDataDir || app.getPath("userData"),
+});
 
 const COLLECTION_UPLOAD_LOG_DIRECTORY_NAME = "collection-upload-logs";
 let collectionUploadLogRoot = "";
@@ -172,72 +193,6 @@ function getCollectionUploadLogRoot() {
     return path.join(
         baseDirectory,
         COLLECTION_UPLOAD_LOG_DIRECTORY_NAME,
-    );
-}
-
-function loadUploadApiSettings() {
-    const settingsPath = getUploadApiSettingsPath();
-    let storedUrl = "";
-    let storedSettings = {};
-
-    try {
-        if (isFile(settingsPath)) {
-            const stored = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-            storedSettings = stored && typeof stored === "object" ? stored : {};
-            storedUrl = String(stored?.uploadApiUrl || "").trim();
-        }
-    } catch (error) {
-        console.warn(
-            `[UPLOAD API] 저장 설정을 읽지 못해 기본값을 사용합니다: ` +
-                `${error?.message || error}`,
-        );
-    }
-
-    const environmentUrl = String(process.env.UPLOAD_API_URL || "").trim();
-    let source = storedUrl
-        ? "user"
-        : environmentUrl
-            ? "environment"
-            : "default";
-    let uploadApiUrl;
-
-    try {
-        uploadApiUrl = setUploadApiSettings({
-            ...storedSettings,
-            uploadApiUrl: storedUrl || environmentUrl || DEFAULT_UPLOAD_API_URL,
-        }).uploadApiUrl;
-    } catch (error) {
-        console.warn(
-            `[UPLOAD API] 저장된 URL이 올바르지 않아 기본값으로 복원합니다: ` +
-                `${error?.message || error}`,
-        );
-        source = "default";
-        uploadApiUrl = setUploadApiSettings({ uploadApiUrl: DEFAULT_UPLOAD_API_URL }).uploadApiUrl;
-    }
-
-    return createUploadApiSettingsResult(uploadApiUrl, source);
-}
-
-async function saveUploadApiSettings(payload) {
-    const requestedUrl = String(payload?.uploadApiUrl || "").trim();
-    const settings = normalizeUploadApiSettings({ ...getUploadApiSettings(), ...payload, uploadApiUrl: requestedUrl });
-    const { uploadApiUrl } = settings;
-    const settingsPath = getUploadApiSettingsPath();
-
-    ensureDir(path.dirname(settingsPath));
-    const temporaryPath = `${settingsPath}.${randomUUID()}.tmp`;
-    try {
-        await fs.promises.writeFile(temporaryPath, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
-        await fs.promises.rename(temporaryPath, settingsPath);
-    } finally {
-        await fs.promises.rm(temporaryPath, { force: true });
-    }
-    setUploadApiSettings(settings);
-
-    console.log(`[UPLOAD API] URL 설정 저장: ${uploadApiUrl}`);
-    return createUploadApiSettingsResult(
-        uploadApiUrl,
-        requestedUrl ? "user" : "default",
     );
 }
 
@@ -442,12 +397,20 @@ function findActiveRunByAccountKey(accountKey) {
     );
 }
 
-/** 동일 천유 프록시 연결의 동시 실행을 막기 위한 key를 만든다. */
+/** 고정 연결·스티키 세션 단위로 잠그며 새 수집의 비로그인 회전 연결은 공유한다. */
 function createProxySlotLockKey(config) {
     if (config?.mall !== "cheonyu") return "";
 
     if (!config?.proxy) {
         return "cheonyu:direct";
+    }
+
+    // resolveRunConfig에서 공급자와 회전 연결을 검증한 새 수집만 공유한다.
+    // 로그인 수집은 실행별 사용자명/포트에 세션이 포함되어 각각 다른 key가 된다.
+    if (config.anonymousCollection &&
+        ["initial", "longTerm", "newProducts"].includes(config.collectionKind) &&
+        ["decodo", "dataimpulse"].includes(config.proxyProvider)) {
+        return "";
     }
 
     const fingerprint = createHash("sha256")
@@ -506,125 +469,6 @@ function assertTrustedSender(event) {
     }
 }
 
-function summarizeCollectionUploadLog(log, dateDirectory, fileName) {
-    const type = log?.type || log?.request?.type || "수집정보";
-    const products = Array.isArray(log?.request)
-        ? log.request
-        : Array.isArray(log?.request?.data)
-        ? log.request.data
-        : type === "아카이브" && log?.request?.data &&
-            typeof log.request.data === "object"
-        ? Object.values(log.request.data).filter(Array.isArray).flat()
-        : [];
-    const sampleProductIds = Array.isArray(log?.sampleIds) ? log.sampleIds : products
-        .map(
-            (product) =>
-                product?.productId ?? product?.product_id ?? product?.id,
-        )
-        .filter(
-            (value) =>
-                value !== undefined &&
-                value !== null &&
-                String(value).trim(),
-        )
-        .slice(0, 5)
-        .map(String);
-
-    return {
-        dateDirectory,
-        fileName,
-        sentAt: log?.sentAt || null,
-        success: log?.success === true,
-        type,
-        itemCount: Number.isFinite(log?.itemCount)
-            ? log.itemCount
-            : products.length,
-        uploadApiUrl: log?.uploadApiUrl || "",
-        status: log?.response?.status ?? null,
-        error: log?.error || "",
-        method: log?.method || "POST",
-        archiveRef: log?.archiveRef || "",
-        sampleProductIds,
-    };
-}
-
-async function listCollectionUploadLogs(payload = {}) {
-    const root = getCollectionUploadLogRoot();
-    const pageSize = 5;
-    const requestedPage = Math.max(
-        1,
-        Number.parseInt(payload?.page, 10) || 1,
-    );
-    await collectionUploadLogFs.mkdir(root, { recursive: true });
-
-    const dateDirectories = (
-        await collectionUploadLogFs.readdir(root, { withFileTypes: true })
-    )
-        .filter(
-            (entry) => entry.isDirectory() && /^\d{8}$/.test(entry.name),
-        )
-        .map((entry) => entry.name)
-        .sort((a, b) => b.localeCompare(a));
-    const files = [];
-
-    for (const dateDirectory of dateDirectories) {
-        const directory = path.join(root, dateDirectory);
-        const names = (
-            await collectionUploadLogFs.readdir(directory, {
-                withFileTypes: true,
-            })
-        )
-            .filter(
-                (entry) =>
-                    entry.isFile() &&
-                    entry.name.toLowerCase().endsWith(".json"),
-            )
-            .map((entry) => entry.name)
-            .sort((a, b) => b.localeCompare(a));
-        names.forEach((fileName) =>
-            files.push({ dateDirectory, fileName }),
-        );
-    }
-
-    const totalCount = files.length;
-    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-    const page = Math.min(requestedPage, totalPages);
-    const selectedFiles = files.slice(
-        (page - 1) * pageSize,
-        page * pageSize,
-    );
-    const items = await Promise.all(
-        selectedFiles.map(async ({ dateDirectory, fileName }) => {
-            try {
-                const content = await collectionUploadLogFs.readFile(
-                    path.join(root, dateDirectory, fileName),
-                    "utf8",
-                );
-                return summarizeCollectionUploadLog(
-                    JSON.parse(content),
-                    dateDirectory,
-                    fileName,
-                );
-            } catch (error) {
-                return {
-                    dateDirectory,
-                    fileName,
-                    sentAt: null,
-                    success: false,
-                    type: "로그 읽기 실패",
-                    itemCount: null,
-                    uploadApiUrl: "",
-                    status: null,
-                    error: error?.message || String(error),
-                    sampleProductIds: [],
-                };
-            }
-        }),
-    );
-
-    return { page, pageSize, totalCount, totalPages, items, root };
-}
-
 /** IPC 오류를 직렬화 가능한 표준 응답으로 변환한다. */
 function registerIpcHandler(channel, handler) {
     ipcMain.handle(channel, async (event, payload) => {
@@ -668,8 +512,13 @@ function normalizeRunInput(input) {
         "localCredentialId",
 
         "showBrowser",
+        "blockImages",
 
         "collectionMode",
+        "collectionKind",
+        "inventoryBest",
+        "changeType",
+        "longTermDays",
         "executionOptions",
 
         "pageStart",
@@ -678,6 +527,7 @@ function normalizeRunInput(input) {
 
         "detailTargetMode",
         "detailRequestDelayMs",
+        "proxyRotationPages",
         "proxyProfileId",
         "cheonyuUserAgent",
         "openAiProfileId",
@@ -715,6 +565,7 @@ function resolveProxyProfileInput(profileId) {
     return {
         cheonyuProxyProfileId: profile.id,
         cheonyuProxyProfileName: profile.name,
+        cheonyuProxyProvider: profile.provider,
         cheonyuProxyServer: profile.server,
         cheonyuProxyUsername: profile.username,
         cheonyuProxyPassword: profile.password,
@@ -727,12 +578,15 @@ function resolveProxyRotationInput(profileId) {
 
     if (!selected.cheonyuProxyProfileId) return selected;
 
-    const profiles = ensureCredentialStore().getProxies();
+    const profiles = ensureCredentialStore().getProxies()
+        .filter((profile) => profile.includeInRotation !== false);
     const startIndex = profiles.findIndex(
         (profile) => profile.id === selected.cheonyuProxyProfileId,
     );
 
-    if (startIndex < 0) return selected;
+    if (startIndex < 0) {
+        throw new Error("수집 순환에서 제외된 프록시입니다. 포함 설정을 켜거나 다른 프록시를 선택하세요.");
+    }
 
     const orderedProfiles = [
         ...profiles.slice(startIndex),
@@ -775,6 +629,7 @@ function resolveOpenAiProfile(profileId) {
 
 /** 수집 설정에서 장바구니 계정 잠금용 key를 만든다. */
 function createCollectionAccountKey(config, safeInput) {
+    if (config.anonymousCollection && !config.newProductOptionAccount) return "";
     return createAccountLockKey(
         config.mall,
         safeInput.localCredentialId,
@@ -786,16 +641,22 @@ function createCollectionAccountKey(config, safeInput) {
 function createPublicRunRequest(config, safeInput) {
     return {
         mall: config.mall,
+        collectionKind: config.collectionKind,
+        inventoryBest: config.inventoryBest,
+        changeType: config.changeType,
+        anonymousCollection: config.anonymousCollection,
+        newProductOptionAccount: config.newProductOptionAccount,
         collectionMode:
-            safeInput.collectionMode === "detail" ? "detail" : "general",
+            config.collectionMode,
         detailTargetMode:
-            safeInput.collectionMode === "detail"
+            config.collectionMode === "detail"
                 ? config.detailTargetMode === "pending"
                     ? "pending"
                     : "all"
                 : null,
         accountName:
-            String(safeInput.accountName || "").trim() ||
+            (config.anonymousCollection && !config.newProductOptionAccount
+                ? "비로그인" : String(safeInput.accountName || "").trim()) ||
             (safeInput.localCredentialId ? "등록 계정" : ".env 계정"),
         localCredentialId: String(safeInput.localCredentialId || ""),
         proxyEnabled: Boolean(config.proxy),
@@ -995,6 +856,7 @@ function createCartRunConfig(site, account, input, proxyProfileInput = {}) {
             ...(site === "cheonyu" ? proxyProfileInput : {}),
             cheonyuUserAgent: input?.cheonyuUserAgent,
             showBrowser: input?.showBrowser === true,
+            blockImages: input?.blockImages === true,
             pageStart: 1,
             pageEnd: 0,
             clearCartBefore: false,
@@ -1062,7 +924,7 @@ async function uploadCartItems(input) {
 
         throw new Error(
             `${formatProxySlotLockLabel(proxySlotKey)}에서 이미 수집 작업이 진행 중입니다. ` +
-            "같은 IP의 요청이 겹치지 않도록 기존 작업이 끝난 후 다시 실행하세요.",
+            "동일한 고정 연결 또는 스티키 세션을 사용 중이므로 기존 작업이 끝난 후 다시 실행하세요.",
         );
     }
 
@@ -1253,16 +1115,61 @@ async function uploadCartItems(input) {
 
 /** Playwright 수집을 백그라운드 Promise로 실행한다. */
 async function executeCollection(run, config) {
+    const diagnostics = createCollectionDiagnostics({
+        directory: path.join(
+            environmentInfo?.userDataDir || app.getPath("userData"),
+            "collection-diagnostics",
+        ),
+        runId: run.id,
+        secrets: [
+            config.accountId,
+            config.accountPw,
+            run.openAi?.apiKey,
+            config.proxy?.username,
+            config.proxy?.password,
+            ...(config.proxyRotation || []).flatMap(({ proxy }) => [
+                proxy?.username,
+                proxy?.password,
+            ]),
+        ],
+    });
+    updateRunState(run.id, { diagnosticLogPath: diagnostics.filePath });
+    diagnostics.record("run.start", {
+        mall: config.mall,
+        collectionMode: config.collectionMode,
+        pageStart: config.pageStart,
+        pageEnd: config.pageEnd,
+        proxyProfileId: config.proxyProfileId,
+        proxyProfileName: config.proxyProfileName || "직접 연결",
+        proxyRotationPages: config.proxyRotationPages,
+        showBrowser: config.showBrowser,
+    });
     try {
-        const result = await runCollection(config, {
+        const result = await diagnostics.run(() => runCollection(config, {
             runId: run.id,
             signal: run.controller.signal,
             openAi: run.openAi,
             onProgress: (progress) => {
                 if (!activeRuns.has(run.id)) return;
+                const checkpoint = progress.savedCheckpoint;
+                if (checkpoint?.outputDirectory) {
+                    const savedFiles = {
+                        ...runResults.get(run.id)?.files,
+                        ...checkpoint.files,
+                    };
+                    runResults.set(run.id, {
+                        files: savedFiles,
+                        directory: checkpoint.outputDirectory,
+                    });
+                    updateRunState(run.id, {
+                        outputDirectory: checkpoint.outputDirectory,
+                        files: createPublicFileState(savedFiles),
+                    });
+                    diagnostics.record("checkpoint.saved", checkpoint);
+                }
                 updateRunProgress(run.id, progress);
             },
-        });
+        }));
 
         run.controller.signal.throwIfAborted();
         const resultDirectory = path.dirname(result.files.inventory);
@@ -1287,6 +1194,7 @@ async function executeCollection(run, config) {
             outputDirectory: resultDirectory,
             files: createPublicFileState(result.files),
             error: "",
+            failure: null,
             progress: {
                 ...current?.progress,
                 stage: "completed",
@@ -1299,6 +1207,10 @@ async function executeCollection(run, config) {
                 elapsedText: formatMs(finishedAtMs - run.startedAtMs),
             },
         });
+        diagnostics.record("run.completed", {
+            outputDirectory: resultDirectory,
+            elapsedMs: finishedAtMs - run.startedAtMs,
+        });
         // 최종 아카이브·결과 파일 저장이 성공한 실행만 전송 대기열에 넣는다.
         // 서버 장애는 수집 성공을 실패로 바꾸지 않고 전송 상태/내역으로 표시한다.
         try {
@@ -1307,19 +1219,27 @@ async function executeCollection(run, config) {
             console.error("[PRODUCT UPLOAD QUEUE]", getErrorMessage(error));
         }
     } catch (error) {
-        const canceled =
-            run.controller.signal.aborted ||
-            isAbortError(error);
+        const canceled = error?.code !== "CART_CLEANUP_INCOMPLETE" &&
+            (run.controller.signal.aborted || isAbortError(error));
         const finishedAtMs = Date.now();
         const current = runStates.get(run.id);
+        const savedResult = runResults.get(run.id);
+        const failure = canceled ? null : classifyCollectionFailure(error);
+        diagnostics.record(canceled ? "run.canceled" : "run.failed", {
+            error,
+            failure,
+            savedCheckpoint: current?.progress?.savedCheckpoint,
+            elapsedMs: finishedAtMs - run.startedAtMs,
+        });
 
         updateRunState(run.id, {
             status: canceled ? "canceled" : "failed",
             finishedAtMs,
             summary: null,
-            files: createPublicFileState(),
-            outputDirectory: "",
+            files: createPublicFileState(savedResult?.files),
+            outputDirectory: savedResult?.directory || "",
             error: canceled ? "" : getErrorMessage(error),
+            failure,
             progress: {
                 ...current?.progress,
                 stage: canceled ? "canceled" : "failed",
@@ -1331,6 +1251,12 @@ async function executeCollection(run, config) {
             },
         });
     } finally {
+        await diagnostics.flush();
+        if (diagnostics.error) {
+            updateRunState(run.id, {
+                diagnosticLogError: "진단 기록 파일을 저장하지 못했습니다.",
+            });
+        }
         collectionAccountLocks.delete(run.accountKey);
         activeRuns.delete(run.id);
         emitState();
@@ -1343,9 +1269,10 @@ function startCollection(input) {
     const safeInput = normalizeRunInput(input);
     const mall = String(safeInput.mall || "cheonyu").trim().toLowerCase();
     const proxyProfileInput = mall === "cheonyu"
-        ? resolveProxyRotationInput(safeInput.proxyProfileId)
+        ? (safeInput.collectionKind ? resolveProxyProfileInput(safeInput.proxyProfileId) : resolveProxyRotationInput(safeInput.proxyProfileId))
         : {};
-    const openAiProfile = resolveOpenAiProfile(safeInput.openAiProfileId);
+    const openAiProfile = safeInput.collectionKind && !safeInput.openAiProfileId
+        ? { config: {} } : resolveOpenAiProfile(safeInput.openAiProfileId);
     const openAi = openAiProfile.config;
     const config = resolveRunConfig(
         {
@@ -1422,7 +1349,7 @@ function startCollection(input) {
     if (proxySlotKey && activeCartUpload?.proxySlotKeys?.has(proxySlotKey)) {
         throw new Error(
             `${formatProxySlotLockLabel(proxySlotKey)}에서 장바구니 작업이 진행 중입니다. ` +
-            "같은 IP의 요청이 겹치지 않도록 기존 작업이 끝난 후 다시 실행하세요.",
+            "동일한 고정 연결 또는 스티키 세션을 사용 중이므로 기존 작업이 끝난 후 다시 실행하세요.",
         );
     }
 
@@ -1453,6 +1380,7 @@ function startCollection(input) {
         outputDirectory: "",
         files: createPublicFileState(),
         error: "",
+        failure: null,
     };
 
     lockCollectionAccount(accountKey, config.mall, {
@@ -1717,6 +1645,44 @@ function registerRendererProtocol() {
 
 /** 앱에 필요한 IPC 채널을 한 번 등록한다. */
 function registerIpcHandlers() {
+    registerIpcHandler(CHANNELS.collectCommerce, (input) => commerceCollector.run(input));
+    registerIpcHandler(CHANNELS.openCommerceDirectory, async () => {
+        const directory = commerceDirectory();
+        await fs.promises.mkdir(directory, { recursive: true });
+        const error = await shell.openPath(directory);
+        if (error) throw new Error(error);
+        return directory;
+    });
+    registerIpcHandler(CHANNELS.getBrands, () => brandCollector.snapshot());
+    registerIpcHandler(CHANNELS.refreshBrands, (input) => brandCollector.refresh(input));
+    registerIpcHandler(CHANNELS.collectBrands, (input) => brandCollector.collect(input));
+    registerIpcHandler(CHANNELS.openBrandDirectory, async () => {
+        const directory = brandCollector.snapshot().directory;
+        await fs.promises.mkdir(directory, { recursive: true });
+        const error = await shell.openPath(directory);
+        if (error) throw new Error(error);
+        return directory;
+    });
+    registerIpcHandler(CHANNELS.testConnection, (input) => connectionTester.run(input));
+    registerIpcHandler(CHANNELS.testProductHtml, (input) => htmlProductTester.run(input));
+    const testAccountStore = createTestAccountStore(environmentInfo.userDataDir, { safeStorage });
+    let testSignupRunning = false;
+    registerIpcHandler(CHANNELS.runTestAccountSignup, async () => {
+        if (testSignupRunning) throw new Error("천유 가입 테스트가 진행 중입니다.");
+        testSignupRunning = true;
+        try {
+            testAccountStore.assertCanStoreRealAccount();
+            const accounts = await testAccountStore.list();
+            const result = await runTestAccountSignup(accounts.map(account => account.id), {
+                signal: testAccountSignupShutdown.signal,
+            });
+            if (result.canceled) return result;
+            const { id, pw } = await testAccountStore.add(result, { encryptPassword: true });
+            return { id, pw };
+        } finally {
+            testSignupRunning = false;
+        }
+    });
     registerIpcHandler(CHANNELS.getDefaults, () => ({
         ...getPublicDefaults(
             process.env,
@@ -1765,7 +1731,7 @@ function registerIpcHandlers() {
     );
 
     registerIpcHandler(CHANNELS.getCollectionUploadLogs, (payload) =>
-        listCollectionUploadLogs(payload),
+        listCollectionUploadLogs(getCollectionUploadLogRoot(), payload),
     );
 
     registerIpcHandler(
@@ -2178,6 +2144,11 @@ if (isSquirrelStartup) {
         });
 
         app.on("before-quit", () => {
+            testAccountSignupShutdown.abort();
+            void commerceCollector.close().catch(() => {});
+            void brandCollector.close().catch(() => {});
+            void connectionTester.close();
+            htmlProductTester.close();
             clearInterval(collectionUploadLogCleanupTimer);
             shippingScheduler?.stop();
             productUploadScheduler?.stop();

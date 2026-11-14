@@ -572,6 +572,9 @@ function setChangedField(target, key, value, stats) {
 
 /** 수집 출처가 해당 상품 필드를 갱신할 수 있는지 확인한다. */
 function canUpdateProductField(source, field, value) {
+  if (source === "inventory") {
+    return ["type", "stockQuantity", "stockStatus", "saleStatus"].includes(field) && value !== undefined;
+  }
   if (source === "translation") {
     return TRANSLATION_FIELDS.has(field) &&
       hasMeaningfulArchiveValue(value);
@@ -667,7 +670,7 @@ function mergeTranslationProductFields(
 }
 
 /** 옵션 하나를 optionId 기준으로 병합한다. */
-function mergeOption(existingOption, incomingOption, stats, source) {
+function mergeOption(existingOption, incomingOption, stats, source, includeDetailOptionStock) {
   const incoming = normalizeIncomingOption(incomingOption);
   const isNew = !existingOption;
   const result = existingOption
@@ -712,7 +715,10 @@ function mergeOption(existingOption, incomingOption, stats, source) {
       ) || changed;
     }
   } else {
-    const allowedFields = source === "general"
+    const hasDetailOptionStock = source === "detail" && includeDetailOptionStock &&
+      /^\d+$/.test(incoming.id) && /[1-9]/.test(incoming.id) &&
+      Number.isSafeInteger(incoming.stockQuantity) && incoming.stockQuantity >= 0;
+    const allowedFields = source === "inventory" ? ["stockQuantity", "status"] : source === "general"
       ? [
         "barcode",
         "name",
@@ -730,6 +736,7 @@ function mergeOption(existingOption, incomingOption, stats, source) {
         "nameEn",
         "additionalPrice",
         "barcode",
+        ...(hasDetailOptionStock ? ["stockQuantity", "status"] : []),
       ];
 
     for (const field of allowedFields) {
@@ -758,7 +765,7 @@ function mergeOption(existingOption, incomingOption, stats, source) {
 
       if (
         field === "stockQuantity" &&
-        (source !== "general" || value === undefined)
+        value === undefined
       ) {
         continue;
       }
@@ -794,6 +801,7 @@ function mergeProduct(
   source,
   conversion,
   collectedAt,
+  includeDetailOptionStock,
 ) {
   const inventoryObserved = incomingProduct?.inventoryObserved === true;
   const specialObserved = incomingProduct?.specialObserved === true;
@@ -839,7 +847,7 @@ function mergeProduct(
 
       // 목록에 재등장한 HIDDEN 상품은 판매 상태만 복원하고 미관측 재고는 보존한다.
       if (
-        source === "general" &&
+        ["general", "inventory"].includes(source) &&
         !inventoryObserved &&
         !inventoryUnavailable &&
         ["type", "stockQuantity", "stockStatus", "saleStatus"].includes(field) &&
@@ -878,7 +886,7 @@ function mergeProduct(
 
   /** 일반 수집에서 SINGLE로 확인된 상품만 옵션 배열을 비운다. */
   if (
-    source === "general" &&
+    ["general", "inventory"].includes(source) &&
     inventoryObserved &&
     incoming.type === "SINGLE" &&
     Object.keys(incomingOptions).length === 0
@@ -896,6 +904,7 @@ function mergeProduct(
         incomingOption,
         stats,
         source,
+        includeDetailOptionStock && inventoryObserved && incoming.sourceMall === "cheonyu",
       );
 
       result.options[optionKey] = merged.option;
@@ -905,7 +914,7 @@ function mergeProduct(
 
   result.id = incoming.id;
   result.sourceMall = incoming.sourceMall || result.sourceMall;
-  result.slug = "";
+  if (source !== "inventory") result.slug = "";
   result.type = Object.keys(result.options).length > 0
     ? "OPTION"
     : normalizeText(result.type) || "SINGLE";
@@ -934,7 +943,7 @@ function mergeProduct(
 
   // 환율·가격 관측 여부와 무관하게 일반/상세 수집 저장 시각을 기록한다.
   // 번역 캐시 갱신은 수집 시각을 변경하지 않는다.
-  if (source === "general" || source === "detail") {
+  if (["general", "detail", "inventory"].includes(source)) {
     changed = setChangedField(
       result,
       result.createdAt ? "updatedAt" : "createdAt",
@@ -1092,9 +1101,10 @@ function updateProductArchive(products, {
   conversion = null,
   collectedAt = new Date().toISOString(),
   missingProductScan = null,
+  includeDetailOptionStock = false,
 } = {}) {
   return runWithArchiveLock(async () => {
-    if ((source === "general" || source === "detail") &&
+    if (["general", "detail", "inventory", "sale-status"].includes(source) &&
         (!collectedAt || normalizeProductTimestamp(collectedAt) !== collectedAt)) {
       throw new TypeError(`Invalid collectedAt: ${collectedAt}`);
     }
@@ -1132,6 +1142,19 @@ function updateProductArchive(products, {
       }
 
       const productKey = getProductArchiveKey(product);
+      if (source === "sale-status") {
+        // A list badge observes sale status only. Preserve stock, options and all
+        // catalog fields, and do not create empty products for unknown IDs.
+        const existing = archive.products[productKey];
+        if (!existing || product.saleStatus !== "SOLD_OUT") continue;
+        currentProductIds.push(productKey);
+        if (setChangedField(existing, "saleStatus", "SOLD_OUT", stats)) {
+          setChangedField(existing, "updatedAt", collectedAt, stats);
+          stats.updatedProductCount++;
+          stats.changedProductIds.push(productId);
+        } else stats.unchangedProductCount++;
+        continue;
+      }
       currentProductIds.push(productKey);
 
       const merged = mergeProduct(
@@ -1141,6 +1164,7 @@ function updateProductArchive(products, {
         source,
         conversion,
         collectedAt,
+        includeDetailOptionStock,
       );
 
       archive.products[productKey] = merged.product;

@@ -28,6 +28,9 @@ const HIDDEN_BROWSER_BLOCKED_URL_PATTERNS = [
   "*.woff2*",
   "*.ttf*",
   "*.otf*",
+];
+
+const IMAGE_BLOCKED_URL_PATTERNS = [
   "*.png*",
   "*.jpg*",
   "*.jpeg*",
@@ -38,22 +41,23 @@ const HIDDEN_BROWSER_BLOCKED_URL_PATTERNS = [
   "*.ico*",
 ];
 
-/** 숨김 수집에서는 Chromium이 이미지 자체를 요청하지 않게 한다. */
-function getLightweightLaunchArgs({ showBrowser = false } = {}) {
-  return showBrowser ? [] : ["--blink-settings=imagesEnabled=false"];
+/** 이미지 차단 표시 모드와 숨김 모드에서는 Chromium의 이미지 요청을 막는다. */
+function getLightweightLaunchArgs({ showBrowser = false, blockImages = !showBrowser } = {}) {
+  return blockImages || !showBrowser ? ["--blink-settings=imagesEnabled=false"] : [];
 }
 
 /**
  * Playwright route를 사용하지 않고 Chromium CDP에서 불필요한 URL을 차단한다.
  *
  * 브라우저를 화면에 표시할 때는 페이지가 정상적으로 보이도록
- * 이미지·CSS·폰트를 유지하고 미디어와 추적 요청만 차단한다.
+ * 이미지 차단을 선택한 표시 모드에서도 CSS·폰트는 유지한다.
  * route를 사용하지 않으므로 Chromium의 기본 HTTP 캐시가 유지된다.
  */
 async function installLightweightNetworkPolicy(
   context,
   {
     showBrowser = false,
+    blockImages = !showBrowser,
     blockedUrlFragments = DEFAULT_BLOCKED_URL_FRAGMENTS,
   } = {},
 ) {
@@ -62,6 +66,7 @@ async function installLightweightNetworkPolicy(
       ...blockedUrlFragments.map((fragment) => `*${fragment}*`),
       ...ALWAYS_BLOCKED_URL_PATTERNS,
       ...(showBrowser ? [] : HIDDEN_BROWSER_BLOCKED_URL_PATTERNS),
+      ...(blockImages || !showBrowser ? IMAGE_BLOCKED_URL_PATTERNS : []),
     ]),
   );
   const configuredPages = new WeakSet();

@@ -4,6 +4,10 @@
 const path = require("node:path");
 const { toSafeConfig } = require("./config");
 const { throwIfAborted } = require("./utils/common");
+const { createDetailCheckpointWriter, writeJsonAtomically, getCompletedCyclePages } = require("./utils/detail-checkpoint");
+const { createListCheckpointWriter } = require("./utils/list-checkpoint");
+const { keepConsumerPrices, TRADE_PRICE_FIELDS } = require("./utils/consumer-price");
+const { keepInventoryData, INVENTORY_FIELDS } = require("./utils/inventory-only");
 const {
   createRunFiles,
   saveCsv,
@@ -252,26 +256,41 @@ function createTranslationInput(result, collectionMode) {
 /** 선택한 쇼핑몰 adapter를 실행하고 공통 CSV/JSON 파일을 저장한다. */
 async function runCollection(
   config,
-  { runId, onProgress = () => { }, signal, openAi },
+  { runId, onProgress = () => { }, signal, openAi, browserType },
 ) {
   throwIfAborted(signal);
+  const collectedData = config.inventoryOnly ? keepInventoryData : config.consumerPriceOnly
+    ? keepConsumerPrices : value => value;
+  const csvHeaders = config.inventoryOnly
+    ? Object.fromEntries(Object.entries(CSV_HEADERS).map(([name, fields]) =>
+      [name, Array.from(new Set([...fields.filter(field => INVENTORY_FIELDS.has(field)), "optionId"]))]))
+    : config.consumerPriceOnly
+    ? Object.fromEntries(Object.entries(CSV_HEADERS).map(([name, fields]) =>
+      [name, fields.filter(field => !TRADE_PRICE_FIELDS.has(field))])) : CSV_HEADERS;
 
-  const adapter = ADAPTERS[config.mall];
+  const adapter = ["inventory", "newProducts", "changes"].includes(config.collectionKind)
+    ? { run: require("./malls/cheonyu/lifecycle-collection").runCheonyuLifecycle }
+    : config.anonymousCollection
+    ? { run: require("./malls/cheonyu/public-collection").runCheonyuPublic }
+    : ADAPTERS[config.mall];
 
   if (!adapter) {
     throw new Error(`수집 adapter가 없습니다: ${config.mall}`);
   }
 
   const files = createRunFiles(config.baseOutDir, config.mall, runId);
+  const stockArchiveSource = config.saleStatusOnly ? "sale-status" : "inventory";
+  const saleStatusRows = products => products.map(product => ({ id: product.id, sourceMall: product.sourceMall, saleStatus: product.saleStatus }));
   const catalogScanStartedAt = new Date().toISOString();
   // 실행 중 새로 추가된 상품을 오인하지 않도록 시작 시점의 동일 쇼핑몰 상품만 비교한다.
-  const missingProductCandidates = isFullCatalogRequested(config)
+  const missingProductCandidates = !config.inventoryOnly && isFullCatalogRequested(config)
     ? Object.values((await readProductArchive()).products)
       .filter((product) => getProductSourceMall(product) === config.mall)
       .map((product) => String(product.id))
     : [];
   throwIfAborted(signal);
   const cycleArchivedProducts = new Map();
+  const generalSavedPages = new Set();
   const missingWholesalePriceIds = new Set();
   const missingConsumerPriceIds = new Set();
   let conversionSnapshotPromise = null;
@@ -295,7 +314,12 @@ async function runCollection(
       pageRange = null,
     } = {}) => {
       throwIfAborted(signal);
+      products = collectedData(products);
+      inventoryItems = collectedData(inventoryItems);
       const cycleArchiveProducts = await createBackendProducts({
+        saleStatusOnly: config.saleStatusOnly,
+        inventoryOnly: config.inventoryOnly,
+        consumerPriceOnly: config.consumerPriceOnly,
         collectionMode: "general",
         products,
         inventoryItems,
@@ -303,9 +327,9 @@ async function runCollection(
         translatedItems: [],
         lowStockThreshold: Number(config.lowStockThreshold) || 10,
       });
-      if (config.mall === "cheonyu") {
+      if (config.mall === "cheonyu" && !config.inventoryOnly) {
         for (const product of cycleArchiveProducts) {
-          if (product.wholesalePrice > 0 || product.inventoryUnavailable) {
+          if (config.consumerPriceOnly || product.wholesalePrice > 0 || product.inventoryUnavailable) {
             missingWholesalePriceIds.delete(product.id);
           } else {
             missingWholesalePriceIds.add(product.id);
@@ -327,25 +351,44 @@ async function runCollection(
             message: `천유 ${missingConsumerPriceIds.size}개 상품의 목록 소비자가를 확인하지 못했습니다. 기존 소비자가와 엔화 환산값은 유지하며 다음 수집에서 재확인합니다.` });
         }
       }
-      const cycleConversion = cycleArchiveProducts.length > 0
+      const cycleConversion = !config.inventoryOnly && cycleArchiveProducts.length > 0
         ? await getRunConversionSnapshot()
         : null;
       const archiveUpdate = await updateProductArchive(
         cycleArchiveProducts,
         {
-          source: "general",
+          source: config.inventoryOnly ? stockArchiveSource : "general",
           conversion: cycleConversion,
         },
       );
-      const detailStateObservation = config.mall === "cheonyu"
+      const detailStateObservation = config.mall === "cheonyu" && !config.inventoryOnly
         ? await observeDetailProducts({ mall: config.mall, products })
         : { pendingProductIds: [], path: null };
 
-      for (const product of archiveUpdate.currentProducts || []) {
+      for (const product of (config.saleStatusOnly ? saleStatusRows(archiveUpdate.currentProducts)
+        : config.inventoryOnly ? cycleArchiveProducts : archiveUpdate.currentProducts) || []) {
         const productId = String(product?.id || product?.productId || "").trim();
         if (productId) cycleArchivedProducts.set(productId, product);
       }
-      writeJson(files.resultJson, Array.from(cycleArchivedProducts.values()));
+      await writeJsonAtomically(files.resultJson, Array.from(cycleArchivedProducts.values()));
+      for (const pageNo of getCompletedCyclePages(products, pageRange)) generalSavedPages.add(pageNo);
+      const savedPages = Array.from(generalSavedPages).sort((a, b) => a - b);
+      const pageStart = Number(pageRange?.pageStart) || Number(config.pageStart) || 1;
+      const pageEnd = Number(pageRange?.pageEnd) || Number(config.pageEnd) || savedPages.at(-1) || pageStart;
+      const reverse = config.mall === "cheonyu" && config.pageOrder === "reverse";
+      let savedThroughPage = null;
+      for (let candidate = reverse ? pageEnd : pageStart;
+        reverse ? candidate >= pageStart : candidate <= pageEnd;
+        candidate += reverse ? -1 : 1) {
+        if (!generalSavedPages.has(candidate)) break;
+        savedThroughPage = candidate;
+      }
+      const savedCheckpoint = {
+        phase: "general", pageStart, pageEnd, pageOrder: reverse ? "desc" : "asc",
+        savedThroughPage, savedPages, outputDirectory: files.runDir,
+        files: { result: files.resultJson },
+      };
+      await writeJsonAtomically(path.join(files.runDir, "general-checkpoint.json"), savedCheckpoint);
 
       const result = {
         cycleNo,
@@ -366,18 +409,34 @@ async function runCollection(
         stage: "cycle-archived",
         message:
           `${config.mallLabel || config.mall} ${cycleNo}차 ${cycleArchiveProducts.length}개 상품의 ` +
-          `일반 수집 아카이빙을 완료했습니다.`,
+          `${config.saleStatusOnly ? "품절 상태 저장" : config.inventoryOnly ? "재고 저장" : config.collectionKind === "shortTerm" ? "단기 갱신 저장" : "일반 수집 아카이빙"}을 완료했습니다.`,
         cycleNo,
         pageRange,
+        savedCheckpoint,
         ...result,
       });
       return result;
     };
-  const result = await adapter.run(config, {
+  const detailCheckpointWriter = createDetailCheckpointWriter({
+    config, files, createBackendProducts, updateProductArchive,
+    getConversionSnapshot: getRunConversionSnapshot,
+    getGeneralProducts: () => Array.from(cycleArchivedProducts.values()),
+    onProgress,
+  });
+  const listCheckpointWriter = createListCheckpointWriter({ config, files, onProgress });
+  const adapterResult = await adapter.run(config, {
+    browserType,
+    deferDetailSuccess: Boolean(openAi?.apiKey),
     onProgress,
     onCycleArchive,
+    onListPage: config.inventoryOnly ? null : (pageResult) => listCheckpointWriter.savePage(collectedData(pageResult)),
+    onDetailPage: (pageResult) => detailCheckpointWriter.savePage(collectedData(pageResult)),
     signal,
   });
+  const restockCheckpoint = adapterResult.restockCheckpoint;
+  const result = collectedData(adapterResult);
+  if (config.consumerPriceOnly && result.debugFiles) delete result.debugFiles["debug-cart.html"];
+  result.summary.collectionKind = config.collectionKind;
   result.summary.missingWholesalePriceCount = missingWholesalePriceIds.size;
 
   throwIfAborted(signal);
@@ -410,12 +469,12 @@ async function runCollection(
 
   throwIfAborted(signal);
 
-  saveCsv(files.inventoryCsv, CSV_HEADERS.inventory, result.inventoryItems);
-  saveCsv(files.summaryCsv, CSV_HEADERS.summary, result.productSummaries);
-  saveCsv(files.productsCsv, CSV_HEADERS.products, result.products);
+  saveCsv(files.inventoryCsv, csvHeaders.inventory, result.inventoryItems);
+  saveCsv(files.summaryCsv, csvHeaders.summary, result.productSummaries);
+  saveCsv(files.productsCsv, csvHeaders.products, result.products);
 
   if (result.detailItems?.length) {
-    saveCsv(files.detailsCsv, CSV_HEADERS.details, result.detailItems);
+    saveCsv(files.detailsCsv, csvHeaders.details, result.detailItems);
   }
 
   for (const [fileName, content] of Object.entries(result.debugFiles || {})) {
@@ -425,7 +484,9 @@ async function runCollection(
   
 
   const isDetailCollection = config.collectionMode === "detail";
-  const translatedResultPath = isDetailCollection
+  const shouldTranslate = isDetailCollection && (result.detailItems || []).length > 0 &&
+    (!config.collectionKind || Boolean(openAi?.apiKey));
+  const translatedResultPath = shouldTranslate
     ? path.resolve(files.runDir, "result_translated.json")
     : null;
   let translationResult = {
@@ -436,6 +497,7 @@ async function runCollection(
   // 번역 API 장애와 무관하게 이미 수집한 가격·이미지·스펙을 먼저 보존한다.
   if (isDetailCollection && (result.detailItems || []).length > 0) {
     const collectedProducts = await createBackendProducts({
+      consumerPriceOnly: config.consumerPriceOnly,
       collectionMode: "detail", products: result.products || [],
       inventoryItems: result.inventoryItems || [], detailItems: result.detailItems,
       lowStockThreshold: Number(config.lowStockThreshold) || 10,
@@ -447,7 +509,7 @@ async function runCollection(
     writeJson(files.detailResultJson, collectedArchive.currentProducts);
   }
 
-  if (isDetailCollection && (result.detailItems || []).length > 0) {
+  if (shouldTranslate) {
     const translationInput = createTranslationInput(
       result,
       config.collectionMode,
@@ -487,6 +549,9 @@ async function runCollection(
 
   /** 일반/상세 모두 동일한 백엔드 상품 타입으로 변환한다. */
   const backendProducts = await createBackendProducts({
+    saleStatusOnly: config.saleStatusOnly,
+    inventoryOnly: config.inventoryOnly,
+    consumerPriceOnly: config.consumerPriceOnly,
     collectionMode: config.collectionMode,
     products: result.products || [],
     inventoryItems: result.inventoryItems || [],
@@ -504,7 +569,7 @@ async function runCollection(
    * independently of collection timestamps. Unobserved prices retain their conversions.
    */
   const needsConversion =
-    backendProducts.length > 0 || cycleArchivedProducts.size > 0;
+    !config.inventoryOnly && (backendProducts.length > 0 || cycleArchivedProducts.size > 0);
   const conversion = needsConversion
     ? await getRunConversionSnapshot()
     : null;
@@ -515,11 +580,12 @@ async function runCollection(
    * 일반·상세·번역 결과를 productId와 optionId 기준으로 통합한다.
    * 현재 수집에서 비어 있는 필드는 기존 archive 값을 유지한다.
    */
-  const completedFullCatalogScan = getCompletedFullCatalogScan(config, result);
+  const completedFullCatalogScan = config.inventoryOnly ? null : getCompletedFullCatalogScan(config, result);
   const archiveUpdate = await updateProductArchive(
     backendProducts,
     {
-      source: config.collectionMode,
+      source: config.inventoryOnly ? stockArchiveSource : config.collectionMode,
+      includeDetailOptionStock: config.collectionKind === "newProducts",
       conversion,
       missingProductScan: completedFullCatalogScan
         ? { ...completedFullCatalogScan, candidateProductIds: missingProductCandidates, startedAt: catalogScanStartedAt }
@@ -538,14 +604,15 @@ async function runCollection(
       hiddenProductCount: archiveUpdate.stats.hiddenProductCount || 0,
       missingProductCount: archiveUpdate.stats.missingProductCount || 0,
     });
-  } else if (isFullCatalogRequested(config)) {
+  } else if (!config.inventoryOnly && isFullCatalogRequested(config)) {
     onProgress({
       stage: "missing-products", level: "warn",
       message: "전체 페이지와 상품 수가 일치하는지 확인하지 못해 미발견 상품의 판매 상태를 유지합니다.",
     });
   }
   const detailMergedBackendProducts = archiveUpdate.currentProducts;
-  let mergedBackendProducts = detailMergedBackendProducts;
+  let mergedBackendProducts = config.saleStatusOnly ? saleStatusRows(archiveUpdate.currentProducts)
+    : config.inventoryOnly ? backendProducts : detailMergedBackendProducts;
 
   if (config.mall === "cheonyu" && isDetailCollection) {
     /**
@@ -602,7 +669,7 @@ async function runCollection(
   onProgress({
     stage: "archiving",
     message:
-      config.collectionMode === "detail"
+      config.saleStatusOnly ? "품절 상태 저장을 완료했습니다." : config.inventoryOnly ? "재고 결과 저장을 완료했습니다." : config.collectionMode === "detail"
         ? "상세 상품 아카이빙과 파일 저장을 완료했습니다."
         : "일반 상품 아카이빙과 파일 저장을 완료했습니다.",
     pageRange: result.summary.pageRange,
@@ -619,6 +686,14 @@ async function runCollection(
     detail: null,
     deferredToShippingScheduler: true,
   };
+
+  // Advance the restock boundary only after every archive and result file write
+  // has succeeded. A failed/canceled run keeps the previous boundary for retry.
+  throwIfAborted(signal);
+  if (restockCheckpoint) {
+    const cursor = await require("./utils/restock-collection-state").commitRestockCursor(restockCheckpoint);
+    rawPayload.summary.restockCursor = cursor;
+  }
 
   return {
     payload: {

@@ -2,8 +2,10 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
-const vm = require("node:vm");
 const { test } = require("node:test");
+const {
+  summarizeCollectionUploadLog: summarize,
+} = require("../electron/collection-upload-logs");
 const {
   requestJsonWithAudit,
   setResultUploadLogRoot,
@@ -14,15 +16,6 @@ const groups = {
   ccdome: [{ id: "same" }, { id: "d2" }],
   futureMall: [{ id: "f1" }, { id: "f2" }],
 };
-
-// Electron을 실행하지 않고 앱에서 사용하는 순수 요약 함수만 검사한다.
-async function loadSummaryFunction() {
-  const source = await fs.readFile(path.resolve(__dirname, "../electron/main.js"), "utf8");
-  const start = source.indexOf("function summarizeCollectionUploadLog(");
-  const end = source.indexOf("async function listCollectionUploadLogs(", start);
-  assert.ok(start >= 0 && end > start);
-  return vm.runInThisContext(`(${source.slice(start, end).trim()})`);
-}
 
 async function captureAudit(t, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "grouped-upload-audit-"));
@@ -67,7 +60,6 @@ test("grouped archive audit counts all malls and preserves actual body", async (
   assert.deepEqual(log.sampleIds, ["same", "c2", "same", "d2", "f1"]);
   assert.deepEqual(log.request, JSON.parse(sent.body));
   assert.deepEqual(log.request.data, groups);
-  const summarize = await loadSummaryFunction();
   const summary = summarize(log, "20261004", "test.json");
   assert.equal(summary.itemCount, 6);
   assert.deepEqual(summary.sampleProductIds, log.sampleIds);
@@ -126,7 +118,6 @@ test("manual test event does not become a product group", async (t) => {
   });
   assert.equal(log.itemCount, null);
   assert.deepEqual(log.sampleIds, []);
-  const summarize = await loadSummaryFunction();
   assert.equal(summarize(log, "20261004", "test.json").itemCount, 0);
 });
 
@@ -134,14 +125,12 @@ test("explicit audit metadata remains authoritative", async (t) => {
   const { log } = await captureAudit(t, { itemCount: 42, sampleIds: [123] });
   assert.equal(log.itemCount, 42);
   assert.deepEqual(log.sampleIds, ["123"]);
-  const summarize = await loadSummaryFunction();
   const summary = summarize(log, "20261004", "test.json");
   assert.equal(summary.itemCount, 42);
   assert.deepEqual(summary.sampleProductIds, ["123"]);
 });
 
 test("log UI recovers grouped counts and IDs when audit metadata is absent", async () => {
-  const summarize = await loadSummaryFunction();
   const summary = summarize({ request: { type: "아카이브", data: groups } }, "20261004", "legacy.json");
   assert.equal(summary.type, "아카이브");
   assert.equal(summary.itemCount, 6);
@@ -149,7 +138,6 @@ test("log UI recovers grouped counts and IDs when audit metadata is absent", asy
 });
 
 test("log UI retains legacy flat, raw shipping, and GET metadata behavior", async () => {
-  const summarize = await loadSummaryFunction();
   const flat = summarize({ request: { type: "아카이브", data: [{ id: "p1" }] } }, "20261004", "flat.json");
   const shipping = summarize({ type: "운송장", request: [{ id: "s1" }] }, "20261004", "shipping.json");
   const get = summarize({ type: "장바구니 요청", method: "GET", request: null, itemCount: 2, sampleIds: ["g1", "g2"] }, "20261004", "get.json");

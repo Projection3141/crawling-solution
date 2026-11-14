@@ -35,7 +35,7 @@ const DETAIL_COLLECTION_MAX_PAGES = 20;
 
 const DEFAULT_RUN_CONFIG = Object.freeze({
   mall: "cheonyu",
-  showBrowser: false,
+  showBrowser: true,
   pageStart: 1,
   pageEnd: 0,
   pageOrder: "forward",
@@ -45,6 +45,7 @@ const DEFAULT_RUN_CONFIG = Object.freeze({
   clearCartAfter: false,
   lowStockThreshold: 10,
   requestDelayMs: 300,
+  proxyRotationPages: 10,
   maxSafePages: 1000,
   navigationTimeoutMs: 60000,
   cheonyuUserAgent: undefined,
@@ -366,8 +367,25 @@ function resolveRunConfig(
       ? Math.min(rawPageSize, 40)
       : rawPageSize;
 
+  const collectionKind = input.collectionKind === "restock" ? "changes" : String(input.collectionKind || "");
+  // Keep legacy kinds readable for runs already scheduled before the menu change.
+  if (collectionKind && (mall !== "cheonyu" || !["initial", "longTerm", "shortTerm", "inventory", "newProducts", "changes"].includes(collectionKind))) {
+    throw new Error("새 수집은 천유의 재고 파악·새 제품 수집·상품 변동 확인을 지원합니다.");
+  }
+  const inventoryOnly = ["inventory", "changes"].includes(collectionKind);
+  const changeType = collectionKind === "changes" ? String(input.changeType || "soldOut") : "";
+  if (changeType && !["soldOut", "restock30", "restock90"].includes(changeType)) throw new Error("상품 변동 세부항목을 선택하세요.");
+  const saleStatusOnly = changeType === "soldOut";
+  const anonymousCollection = ["initial", "longTerm", "newProducts"].includes(collectionKind);
+  const newProductOptionAccount = collectionKind === "newProducts" && Boolean(accountId && accountPw);
+  const keepAccount = !anonymousCollection || newProductOptionAccount;
+  const inventoryBest = collectionKind === "inventory" ? String(input.inventoryBest || "attention") : "";
+  if (collectionKind === "inventory" && !["attention", "stationery", "snack"].includes(inventoryBest)) {
+    throw new Error("재고 파악 세부항목을 선택하세요: 주목받는 베스트, 문구점 베스트, 과자 베스트");
+  }
   const collectionMode = String(
-    pickValue(input, "collectionMode", env, "COLLECTION_MODE", "general"),
+    collectionKind ? (anonymousCollection ? "detail" : "general") :
+      pickValue(input, "collectionMode", env, "COLLECTION_MODE", "general"),
   )
     .trim()
     .toLowerCase();
@@ -398,7 +416,7 @@ function resolveRunConfig(
       ? "pending"
       : "all";
 
-  if (!accountId || !accountPw) {
+  if (!anonymousCollection && (!accountId || !accountPw)) {
     throw new Error(
       "계정 정보가 없습니다. 화면에서 계정을 선택하거나 " +
       "ACCOUNT_ID / ACCOUNT_PW를 공통 .env에 설정하세요.",
@@ -409,7 +427,7 @@ function resolveRunConfig(
     throw new Error(`PAGE_END(${pageEnd})는 PAGE_START(${pageStart})보다 작을 수 없습니다.`);
   }
 
-  if (collectionMode === "detail" && detailTargetMode !== "pending") {
+  if (!collectionKind && collectionMode === "detail" && detailTargetMode !== "pending") {
     if (pageEnd < 1) {
       throw new Error(
         "전체 상품 상세수집은 종료 페이지를 지정해야 하며 자동 마지막 페이지 모드를 사용할 수 없습니다.",
@@ -438,22 +456,38 @@ function resolveRunConfig(
   }
 
   const cheonyuProxy = resolveCheonyuProxy(input, env, mall);
+  const { inferProxyProvider, createCollectionProxy } = require("./utils/collection-proxy");
+  const proxyProvider = input.cheonyuProxyProvider || inferProxyProvider(cheonyuProxy.proxy?.server);
+  const proxy = collectionKind
+    ? createCollectionProxy(cheonyuProxy.proxy, !anonymousCollection, proxyProvider)
+    : cheonyuProxy.proxy;
 
   return {
     mall,
+    proxyProvider,
     mallLabel: mallInfo.label,
     baseUrl: mallInfo.baseUrl,
-    category,
-    accountId,
-    accountPw,
-    accountName: String(input.accountName || ""),
+    category: inventoryOnly || collectionKind === "newProducts" ? "ALL" : category,
+    accountId: keepAccount ? accountId : "",
+    accountPw: keepAccount ? accountPw : "",
+    accountName: keepAccount ? String(input.accountName || "") : "비로그인",
+    collectionKind,
+    anonymousCollection,
+    newProductOptionAccount,
+    inventoryOnly,
+    saleStatusOnly,
+    changeType,
+    inventoryBest,
+    consumerPriceOnly: Boolean(collectionKind) && !inventoryOnly,
+    longTermDays: pickInputInteger(input, "longTermDays", 90, 1),
     collectionMode,
     detailTargetMode,
     showBrowser,
+    blockImages: !showBrowser || pickInputBoolean(input, "blockImages", false),
     headless: !showBrowser,
-    pageStart,
-    pageEnd,
-    pageOrder,
+    pageStart: inventoryOnly || collectionKind === "newProducts" ? 1 : pageStart,
+    pageEnd: inventoryOnly || collectionKind === "newProducts" ? 0 : pageEnd,
+    pageOrder: inventoryOnly || collectionKind === "newProducts" ? "forward" : pageOrder,
     pageSize,
 
     maxPerPage: pickInputInteger(
@@ -492,6 +526,12 @@ function resolveRunConfig(
       DEFAULT_RUN_CONFIG.requestDelayMs,
       0,
     ),
+    proxyRotationPages: Math.min(1000, pickInputInteger(
+      input,
+      "proxyRotationPages",
+      DEFAULT_RUN_CONFIG.proxyRotationPages,
+      1,
+    )),
     detailRequestDelayMs: pickInteger(
       input,
       "detailRequestDelayMs",
@@ -524,8 +564,8 @@ function resolveRunConfig(
     proxySource: cheonyuProxy.proxySource || "none",
     proxyProfileId: cheonyuProxy.proxyProfileId || "",
     proxyProfileName: cheonyuProxy.proxyProfileName || "",
-    proxy: cheonyuProxy.proxy,
-    proxyRotation: resolveCheonyuProxyRotation(input, mall),
+    proxy,
+    proxyRotation: collectionKind ? [] : resolveCheonyuProxyRotation(input, mall),
     baseOutDir: resolveOutputDir(input, env, defaultOutputDir),
   };
 }
@@ -540,6 +580,15 @@ function resolveOpenAiConfig(input = {}) {
 
 function toSafeConfig(config) {
   return {
+    collectionKind: config.collectionKind,
+    anonymousCollection: config.anonymousCollection,
+    newProductOptionAccount: config.newProductOptionAccount,
+    consumerPriceOnly: config.consumerPriceOnly,
+    inventoryOnly: config.inventoryOnly,
+    saleStatusOnly: config.saleStatusOnly,
+    changeType: config.changeType,
+    inventoryBest: config.inventoryBest,
+    longTermDays: config.longTermDays,
     mall: config.mall,
     mallLabel: config.mallLabel,
     baseUrl: config.baseUrl,
@@ -548,6 +597,7 @@ function toSafeConfig(config) {
     detailTargetMode: config.detailTargetMode,
     accountName: config.accountName || "",
     showBrowser: config.showBrowser,
+    blockImages: config.blockImages,
     pageStart: config.pageStart,
     pageEnd: config.pageEnd,
     pageOrder: config.pageOrder || "forward",
@@ -559,12 +609,14 @@ function toSafeConfig(config) {
     clearCartAfter: config.clearCartAfter,
     lowStockThreshold: config.lowStockThreshold,
     requestDelayMs: config.requestDelayMs,
+    proxyRotationPages: config.proxyRotationPages,
     detailRequestDelayMs: config.detailRequestDelayMs,
     detailConcurrency: config.detailConcurrency,
     maxSafePages: config.maxSafePages,
     navigationTimeoutMs: config.navigationTimeoutMs,
     proxyEnabled: Boolean(config.proxy),
     proxySource: config.proxySource || "none",
+    proxyProvider: config.proxyProvider,
     proxyProfileName: config.proxyProfileName || "",
   };
 }
@@ -598,6 +650,7 @@ function getPublicDefaults(env = process.env, outputDirectory = "") {
       showBrowser: DEFAULT_RUN_CONFIG.showBrowser,
       pageStart: DEFAULT_RUN_CONFIG.pageStart,
       pageEnd: DEFAULT_RUN_CONFIG.pageEnd,
+      proxyRotationPages: DEFAULT_RUN_CONFIG.proxyRotationPages,
       pageSize: MALLS[mall].defaultPageSize,
       hasAccountId: hasValue(env.ACCOUNT_ID),
       hasAccountPw: hasValue(env.ACCOUNT_PW),
@@ -618,6 +671,7 @@ module.exports = {
   getPublicDefaults,
   normalizeCategory,
   normalizeProxyCredentials,
+  resolveUserAgent,
   resolveOutputDir,
   resolveOpenAiConfig,
   resolveRunConfig,

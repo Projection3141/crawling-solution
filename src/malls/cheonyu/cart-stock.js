@@ -423,7 +423,7 @@ async function probeCheonyuCartStock(
   let inventoryItems = [];
   let coverage = null;
   const hasRequiredCoverage = (value) => value?.complete &&
-    (config.collectionMode !== "detail" || value.optionCoverageComplete);
+    ((config.collectionMode !== "detail" && !["shortTerm", "inventory"].includes(config.collectionKind)) || value.optionCoverageComplete);
 
   if (targetIds.size < 1) {
     coverage = analyzeCheonyuCartCoverage({
@@ -699,6 +699,7 @@ function mergeCheonyuDetailInventoryItems(popupItems = [], cartItems = []) {
 
 module.exports = {
   mergeCheonyuDetailInventoryItems,
+  createCartOptionMatchKey,
   addCheonyuProductsToCart,
   analyzeCheonyuCartCoverage,
   collectCheonyuCartStock,

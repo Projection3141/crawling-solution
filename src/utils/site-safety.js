@@ -2,6 +2,8 @@
 // 목적: 사이트 요청의 차단·오류를 감지하고 재시도·대기·취소 및 페이지 복구를 처리한다.
 
 const { throwIfAborted } = require("./common");
+const { recordDiagnostic, describeDiagnosticPage } = require("./collection-diagnostics");
+const { classifyCollectionFailure, isTerminalStickyConnectionError } = require("./collection-failure");
 
 const DEFAULT_RETRYABLE_HTTP_STATUS_CODES = Object.freeze([
   408,
@@ -176,16 +178,19 @@ function installHttpBlockGuard(
       return;
     }
 
+    const proxyAuthenticationFailed = statusCode === 407;
     blockedError = markSiteError(
       new Error(
-        `${label}가 요청을 거부하거나 제한했습니다(HTTP ${statusCode}). ` +
-        "IP를 자동 변경하지 않고 작업을 중단합니다.",
+        proxyAuthenticationFailed
+          ? "프록시 인증이 거절되었습니다(HTTP 407). 인증정보와 접속 제한을 확인할 때까지 작업을 중단합니다."
+          : `${label}가 요청을 거부하거나 제한했습니다(HTTP ${statusCode}). ` +
+            "IP를 자동 변경하지 않고 작업을 중단합니다.",
       ),
       {
         retryable: false,
-        code: "SITE_ACCESS_BLOCKED",
+        code: proxyAuthenticationFailed ? "PROXY_AUTHENTICATION_REQUIRED" : "SITE_ACCESS_BLOCKED",
         statusCode,
-        stage: `${label}-access-guard`,
+        stage: proxyAuthenticationFailed ? "proxy-auth-guard" : `${label}-access-guard`,
         details: {
           statusCode,
           resourceType,
@@ -325,6 +330,7 @@ async function withSiteRetry(
     multiplier = 1.7,
     jitterRatio = 0.15,
     retryUnknownErrors = true,
+    diagnosticDetails = {},
   } = {},
 ) {
   const attempts = clampInteger(maxAttempts, 5, 1, 100);
@@ -332,6 +338,7 @@ async function withSiteRetry(
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     throwIfAborted(signal);
+    recordDiagnostic("attempt-start", { ...diagnosticDetails, label, attempt, maxAttempts: attempts });
 
     if (typeof beforeAttempt === "function") {
       await beforeAttempt({
@@ -343,12 +350,15 @@ async function withSiteRetry(
     }
 
     try {
-      return await task({
+      const result = await task({
         attempt,
         maxAttempts: attempts,
         signal,
       });
+      recordDiagnostic("attempt-succeeded", { ...diagnosticDetails, label, attempt, maxAttempts: attempts });
+      return result;
     } catch (error) {
+      recordDiagnostic("attempt-failed", { ...diagnosticDetails, label, attempt, maxAttempts: attempts, error });
       throwIfAborted(signal);
       lastError = error instanceof Error ? error : new Error(String(error));
 
@@ -366,6 +376,7 @@ async function withSiteRetry(
             }));
 
       if (!retryable) {
+        recordDiagnostic("retry-exhausted", { ...diagnosticDetails, label, attempt, maxAttempts: attempts, error: lastError });
         if (typeof onGiveUp === "function") {
           await onGiveUp({
             error: lastError,
@@ -383,6 +394,10 @@ async function withSiteRetry(
         maxDelayMs,
         multiplier,
         jitterRatio,
+      });
+      recordDiagnostic("retry-scheduled", {
+        ...diagnosticDetails, label, attempt, nextAttempt: attempt + 1,
+        maxAttempts: attempts, delayMs, error: lastError,
       });
 
       console.warn(
@@ -421,6 +436,7 @@ async function gotoWithSiteRetry(
     readySelector = "",
     readyTimeoutMs = null,
     acceptReadySelectorAfterNavigationError = false,
+    handoffProxyFailure = false,
     onNavigationErrorReady,
     validate,
     beforeAttempt,
@@ -431,6 +447,8 @@ async function gotoWithSiteRetry(
     jitterRatio = 0.15,
   } = {},
 ) {
+  const requiresConnectionDecision = error => isTerminalStickyConnectionError(error) ||
+    classifyCollectionFailure(error).kind === "proxy-connection";
   return withSiteRetry(
     async ({ attempt, maxAttempts: totalAttempts }) => {
       throwIfAborted(signal);
@@ -438,12 +456,14 @@ async function gotoWithSiteRetry(
       let response = null;
 
       try {
+        recordDiagnostic("navigation-start", { ...describeDiagnosticPage(page), targetUrl: url, label, attempt });
         response = await page.goto(url, {
           waitUntil,
           timeout: Math.max(1000, Number(timeoutMs) || 60000),
         });
       } catch (error) {
-        if (!acceptReadySelectorAfterNavigationError || !readySelector) {
+        recordDiagnostic("navigation-failed", { ...describeDiagnosticPage(page), targetUrl: url, label, attempt, error });
+        if (requiresConnectionDecision(error) || !acceptReadySelectorAfterNavigationError || !readySelector) {
           throw error;
         }
 
@@ -455,6 +475,7 @@ async function gotoWithSiteRetry(
           .catch(() => false);
 
         if (!readyElementExists) throw error;
+        recordDiagnostic("navigation-error-accepted", { ...describeDiagnosticPage(page), targetUrl: url, label, attempt, error });
 
         if (typeof onNavigationErrorReady === "function") {
           await Promise.resolve(
@@ -516,7 +537,9 @@ async function gotoWithSiteRetry(
       maxDelayMs,
       multiplier,
       jitterRatio,
-      retryUnknownErrors: true,
+      shouldRetry: error => (!handoffProxyFailure || !requiresConnectionDecision(error)) &&
+        isRetryableSiteError(error, { signal }),
+      diagnosticDetails: { ...describeDiagnosticPage(page), targetUrl: url },
     },
   );
 }
@@ -524,6 +547,7 @@ async function gotoWithSiteRetry(
 /** 현재 탭을 about:blank로 이동시켜 남은 팝업·AJAX 상태를 비운다. */
 async function resetPageState(page, { signal, delayMs = 500 } = {}) {
   throwIfAborted(signal);
+  recordDiagnostic("tab-reset", { ...describeDiagnosticPage(page), delayMs });
 
   await page
     .goto("about:blank", {
@@ -547,12 +571,14 @@ async function replacePage(
   throwIfAborted(signal);
 
   const context = page.context();
+  recordDiagnostic("tab-replacement-start", { ...describeDiagnosticPage(page), closeOldPage });
   const nextPage = await context.newPage();
 
   if (typeof setupPage === "function") {
     try {
       await setupPage(nextPage);
     } catch (error) {
+      recordDiagnostic("tab-replacement-failed", { ...describeDiagnosticPage(nextPage), error });
       await nextPage.close().catch(() => null);
       throw error;
     }
@@ -561,6 +587,10 @@ async function replacePage(
   if (closeOldPage) {
     await page.close().catch(() => null);
   }
+  recordDiagnostic("tab-replacement-complete", {
+    previousPageId: describeDiagnosticPage(page).pageId,
+    ...describeDiagnosticPage(nextPage), closeOldPage,
+  });
 
   return nextPage;
 }

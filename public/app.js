@@ -4,7 +4,6 @@ const ACCOUNT_STORAGE_KEY = "mall-collector-accounts-v1";
 const SELECTED_ACCOUNT_STORAGE_KEY = "mall-collector-selected-account-id";
 const PROXY_PROFILE_STORAGE_KEY = "mall-collector-proxy-profile-id";
 const OPENAI_PROFILE_STORAGE_KEY = "mall-collector-openai-profile-id";
-const CHEONYU_USER_AGENT_STORAGE_KEY = "mall-collector-cheonyu-user-agent";
 
 const CART_ACCOUNT_STORAGE_KEYS = Object.freeze({
   cheonyu: "mall-collector-cart-account-cheonyu",
@@ -46,17 +45,17 @@ const elements = {
   openProxyManagerButton: document.querySelector("#openProxyManagerButton"),
   proxyManagerModal: document.querySelector("#proxyManagerModal"),
   closeProxyManagerButton: document.querySelector("#closeProxyManagerButton"),
-  cancelProxyManagerButton: document.querySelector("#cancelProxyManagerButton"),
   proxyFormTitle: document.querySelector("#proxyFormTitle"),
+  proxyRegisterProvider: document.querySelector("#proxyRegisterProvider"),
+  proxyProviderHelp: document.querySelector("#proxyProviderHelp"),
   proxyRegisterName: document.querySelector("#proxyRegisterName"),
   proxyRegisterServer: document.querySelector("#proxyRegisterServer"),
   proxyRegisterUsername: document.querySelector("#proxyRegisterUsername"),
   proxyRegisterPassword: document.querySelector("#proxyRegisterPassword"),
+  proxyIncludeInRotation: document.querySelector("#proxyIncludeInRotation"),
   saveProxyProfileButton: document.querySelector("#saveProxyProfileButton"),
   proxyProfileList: document.querySelector("#proxyProfileList"),
   proxyManagerMessage: document.querySelector("#proxyManagerMessage"),
-  cheonyuUserAgent: document.querySelector("#cheonyuUserAgent"),
-  cheonyuUserAgentHelp: document.querySelector("#cheonyuUserAgentHelp"),
   openAiProfileSelect: document.querySelector("#openAiProfileSelect"),
   openAiProfileHelp: document.querySelector("#openAiProfileHelp"),
   openOpenAiManagerButton: document.querySelector("#openOpenAiManagerButton"),
@@ -84,6 +83,7 @@ const elements = {
   detailTargetMode: document.querySelector("#detailTargetMode"),
   detailTargetModeHelp: document.querySelector("#detailTargetModeHelp"),
   detailRequestDelayMs: document.querySelector("#detailRequestDelayMs"),
+  proxyRotationPages: document.querySelector("#proxyRotationPages"),
   runButton: document.querySelector("#runButton"),
   mallHelp: document.querySelector("#mallHelp"),
   categoryHelp: document.querySelector("#categoryHelp"),
@@ -108,22 +108,10 @@ const elements = {
     document.querySelector("#cartUploadButton"),
   cartUploadMessage:
     document.querySelector("#cartUploadMessage"),
-  collectionUploadLogList:
-    document.querySelector("#collectionUploadLogList"),
-  collectionUploadLogPageInfo:
-    document.querySelector("#collectionUploadLogPageInfo"),
-  collectionUploadLogPreviousButton:
-    document.querySelector("#collectionUploadLogPreviousButton"),
-  collectionUploadLogNextButton:
-    document.querySelector("#collectionUploadLogNextButton"),
-  openCollectionUploadLogDirectoryButton:
-    document.querySelector("#openCollectionUploadLogDirectoryButton"),
 };
 
 const state = {
   defaults: null,
-  collectionUploadLogPage: 1,
-  collectionUploadLogTotalPages: 1,
   savedUploadSettings: null,
   accounts: [],
   credentialProfiles: {
@@ -160,11 +148,36 @@ const state = {
   repeatLaunching: new Set(),
 };
 
+const collectionUploadLogView = window.createCollectionUploadLogView({
+  document,
+  getApi: () => window.collectorApp,
+  showError,
+});
+
+const connectionTestView = window.createConnectionTestView({
+  document,
+  getApi: () => window.collectorApp,
+});
+
+const brandCollectionView = window.createBrandCollectionView({
+  document,
+  getApi: () => window.collectorApp,
+  getAccounts: () => state.accounts,
+});
+
 const RUNNING_STATUSES = new Set([
   "queued",
   "running",
   "canceling",
 ]);
+const lifecycleCollectionView = window.createLifecycleCollectionView({
+  document, getState: () => state, chooseOutput: chooseOutputDirectory,
+  getOutputDirectory: () => elements.outputDirectory.value,
+  start: async payload => {
+    await startCollectionPayload(payload);
+    switchView("runs");
+  },
+});
 
 function createAccountId() {
   return `account_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -265,7 +278,7 @@ function renderProxyProfileSelects(preferredId = null) {
     for (const profile of profiles) {
       const option = document.createElement("option");
       option.value = profile.id;
-      option.textContent = profile.name;
+      option.textContent = profile.name + (profile.includeInRotation === false ? " (수집 순환 제외)" : "");
       select.append(option);
     }
 
@@ -280,7 +293,9 @@ function renderProxyProfileSelects(preferredId = null) {
 
   const selected = getProxyProfile(selectedId);
   elements.cheonyuProxyHelp.textContent = selected
-    ? `${selected.name}부터 시작해 천유 10페이지마다 다음 등록 프록시로 변경합니다.`
+    ? selected.includeInRotation === false
+      ? "수집 순환에서 제외된 프록시입니다. 수집하려면 포함 설정을 켜거나 다른 프록시를 선택하세요. 테스트 화면에서는 확인할 수 있습니다."
+      : `${selected.name}부터 수집 순환에 포함된 프록시만 사용합니다. 교체 간격은 고급 공통 설정에서 지정합니다.`
     : "프록시를 사용하지 않고 직접 연결합니다.";
 }
 
@@ -386,6 +401,7 @@ function getSelectedAccount() {
 }
 
 function renderAccountSelect() {
+  brandCollectionView.setAccounts();
   const savedSelectedId = localStorage.getItem(SELECTED_ACCOUNT_STORAGE_KEY) || "";
   const currentValue = elements.accountSelect.value || savedSelectedId;
   const hasSavedAccount = state.accounts.some((account) => account.id === currentValue);
@@ -400,7 +416,8 @@ function renderAccountSelect() {
   for (const account of state.accounts) {
     const option = document.createElement("option");
     option.value = account.id;
-    option.textContent = account.name;
+    const duplicateName = state.accounts.some(item => item.id !== account.id && item.name === account.name);
+    option.textContent = duplicateName ? `${account.name} (${account.loginId})` : account.name;
     elements.accountSelect.append(option);
   }
 
@@ -475,6 +492,68 @@ function updateAccountHelp() {
     : "등록 계정을 선택하세요. .env 계정은 현재 설정되어 있지 않습니다.";
 }
 
+function saveRegisteredAccount({ name, loginId, password }, { select = false, date = new Date() } = {}) {
+  const timestamp = date.toISOString();
+  const account = {
+    id: createAccountId(),
+    name,
+    loginId,
+    password,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const accounts = [...readStoredAccounts(), account];
+  writeStoredAccounts(accounts);
+  state.accounts = accounts;
+
+  renderAccountSelect();
+  if (select) {
+    elements.accountSelect.value = account.id;
+    updateAccountHelp();
+  }
+  renderAccountList();
+  renderCartAccountSelects();
+  return account;
+}
+
+function registerCreatedCheonyuAccount({ id, pw }) {
+  const date = new Date();
+  const parts = new Intl.DateTimeFormat("en", {
+    timeZone: "Asia/Seoul",
+    year: "2-digit",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const dateCode = ["year", "month", "day"].map(type => parts.find(part => part.type === type).value).join("");
+  return saveRegisteredAccount({ name: `천유_${dateCode}`, loginId: id, password: pw }, { date });
+}
+
+async function createCheonyuAccount(event) {
+  const button = event.currentTarget;
+  const status = document.querySelector("#testAccountSignupStatus");
+  if (button.disabled) return;
+  button.disabled = true;
+  status.hidden = false;
+  status.textContent = "천유 계정 생성을 진행합니다.";
+  try {
+    const { id, pw, canceled } = await window.collectorApp.runTestAccountSignup();
+    if (canceled) {
+      status.textContent = "가입 확인이 취소되었습니다.";
+      return;
+    }
+    try {
+      const account = registerCreatedCheonyuAccount({ id, pw });
+      status.textContent = `"${account.name}" 계정을 등록했습니다. ID ${id}`;
+    } catch {
+      status.textContent = `가입을 완료했지만 등록 계정 목록에 추가하지 못했습니다. ID ${id}`;
+    }
+  } catch (error) {
+    status.textContent = error.message || "천유 가입을 완료하지 못했습니다.";
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function registerAccount() {
   clearError();
   clearSuccess();
@@ -503,29 +582,13 @@ function registerAccount() {
     return;
   }
 
-  const now = new Date().toISOString();
-  const account = {
-    id: createAccountId(),
-    name,
-    loginId,
-    password,
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  state.accounts = [...state.accounts, account];
-  writeStoredAccounts(state.accounts);
+  saveRegisteredAccount({ name, loginId, password }, { select: true });
 
   elements.accountRegisterName.value = "";
   elements.accountRegisterId.value = "";
   elements.accountRegisterPw.value = "";
 
-  renderAccountSelect();
-  elements.accountSelect.value = account.id;
-  updateAccountHelp();
-  renderAccountList();
-  renderCartAccountSelects();
-  showSuccess(`"${account.name}" 계정을 등록했습니다.`);
+  showSuccess(`"${name}" 계정을 등록했습니다.`);
 }
 
 function renameAccount(accountId) {
@@ -605,6 +668,12 @@ function applyCredentialProfiles(summary, selections = {}) {
     proxies: Array.isArray(summary?.proxies) ? summary.proxies : [],
     openAiKeys: Array.isArray(summary?.openAiKeys) ? summary.openAiKeys : [],
   };
+  for (const [runId, plan] of state.repeatPlans) {
+    const selected = state.credentialProfiles.proxies.find(
+      (profile) => profile.id === plan.basePayload?.proxyProfileId,
+    );
+    if (selected?.includeInRotation === false) clearRepeatPlan(runId);
+  }
 
   renderProxyProfileSelects(
     Object.hasOwn(selections, "proxyProfileId")
@@ -618,11 +687,23 @@ function applyCredentialProfiles(summary, selections = {}) {
   );
   renderProxyProfileList();
   renderOpenAiProfileList();
+  connectionTestView.setProxies(state.credentialProfiles.proxies);
 }
 
 async function loadCredentialProfiles() {
   const summary = await window.collectorApp.getCredentialProfiles();
   applyCredentialProfiles(summary);
+}
+
+function updateProxyProviderForm(setDefaultServer = false) {
+  const provider = elements.proxyRegisterProvider.value;
+  const server = provider === "decodo" ? "gate.decodo.com:7000"
+    : provider === "dataimpulse" ? "gw.dataimpulse.com:823" : "";
+  elements.proxyRegisterServer.placeholder = server || "host:port";
+  if (setDefaultServer) elements.proxyRegisterServer.value = server;
+  elements.proxyProviderHelp.textContent = provider === "other"
+    ? "기존 ISP 등 다른 프록시를 등록합니다. 새 수집은 Decodo와 DataImpulse만 지원합니다."
+    : `${provider === "decodo" ? "Decodo" : "DataImpulse"}: ${server} · 로그인 수집은 60분 스티키 세션을 자동 적용합니다.`;
 }
 
 function resetProxyProfileForm() {
@@ -631,8 +712,11 @@ function resetProxyProfileForm() {
   elements.saveProxyProfileButton.textContent = "등록";
   elements.proxyRegisterName.value = "";
   elements.proxyRegisterServer.value = "";
+  elements.proxyRegisterProvider.value = "decodo";
+  updateProxyProviderForm(true);
   elements.proxyRegisterUsername.value = "";
   elements.proxyRegisterPassword.value = "";
+  elements.proxyIncludeInRotation.checked = true;
 }
 
 function editProxyProfile(profileId) {
@@ -644,8 +728,11 @@ function editProxyProfile(profileId) {
   elements.saveProxyProfileButton.textContent = "수정 저장";
   elements.proxyRegisterName.value = profile.name;
   elements.proxyRegisterServer.value = profile.server;
+  elements.proxyRegisterProvider.value = profile.provider || (profile.server.includes("gate.decodo.com") ? "decodo" : profile.server.includes("gw.dataimpulse.com") ? "dataimpulse" : "other");
+  updateProxyProviderForm();
   elements.proxyRegisterUsername.value = profile.username || "";
   elements.proxyRegisterPassword.value = "";
+  elements.proxyIncludeInRotation.checked = profile.includeInRotation !== false;
   setManagerMessage(elements.proxyManagerMessage);
   elements.proxyRegisterName.focus();
 }
@@ -670,11 +757,16 @@ function renderProxyProfileList() {
     const server = document.createElement("span");
     const authentication = document.createElement("span");
     name.textContent = profile.name;
-    server.textContent = `주소: ${profile.server}`;
+    server.textContent = `${({ decodo: "Decodo", dataimpulse: "DataImpulse", other: "기타 / 기존 ISP" })[profile.provider] || "프록시"} · 주소: ${profile.server}`;
     authentication.textContent = profile.username
       ? `인증: ${profile.username} / 비밀번호 설정됨`
       : "인증: 사용 안 함";
     info.append(name, server, authentication);
+    const rotation = document.createElement("span");
+    rotation.textContent = profile.includeInRotation === false
+      ? "수집 순환 제외 · 테스트 가능"
+      : "수집 순환 포함";
+    info.append(rotation);
 
     const actions = document.createElement("div");
     actions.className = "account-actions";
@@ -705,8 +797,10 @@ async function saveProxyProfile() {
   const profile = {
     ...(state.editingProxyProfileId ? { id: state.editingProxyProfileId } : {}),
     name: normalizeText(elements.proxyRegisterName.value),
+    provider: elements.proxyRegisterProvider.value,
     server: elements.proxyRegisterServer.value.trim(),
     username: elements.proxyRegisterUsername.value.trim(),
+    includeInRotation: elements.proxyIncludeInRotation.checked,
   };
   const password = String(elements.proxyRegisterPassword.value || "");
   if (password) profile.password = password;
@@ -721,7 +815,7 @@ async function saveProxyProfile() {
     resetProxyProfileForm();
     setManagerMessage(
       elements.proxyManagerMessage,
-      "프록시 정보를 저장했습니다.",
+      "프록시 정보를 저장했습니다. 수집 순환 설정은 다음 수집 시작부터 적용됩니다.",
       "success",
     );
   } catch (error) {
@@ -761,6 +855,7 @@ function openProxyManager() {
   clearSuccess();
   setManagerMessage(elements.proxyManagerMessage);
   elements.proxyManagerModal.hidden = false;
+  updateProxyProviderForm(!elements.proxyRegisterServer.value);
   elements.proxyRegisterName.focus();
 }
 
@@ -1049,9 +1144,10 @@ function buildPayload() {
   payload.collectionMode = elements.collectionMode.value === "detail" ? "detail" : "general";
   payload.executionOptions = getExecutionOptions();
 
-  if (elements.browserMode.value === "show") {
+  if (["show", "show-no-images"].includes(elements.browserMode.value)) {
     payload.showBrowser = true;
   }
+  payload.blockImages = elements.browserMode.value === "show-no-images";
 
   if (elements.browserMode.value === "hide") {
     payload.showBrowser = false;
@@ -1062,6 +1158,10 @@ function buildPayload() {
 
   const effectiveMall =
     elements.mall.value || state.defaults?.envDefaults?.mall || "cheonyu";
+
+  if (effectiveMall === "cheonyu") {
+    setNumberIfPresent(payload, "proxyRotationPages", elements.proxyRotationPages);
+  }
 
   if (payload.collectionMode === "detail") {
     payload.detailTargetMode =
@@ -1076,11 +1176,6 @@ function buildPayload() {
 
   if (effectiveMall === "cheonyu" && elements.cheonyuProxyProfileSelect?.value) {
     payload.proxyProfileId = elements.cheonyuProxyProfileSelect.value;
-  }
-
-  const cheonyuUserAgent = elements.cheonyuUserAgent?.value.trim();
-  if (cheonyuUserAgent) {
-    payload.cheonyuUserAgent = cheonyuUserAgent;
   }
 
   if (!elements.openAiProfileSelect?.value) {
@@ -1169,6 +1264,7 @@ function updateCollectionModeGuide() {
   elements.detailGuide.classList.toggle("active", isDetail);
   elements.detailTargetMode.disabled = !isDetail || !supportsPendingDetail;
   elements.detailRequestDelayMs.disabled = !isDetail;
+  elements.proxyRotationPages.disabled = selectedMall !== "cheonyu";
   elements.detailTargetModeHelp.textContent = !supportsPendingDetail
     ? "신규·미수집 상품 모드는 현재 천유닷컴에서만 지원합니다."
     : isPendingDetail
@@ -1521,6 +1617,29 @@ function clearAllRepeatPlans() {
   state.repeatPlans.clear();
 }
 
+/** 새 실행의 구조화된 오류를 우선 사용하고 기존 오류 문자열도 안전하게 처리한다. */
+function getRunRepeatStopReason(run) {
+  if (run.status !== "failed") return "";
+  if (run.failure && typeof run.failure.stopAutoRepeat === "boolean") {
+    return run.failure.stopAutoRepeat
+      ? String(run.failure.message || "연결 상태 확인이 필요해 자동 반복을 중단했습니다. 확인 후 수동으로 다시 실행하세요.")
+      : "";
+  }
+
+  // 이전 형식의 실행 이력에는 실패 분류가 없으므로 확실한 차단·프록시 오류만 중단한다.
+  const message = String(run.error || "");
+  if (/SITE_ACCESS_BLOCKED|\bHTTP\s*[:=]?\s*(403|429)\b/i.test(message)) {
+    return "사이트 접근 제한으로 자동 반복을 중단했습니다. 접속 상태를 확인한 후 수동으로 다시 실행하세요.";
+  }
+  if (/ERR_PROXY_AUTH|ERR_INVALID_AUTH_CREDENTIALS|\bHTTP(?:\s+code)?\s*[:=]?\s*407\b|\bCONNECT\s*=\s*407\b|Proxy Authentication Required/i.test(message)) {
+    return "프록시 인증 실패로 자동 반복을 중단했습니다. 현재 프록시 주소와 인증정보를 확인한 후 수동으로 다시 실행하세요.";
+  }
+  if (/ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|\bCONNECT\s*=\s*502\b|Received HTTP code 502 from proxy after CONNECT/i.test(message)) {
+    return "프록시 연결 실패로 자동 반복을 중단했습니다. 테스트 화면에서 연결을 확인한 후 수동으로 다시 실행하세요.";
+  }
+  return "";
+}
+
 /** 성공 또는 실패로 끝난 반복 실행별로 다음 실행을 예약한다. */
 function scheduleRepeatRuns(applicationState) {
   const runs = Array.isArray(applicationState?.runs)
@@ -1531,6 +1650,11 @@ function scheduleRepeatRuns(applicationState) {
     const plan = state.repeatPlans.get(run.id);
 
     if (!plan) continue;
+
+    if (getRunRepeatStopReason(run)) {
+      clearRepeatPlan(run.id);
+      continue;
+    }
 
     if (run.status === "canceled") {
       clearRepeatPlan(run.id);
@@ -1588,6 +1712,14 @@ function scheduleRepeatRuns(applicationState) {
     plan.nextRunAt = nextRunAt.toISOString();
 
     const timerId = window.setTimeout(async () => {
+      // Browser timers overflow beyond ~24.8 days. Re-arm long schedules
+      // without starting a collection before its actual scheduled date.
+      if (Date.now() < nextRunAt.getTime()) {
+        state.repeatTimers.delete(run.id);
+        scheduleRepeatRuns(state.applicationState);
+        renderRunList(state.applicationState);
+        return;
+      }
       state.repeatLaunching.add(run.id);
       let launchError = null;
 
@@ -1638,7 +1770,7 @@ function scheduleRepeatRuns(applicationState) {
         scheduleRepeatRuns(state.applicationState);
         renderRunList(state.applicationState);
       }
-    }, delayMs);
+    }, Math.min(delayMs, 2147483647));
 
     state.repeatTimers.set(run.id, timerId);
   }
@@ -1676,6 +1808,48 @@ function createMetricCard(label, value) {
 }
 
 /** 실행 한 건을 독립적인 상태 카드로 렌더링한다. */
+/** 실패해도 실제 저장이 완료된 페이지만 안내한다. 역순·누락 페이지는 범위로 묶는다. */
+function getRunCheckpointMessage(run) {
+  if (!["failed", "canceled"].includes(run.status)) return "";
+  if (run.progress?.checkpointMessage) return String(run.progress.checkpointMessage);
+
+  const checkpoint = run.progress?.savedCheckpoint;
+  if (!checkpoint) return "";
+  const pageStart = Number(checkpoint.pageStart);
+  const pageEnd = Number(checkpoint.pageEnd);
+  const savedPages = Array.from(new Set((checkpoint.savedPages || [])
+    .map(Number).filter((page) => Number.isInteger(page) && page > 0)))
+    .sort((a, b) => a - b);
+  if (!Number.isInteger(pageStart) || pageStart < 1 ||
+      !Number.isInteger(pageEnd) || pageEnd < pageStart || savedPages.length < 1) return "";
+
+  const cause = run.status === "canceled" ? "취소" : "실패";
+  const requestedRange = `${pageStart}페이지부터 ${pageEnd}페이지까지 작업 도중 ${cause}`;
+  const phaseNotice = checkpoint.phase === "list"
+    ? " 목록 원본 저장이며, 장바구니 재고·상세 수집은 완료되지 않았습니다."
+    : run.request?.collectionMode === "detail" && checkpoint.phase === "general"
+      ? " 일반·재고 수집 결과입니다. 상세 페이지 저장은 아직 완료되지 않았습니다."
+      : "";
+  const savedThroughPage = Number(checkpoint.savedThroughPage);
+  const isContiguousForward = checkpoint.pageOrder !== "desc" &&
+    checkpoint.pageOrder !== "reverse" &&
+    savedThroughPage === savedPages[savedPages.length - 1] &&
+    savedPages.every((page, index) => page === pageStart + index);
+  if (isContiguousForward) {
+    return `${requestedRange}로 ${savedThroughPage}페이지까지 저장되었습니다.${phaseNotice}`;
+  }
+
+  const ranges = [];
+  for (const page of savedPages) {
+    const last = ranges[ranges.length - 1];
+    if (last && page === last[1] + 1) last[1] = page;
+    else ranges.push([page, page]);
+  }
+  const savedRange = ranges.map(([start, end]) => start === end ? String(start) : `${start}~${end}`).join(", ");
+  const label = checkpoint.phase === "detail" ? "상세 페이지" : "페이지";
+  return `${requestedRange}했습니다. 저장된 ${label}: ${savedRange}페이지.${phaseNotice}`;
+}
+
 function createRunCard(run) {
   const card = document.createElement("article");
   card.className = "run-card";
@@ -1697,9 +1871,9 @@ function createRunCard(run) {
         ? "과자생각"
         : run.request?.mall || "쇼핑몰";
   const modeLabel =
-    run.request?.collectionMode === "detail"
+    ({ initial: "최초 등록", longTerm: "장기 갱신", shortTerm: "단기 갱신", inventory: `재고 파악 · ${({ attention: "주목받는 베스트", stationery: "문구점 베스트", snack: "과자 베스트" })[run.request?.inventoryBest] || "베스트"}`, newProducts: "새 제품 수집", changes: `상품 변동 확인 · ${({ soldOut: "품절", restock30: "재입고 30일", restock90: "재입고 90일" })[run.request?.changeType] || "품절"}`, restock: "상품 변동 확인" })[run.request?.collectionKind] || (run.request?.collectionMode === "detail"
       ? `상세 수집 (${run.request?.detailTargetMode === "pending" ? "신규·미수집" : "전체"})`
-      : "일반 수집";
+      : "일반 수집");
   title.textContent =
     `${mallLabel} · ${modeLabel} · ` +
     `${run.request?.accountName || ".env 계정"}` +
@@ -1731,11 +1905,35 @@ function createRunCard(run) {
 
   card.append(header, progressBar, message);
 
+  const checkpointMessage = getRunCheckpointMessage(run);
+  if (checkpointMessage) {
+    const checkpoint = document.createElement("p");
+    checkpoint.className = "warning-message";
+    checkpoint.textContent = checkpointMessage;
+    card.append(checkpoint);
+  }
+
+  if (["failed", "canceled"].includes(run.status) && (run.diagnosticLogPath || run.diagnosticLogError)) {
+    const diagnostic = document.createElement("p");
+    diagnostic.className = run.diagnosticLogError ? "warning-message" : "status-message";
+    diagnostic.textContent = run.diagnosticLogError ||
+      `진단 기록 경로: ${run.diagnosticLogPath} (설정 폴더에서 확인)`;
+    card.append(diagnostic);
+  }
+
   if (run.error) {
     const error = document.createElement("p");
     error.className = "error-message";
     error.textContent = run.error;
     card.append(error);
+  }
+
+  const repeatStopReason = getRunRepeatStopReason(run);
+  if (repeatStopReason) {
+    const repeatNotice = document.createElement("p");
+    repeatNotice.className = "warning-message";
+    repeatNotice.textContent = repeatStopReason;
+    card.append(repeatNotice);
   }
 
   const progressExcludedProducts = Array.isArray(run.progress?.excludedProducts)
@@ -1825,6 +2023,13 @@ function createRunCard(run) {
           0,
         ),
       ),
+    );
+  }
+
+  if (run.request?.collectionKind === "newProducts" && (summary.optionTargetCount || progress.optionPendingCount)) {
+    metrics.append(
+      createMetricCard("확인한 옵션 바코드", displayNumber(summary.optionBarcodeCount ?? 0)),
+      createMetricCard("보류한 옵션 상품", displayNumber(summary.optionPendingCount ?? progress.optionPendingCount ?? 0)),
     );
   }
 
@@ -1962,10 +2167,10 @@ function handleStateChanged(applicationState) {
     runs: [],
   };
 
+  scheduleRepeatRuns(state.applicationState);
   renderRunList(state.applicationState);
   renderShippingState(state.applicationState.shipping);
   renderCollectionUploadState(state.applicationState.productUpload);
-  scheduleRepeatRuns(state.applicationState);
 }
 
 /** 실행 중 카드의 시간을 계속 갱신한다. */
@@ -2001,8 +2206,7 @@ async function loadDefaults() {
   elements.appBadge.textContent = `v${defaults.app.version}`;
   elements.appBadge.classList.add("connected");
 
-  elements.cheonyuUserAgent.value =
-    localStorage.getItem(CHEONYU_USER_AGENT_STORAGE_KEY) || "";
+  elements.proxyRotationPages.placeholder = String(defaults.envDefaults?.proxyRotationPages || 10);
 
   updateMallHelp();
   updateAccountHelp();
@@ -2039,6 +2243,16 @@ async function handleSubmit(event) {
 
   try {
     payload = buildPayload();
+    await startCollectionPayload(payload);
+
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    setSubmitting(false);
+  }
+}
+
+async function startCollectionPayload(payload) {
     const run = await window.collectorApp.start(payload);
 
     if (payload.executionOptions.runMode === "repeat") {
@@ -2057,14 +2271,9 @@ async function handleSubmit(event) {
     handleStateChanged(await window.collectorApp.getState());
 
     showSuccess(
-      `${payload.collectionMode === "detail" ? "상세" : "일반"} 수집 실행을 추가했습니다.`,
+      `${({ initial: "최초 등록", longTerm: "장기 갱신", shortTerm: "단기 갱신", inventory: "재고 파악", newProducts: "새 제품 수집", changes: "상품 변동 확인", restock: "상품 변동 확인" })[payload.collectionKind] || (payload.collectionMode === "detail" ? "상세 수집" : "일반 수집")} 실행을 추가했습니다.`,
     );
-
-  } catch (error) {
-    showError(error.message);
-  } finally {
-    setSubmitting(false);
-  }
+    return run;
 }
 
 /** 특정 실행만 취소한다. */
@@ -2161,8 +2370,8 @@ function buildCartBatchPayload() {
 
   const payload = {
     accounts,
-    showBrowser: elements.browserMode.value === "show",
-    cheonyuUserAgent: elements.cheonyuUserAgent?.value.trim() || undefined,
+    showBrowser: ["show", "show-no-images"].includes(elements.browserMode.value),
+    blockImages: elements.browserMode.value === "show-no-images",
   };
 
   if (accounts.cheonyu) {
@@ -2296,7 +2505,7 @@ async function sendTestNotification() {
     elements.testNotificationStatus.textContent = `테스트 알림 실패: ${error.message}`;
   } finally {
     elements.sendTestNotificationButton.disabled = false;
-    await loadCollectionUploadLogs(1);
+    await collectionUploadLogView.load(1);
   }
 }
 
@@ -2346,98 +2555,6 @@ async function saveUploadApiSettings(event) {
   }
 }
 
-function formatCollectionUploadSentAt(value) {
-  if (!value) return "시각 확인 불가";
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) return String(value);
-
-  return new Intl.DateTimeFormat("ko-KR", {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  }).format(date);
-}
-
-function renderCollectionUploadLogs(result) {
-  state.collectionUploadLogPage = result?.page || 1;
-  state.collectionUploadLogTotalPages = result?.totalPages || 1;
-  elements.collectionUploadLogList.replaceChildren();
-
-  const items = Array.isArray(result?.items) ? result.items : [];
-
-  if (items.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "upload-log-empty";
-    empty.textContent = "아직 저장된 수집정보 전송 로그가 없습니다.";
-    elements.collectionUploadLogList.append(empty);
-  } else {
-    items.forEach((item) => {
-      const article = document.createElement("article");
-      article.className = "upload-log-item";
-
-      const heading = document.createElement("div");
-      heading.className = "upload-log-item-heading";
-      const title = document.createElement("strong");
-      title.textContent = `${item.type || "수집정보"} · ${formatCollectionUploadSentAt(item.sentAt)}`;
-      const badge = document.createElement("span");
-      badge.className = `upload-log-status ${item.success ? "success" : "error"}`;
-      badge.textContent = item.success ? "요청 성공" : "요청 실패";
-      heading.append(title, badge);
-
-      const details = document.createElement("p");
-      details.className = "upload-log-details";
-      const itemCount = Number.isFinite(item.itemCount)
-        ? `${item.itemCount.toLocaleString()}개`
-        : "확인 불가";
-      const status = item.status === null
-        ? "응답 없음"
-        : `HTTP ${item.status}`;
-      details.textContent = `${item.method || "POST"} · 데이터 ${itemCount} · ${status} · ${item.dateDirectory}/${item.fileName}`;
-      article.append(heading, details);
-
-      if (item.sampleProductIds?.length > 0) {
-        const sample = document.createElement("p");
-        sample.className = "upload-log-sample";
-        sample.textContent = `데이터 ID 예시: ${item.sampleProductIds.join(", ")}`;
-        article.append(sample);
-      }
-
-      if (item.error) {
-        const error = document.createElement("p");
-        error.className = "upload-log-error";
-        error.textContent = item.error;
-        article.append(error);
-      }
-
-      elements.collectionUploadLogList.append(article);
-    });
-  }
-
-  elements.collectionUploadLogPageInfo.textContent =
-    `${state.collectionUploadLogPage} / ${state.collectionUploadLogTotalPages} · 총 ${(result?.totalCount || 0).toLocaleString()}건`;
-  elements.collectionUploadLogPreviousButton.disabled =
-    state.collectionUploadLogPage <= 1;
-  elements.collectionUploadLogNextButton.disabled =
-    state.collectionUploadLogPage >= state.collectionUploadLogTotalPages;
-}
-
-async function loadCollectionUploadLogs(page = 1) {
-  try {
-    const result = await window.collectorApp.getCollectionUploadLogs(page);
-    renderCollectionUploadLogs(result);
-  } catch (error) {
-    elements.collectionUploadLogList.textContent =
-      `전송 로그를 불러오지 못했습니다: ${error.message}`;
-  }
-}
-
 /** Electron preload API 존재 여부를 확인하고 화면을 초기화한다. */
 async function initialize() {
   if (!window.collectorApp) {
@@ -2449,7 +2566,7 @@ async function initialize() {
   await loadDefaults();
   await loadCredentialProfiles();
   await loadUploadApiSettings();
-  await loadCollectionUploadLogs(1);
+  await collectionUploadLogView.load(1);
   loadAccounts();
   updateCollectionModeGuide();
   updateRunModeGuide();
@@ -2469,32 +2586,21 @@ elements.openAccountManagerButton.addEventListener("click", openAccountManager);
 elements.closeAccountManagerButton.addEventListener("click", closeAccountManager);
 elements.cancelAccountManagerButton.addEventListener("click", closeAccountManager);
 elements.registerAccountButton.addEventListener("click", registerAccount);
+document.querySelector("#runTestAccountSignupButton").addEventListener("click", createCheonyuAccount);
 elements.openProxyManagerButton.addEventListener("click", openProxyManager);
 elements.closeProxyManagerButton.addEventListener("click", closeProxyManager);
-elements.cancelProxyManagerButton.addEventListener("click", closeProxyManager);
 elements.saveProxyProfileButton.addEventListener("click", saveProxyProfile);
+elements.proxyRegisterProvider.addEventListener("change", () => updateProxyProviderForm(true));
 elements.openOpenAiManagerButton.addEventListener("click", openOpenAiManager);
 elements.closeOpenAiManagerButton.addEventListener("click", closeOpenAiManager);
 elements.cancelOpenAiManagerButton.addEventListener("click", closeOpenAiManager);
 elements.saveOpenAiProfileButton.addEventListener("click", saveOpenAiProfile);
 elements.uploadApiSettingsForm.addEventListener("submit", saveUploadApiSettings);
 elements.sendTestNotificationButton.addEventListener("click", sendTestNotification);
-elements.collectionUploadLogPreviousButton.addEventListener("click", () => {
-  void loadCollectionUploadLogs(state.collectionUploadLogPage - 1);
-});
-elements.collectionUploadLogNextButton.addEventListener("click", () => {
-  void loadCollectionUploadLogs(state.collectionUploadLogPage + 1);
-});
-elements.openCollectionUploadLogDirectoryButton.addEventListener(
-  "click",
-  async () => {
-    try {
-      await window.collectorApp.openCollectionUploadLogDirectory();
-    } catch (error) {
-      showError(`전송 로그 폴더를 열지 못했습니다: ${error.message}`);
-    }
-  },
-);
+collectionUploadLogView.bindEvents();
+connectionTestView.bindEvents();
+brandCollectionView.bindEvents();
+
 elements.collectionMode.addEventListener("change", updateCollectionModeGuide);
 elements.detailTargetMode.addEventListener("change", updateCollectionModeGuide);
 elements.pageStart.addEventListener("input", updateDetailPageRangeLimit);
@@ -2508,16 +2614,6 @@ elements.cartCheonyuProxyProfileSelect.addEventListener("change", (event) => {
 });
 elements.openAiProfileSelect.addEventListener("change", (event) => {
   renderOpenAiProfileSelect(event.currentTarget.value);
-});
-elements.cheonyuUserAgent.addEventListener("change", (event) => {
-  const value = event.currentTarget.value.trim();
-  event.currentTarget.value = value;
-
-  if (value) {
-    localStorage.setItem(CHEONYU_USER_AGENT_STORAGE_KEY, value);
-  } else {
-    localStorage.removeItem(CHEONYU_USER_AGENT_STORAGE_KEY);
-  }
 });
 elements.chooseOutputButton.addEventListener("click", chooseOutputDirectory);
 elements.openSettingsButton?.addEventListener(
@@ -2558,10 +2654,6 @@ elements.accountManagerModal.addEventListener("click", (event) => {
   }
 });
 
-elements.proxyManagerModal.addEventListener("click", (event) => {
-  if (event.target === elements.proxyManagerModal) closeProxyManager();
-});
-
 elements.openAiManagerModal.addEventListener("click", (event) => {
   if (event.target === elements.openAiManagerModal) closeOpenAiManager();
 });
@@ -2580,9 +2672,11 @@ function switchView(viewName) {
   const viewMap = {
     dashboard: "collectionView",
     "new-collection": "collectionView",
+    "lifecycle-collection": "lifecycleCollectionView",
     runs: "runsView",
     cart: "cartView",
     results: "downloadView",
+    test: "testView",
     settings: "settingsView",
   };
 
@@ -2609,7 +2703,11 @@ function switchView(viewName) {
     ?.classList.add("active");
 
   if (viewName === "results") {
-    void loadCollectionUploadLogs(1);
+    void collectionUploadLogView.load(1);
+  }
+  if (viewName === "lifecycle-collection") {
+    lifecycleCollectionView.refresh();
+    document.querySelector(".content-wrapper").scrollTop = 0;
   }
 }
 

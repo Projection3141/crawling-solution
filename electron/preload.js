@@ -6,6 +6,16 @@ const { contextBridge, ipcRenderer } = require("electron");
 const CHANNELS = Object.freeze({
   getDefaults: "collector:get-defaults",
   getState: "collector:get-state",
+  testConnection: "collector:test-connection",
+  testProductHtml: "collector:test-product-html",
+  runTestAccountSignup: "collector:run-test-account-signup",
+  getBrands: "collector:get-brands",
+  collectCommerce: "collector:collect-commerce",
+  commerceProgress: "collector:commerce-progress",
+  openCommerceDirectory: "collector:open-commerce-directory",
+  refreshBrands: "collector:refresh-brands",
+  collectBrands: "collector:collect-brands",
+  openBrandDirectory: "collector:open-brand-directory",
   start: "collector:start",
   cancel: "collector:cancel",
   deleteRun: "collector:delete-run",
@@ -49,6 +59,20 @@ contextBridge.exposeInMainWorld(
   Object.freeze({
     getDefaults: () => invoke(CHANNELS.getDefaults),
     getState: () => invoke(CHANNELS.getState),
+    testConnection: (input) => invoke(CHANNELS.testConnection, input),
+    testProductHtml: (input) => invoke(CHANNELS.testProductHtml, input),
+    runTestAccountSignup: () => invoke(CHANNELS.runTestAccountSignup),
+    getBrands: () => invoke(CHANNELS.getBrands),
+    collectCommerce: (input) => invoke(CHANNELS.collectCommerce, input),
+    openCommerceDirectory: () => invoke(CHANNELS.openCommerceDirectory),
+    onCommerceProgress: (callback) => {
+      const listener = (_event, progress) => callback(progress);
+      ipcRenderer.on(CHANNELS.commerceProgress, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.commerceProgress, listener);
+    },
+    refreshBrands: (input) => invoke(CHANNELS.refreshBrands, input),
+    collectBrands: (input) => invoke(CHANNELS.collectBrands, input),
+    openBrandDirectory: () => invoke(CHANNELS.openBrandDirectory),
     start: (input) => invoke(CHANNELS.start, input),
     cancel: (runId) =>
       invoke(CHANNELS.cancel, {

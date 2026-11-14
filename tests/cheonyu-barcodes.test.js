@@ -1,6 +1,12 @@
 const assert = require("node:assert/strict");
-const { test } = require("node:test");
-const { getCheonyuCartFallbackProductIds } = require("../src/malls/cheonyu/site");
+const { mkdtempSync, rmSync, writeFileSync } = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { after, test } = require("node:test");
+const archiveDirectory = mkdtempSync(path.join(os.tmpdir(), "cheonyu-option-stock-"));
+process.env.PRODUCT_ARCHIVE_DIRECTORY = archiveDirectory;
+after(() => rmSync(archiveDirectory, { recursive: true, force: true }));
+const { getCheonyuCartFallbackProductIds, parseListHtml } = require("../src/malls/cheonyu/site");
 const {
   createCheonyuPopupInventoryItems,
   mergeCheonyuDetailInventoryItems,
@@ -9,6 +15,8 @@ const {
 const { parseCartHtml } = require("../src/malls/cheonyu/cart");
 const { parseDetailHtml } = require("../src/malls/cheonyu/detail");
 const { createBackendProducts } = require("../src/utils/backend-product");
+const { ARCHIVE_PATH, updateProductArchive } = require("../src/utils/product-archive");
+writeFileSync(ARCHIVE_PATH, JSON.stringify({ cheonyu: [], ccdome: [] }));
 
 const config = {
   mall: "cheonyu",
@@ -69,6 +77,63 @@ function cartRowHtml(productId, optionText, barcode, maxStock = 20) {
     <input id="inOnePrice" value="500">
   </td></tr>`;
 }
+
+test("비로그인 옵션의 ID와 이름을 읽되 disabled는 품절로 해석하지 않는다", () => {
+  const guest = { ...config, anonymousCollection: true };
+  const [candidate] = parseListHtml(`<ul><li>
+    <a class="pLink" href="/product/view.html?qIDX=12345">상품</a>
+    <div class="m_pdt_list_icon"><img src="/image_1/btn_option.gif"></div>
+  </li></ul>`, 1, guest);
+  assert.equal(candidate.hasOptionHint, true);
+  assert.equal(candidate.isSoldOut, false);
+  assert.equal(candidate.saleStatus, null);
+  const optionsHtml = `<div class="option_wrap"><table id="opSelectedList"><tbody>
+    <tr><td><input type="checkbox" id="optionCHK" value="119570" disabled></td><td class="option_txt">블루</td></tr>
+    <tr><td><input type="checkbox" id="optionCHK" value="119571" disabled></td><td class="option_txt">핑크</td></tr>
+    <tr><td><input type="checkbox" id="optionCHK" value="119570" disabled></td><td class="option_txt">중복</td></tr>
+    <tr><td><input type="checkbox" id="optionCHKAdd" value="9211" disabled></td><td class="option_txt">추가 상품</td></tr>
+  </tbody></table></div>`;
+  const detail = parseDetailHtml(detailHtml("12345", "8800000012345").replace(
+    '<div class="pdt-top-info">', optionsHtml + '<div class="pdt-top-info">',
+  ), candidate, guest);
+  const options = JSON.parse(detail.detailOptions);
+  assert.deepEqual(options.map(({ optionId, optionName }) => ({ optionId, optionName })), [
+    { optionId: "119570", optionName: "블루" }, { optionId: "119571", optionName: "핑크" },
+  ]);
+  assert.ok(options.every(option => option.disabled && !Object.hasOwn(option, "isSoldOut")));
+});
+
+test("신상품 상세 저장은 수량이 확인된 옵션 재고만 반영한다", async () => {
+  const product = {
+    id: "91737", sourceMall: "cheonyu", inventoryObserved: true,
+    type: "OPTION", stockQuantity: 19, stockStatus: "IN_STOCK", saleStatus: "ON_SALE",
+    options: [
+      { id: "11", nameKo: "블루", stockQuantity: 19, status: "ON_SALE" },
+      { id: "12", nameKo: "핑크", stockQuantity: 0, status: "SOLD_OUT" },
+    ],
+  };
+  await updateProductArchive([product], { source: "general" });
+  const detail = {
+    ...product,
+    stockQuantity: 0,
+    options: [
+      { id: "11", nameKo: "블루", barcode: "0012345678901", stockQuantity: 0, status: "SOLD_OUT" },
+      { id: "12", nameKo: "핑크", stockQuantity: null, status: "ON_SALE" },
+    ],
+  };
+  const normal = (await updateProductArchive([detail], { source: "detail" })).currentProducts[0];
+  assert.equal(normal.options[0].barcode, "0012345678901");
+  assert.equal(normal.options[0].stockQuantity, 19);
+  const optIn = { source: "detail", includeDetailOptionStock: true };
+  const unverified = (await updateProductArchive([{ ...detail, inventoryObserved: false }], optIn)).currentProducts[0];
+  assert.equal(unverified.options[0].stockQuantity, 19);
+  const verified = (await updateProductArchive([detail], optIn)).currentProducts[0];
+  assert.equal(verified.type, "OPTION");
+  assert.equal(verified.stockQuantity, 19);
+  assert.deepEqual(verified.options.map(({ stockQuantity, status }) => ({ stockQuantity, status })), [
+    { stockQuantity: 0, status: "SOLD_OUT" }, { stockQuantity: 0, status: "SOLD_OUT" },
+  ]);
+});
 
 test("일반 수집은 팝업 재고가 완전한 옵션·SINGLE을 장바구니에 추가하지 않는다", () => {
   const products = [product("12345"), product("12346"), product("12347")];

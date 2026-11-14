@@ -605,6 +605,9 @@ function getTotalStock(type, options, inventoryRows) {
  * - 상품명과 옵션에 일본어·영어를 모두 포함한다.
  */
 async function createBackendProducts({
+  saleStatusOnly = false,
+  inventoryOnly = false,
+  consumerPriceOnly = false,
   collectionMode,
   products = [],
   inventoryItems = [],
@@ -612,6 +615,12 @@ async function createBackendProducts({
   translatedItems = [],
   lowStockThreshold = 10,
 }) {
+  if (saleStatusOnly) {
+    return [...new Map(products.filter(product => product.saleStatus === "SOLD_OUT")
+      .map(product => [String(product.productId || product.id), {
+        id: String(product.productId || product.id), sourceMall: product.sourceMall, saleStatus: "SOLD_OUT",
+      }])).values()];
+  }
   const isDetail = collectionMode === "detail";
   const productMap = createFirstItemMap(products);
 
@@ -684,6 +693,12 @@ if (!isDetail) {
           productUnavailable,
         )
       : [];
+    if (consumerPriceOnly) {
+      for (const option of options) {
+        delete option.additionalPrice;
+        delete option.additionalPriceObserved;
+      }
+    }
     const stockQuantity = getTotalStock(
       type,
       options,
@@ -695,6 +710,17 @@ if (!isDetail) {
       lowStockThreshold,
       productUnavailable,
     );
+
+    if (inventoryOnly) {
+      return {
+        id: productId, sourceMall, type,
+        inventoryObserved: inventoryRows.some(row => typeof row?.hasOption === "boolean"),
+        inventoryUnavailable: productUnavailable,
+        stockQuantity, stockStatus,
+        saleStatus: getSaleStatus(stockStatus, productUnavailable),
+        options: options.map(option => ({ id: option.id, stockQuantity: option.stockQuantity, status: option.status })),
+      };
+    }
 
 
     const images = getProductImages(
@@ -758,6 +784,7 @@ if (!isDetail) {
         productItem,
         detailItem,
       ),
+      ...(consumerPriceOnly ? { wholesalePrice: null } : {}),
       saleStatus: getSaleStatus(
         stockStatus,
         productUnavailable,
@@ -771,7 +798,7 @@ if (!isDetail) {
       options,
       specs: createSpecs(detailItem),
     });
-  });
+  }).filter(product => !inventoryOnly || product.inventoryObserved || product.inventoryUnavailable);
 }
 
 module.exports = {

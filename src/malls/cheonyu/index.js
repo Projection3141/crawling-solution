@@ -3,6 +3,16 @@
 
 const { performance } = require("node:perf_hooks");
 const { chromium } = require("playwright");
+const { createCollectionProxy, monitorCollectionSession } = require("../../utils/collection-proxy");
+const {
+  classifyCollectionFailure,
+  isRecoverableStickySessionError,
+  isTerminalStickyConnectionError,
+  needsStickyTunnelConfirmation,
+} = require("../../utils/collection-failure");
+const { checkStickyTunnelBeforeRecovery } = require("../../utils/proxy-tunnel-probe");
+const { readProductArchive } = require("../../utils/product-archive");
+const { getProductSourceMall } = require("../../utils/product-schema");
 const {
   bindAbortToBrowser,
   installDialogAutoAccept,
@@ -14,14 +24,15 @@ const {
   getMemoryMb,
   throwIfAborted,
 } = require("../../utils/common");
-const { installHttpBlockGuard, replacePage } = require("../../utils/site-safety");
+const { installHttpBlockGuard, replacePage, sleepWithSignal } = require("../../utils/site-safety");
 const { createNetworkUsageTracker } = require("../../utils/network-usage");
+const { recordDiagnostic, registerDiagnosticContext, describeDiagnosticPage } = require("../../utils/collection-diagnostics");
 const { buildProductSummaries } = require("../../utils/inventory");
 const {
   recordDetailAttempts,
   selectPendingDetailProductIds,
 } = require("../../utils/detail-collection-state");
-const { clearCartAll } = require("./cart");
+const { clearCartAll, readCartHtml, parseCartHtml, reconcileCollectionCart } = require("./cart");
 const {
   createCheonyuPopupInventoryItems,
   mergeCheonyuDetailInventoryItems,
@@ -48,6 +59,17 @@ const CHEONYU_CYCLE_DOM_NODE_GROWTH_RATIO = 1.6;
 const CHEONYU_CYCLE_DOM_NODE_SPIKE_THRESHOLD = 15000;
 const CHEONYU_CYCLE_HEAP_GROWTH_RATIO = 1.45;
 const CHEONYU_CYCLE_HEAP_SPIKE_MB = 120;
+
+function stickyFailureReason(error) {
+  return error?.details?.reason || classifyCollectionFailure(error).code;
+}
+
+function selectStickyFailure(error, sessionFailure) {
+  if (isTerminalStickyConnectionError(error)) return error;
+  if (isTerminalStickyConnectionError(sessionFailure)) return sessionFailure;
+  if (needsStickyTunnelConfirmation(error)) return error;
+  return sessionFailure || error;
+}
 const CHEONYU_FORCE_REFRESH_EVERY_CYCLES = 6;
 
 function getCheonyuExclusionDisplayReason(item = {}) {
@@ -346,15 +368,47 @@ async function runCheonyu(
     browserType = chromium,
     onProgress = () => { },
     onCycleArchive = null,
+    onListPage = null,
+    onDetailPage = null,
     signal,
   } = {},
 ) {
   const startedAt = performance.now();
+  const stickyCollection = ["shortTerm", "inventory"].includes(config.collectionKind);
+  if (config.collectionKind === "shortTerm") {
+    const archive = await readProductArchive();
+    const knownOptionBarcodes = new Set();
+    for (const product of Object.values(archive.products)) {
+      if (getProductSourceMall(product) !== "cheonyu") continue;
+      for (const option of Object.values(product.options || {})) {
+        if (option.id && option.barcode) knownOptionBarcodes.add(`${product.id}:${option.id}`);
+      }
+    }
+    config = { ...config, knownOptionBarcodes };
+  }
+  let stickySession = null;
+  let atStickyCheckpoint = false;
+  let checkpointSessionError = null;
+  const submittedProductIds = new Set();
+  let sessionController = new AbortController();
   const memoryStart = getMemoryMb();
   const blockController = new AbortController();
-  const runSignal = signal
+  const taskSignal = signal
     ? AbortSignal.any([signal, blockController.signal])
     : blockController.signal;
+  let runSignal = stickyCollection ? AbortSignal.any([taskSignal, sessionController.signal]) : taskSignal;
+  const handleStickySessionFailure = (error, failedContext, controller) => {
+    if (controller !== sessionController) return;
+    if (isRecoverableStickySessionError(error)) {
+      checkpointSessionError = error;
+      controller.abort(error);
+      // Cancel only the failed session's pending operations. User cancellation
+      // and site blocks still cancel the entire browser via taskSignal.
+      void failedContext.close().catch(() => null);
+    } else {
+      blockController.abort(error);
+    }
+  };
   let browser = null;
   let context = null;
   let blockGuard = null;
@@ -363,6 +417,8 @@ async function runCheonyu(
   const cycleHealthHistory = [];
   const maintenanceHistory = [];
   let page = null;
+  let initialLoginResult = null;
+  const verifyLoginWhilePreparingCart = config.collectionMode === "general" && Boolean(config.clearCartBefore);
   const networkUsageTracker = createNetworkUsageTracker({
     label: "천유 수집",
   });
@@ -370,6 +426,15 @@ async function runCheonyu(
     proxyProfileId: config.proxyProfileId,
     proxyProfileName: config.proxyProfileName,
     proxy: config.proxy,
+  };
+  let activeStickyProxy = config.proxy;
+  const verifyTunnelRecovery = async (error, proxy) => {
+    if (!needsStickyTunnelConfirmation(error)) return;
+    const evidence = await checkStickyTunnelBeforeRecovery({
+      proxy, url: config.baseUrl, signal: taskSignal,
+    });
+    throwIfAborted(taskSignal);
+    recordDiagnostic("sticky-tunnel-recovery-verified", evidence);
   };
   const proxyRotation = Array.isArray(config.proxyRotation)
     ? config.proxyRotation.filter((item) => item?.proxy)
@@ -501,6 +566,8 @@ async function runCheonyu(
     pageNo,
     rotationIndex,
     forceRestart = false,
+    initialLogin = false,
+    renewalBudget = { remaining: 3 },
   }) => {
     if (proxyRotation.length < 1 && !forceRestart) return currentPage;
 
@@ -512,7 +579,9 @@ async function runCheonyu(
     const nextIndex = forceRestart
       ? (currentProxyRotationIndex + 1) % rotationPool.length
       : normalizedRotationIndex % rotationPool.length;
-    const nextProxy = rotationPool[nextIndex];
+    let nextProxy = stickyCollection
+      ? { ...initialProxyUsage, proxy: createCollectionProxy(config.proxy, true, config.proxyProvider) }
+      : rotationPool[nextIndex];
     const nextProxyName = nextProxy.proxyProfileName || "직접 연결";
 
     if (!forceRestart && nextIndex === currentProxyRotationIndex) {
@@ -522,12 +591,17 @@ async function runCheonyu(
       return currentPage;
     }
 
-    throwIfAborted(runSignal);
+    throwIfAborted(taskSignal);
+    recordDiagnostic("proxy-change-start", {
+      ...describeDiagnosticPage(currentPage), pageNo, nextProxyProfileId: nextProxy.proxyProfileId,
+      nextProxyProfileName: nextProxyName, forceRestart,
+    });
     onProgress({
       stage: "proxy-rotation",
-      message:
-        `${pageNo}페이지부터 현재 사용 프록시의 다음 순번 · ` +
-        `${nextProxyName}으로 변경 후 브라우저 세션을 재실행합니다.`,
+      message: stickyCollection
+        ? `${nextProxyName}에서 새 스티키 세션을 준비합니다. 같은 계정으로 이어서 수집합니다.`
+        : `${pageNo}페이지부터 현재 사용 프록시의 다음 순번 · ` +
+          `${nextProxyName}으로 변경 후 브라우저 세션을 재실행합니다.`,
       currentPage: pageNo,
       proxyProfileName: nextProxyName,
     });
@@ -543,45 +617,105 @@ async function runCheonyu(
     let nextNetworkPolicy = null;
     let nextPage = null;
 
-    try {
-      nextContext = await browser.newContext({
-        viewport: config.viewport,
-        userAgent: config.userAgent,
-        ...(nextProxy.proxy ? { proxy: nextProxy.proxy } : {}),
-      });
-      await networkUsageTracker.trackContext(nextContext, nextProxy);
-      nextBlockGuard = installHttpBlockGuard(nextContext, {
-        hostname: new URL(config.baseUrl).hostname,
-        label: "천유",
-        onBlocked: (error) => {
-          blockController.abort();
-          onProgress({
-            stage: "blocked",
-            message: error.message,
-          });
-        },
-      });
-      nextNetworkPolicy = await installLightweightNetworkPolicy(nextContext, {
-        showBrowser: config.showBrowser,
-      });
-      nextPage = await nextContext.newPage();
-      await Promise.all([
-        networkUsageTracker.trackPage(nextPage, nextProxy),
-        nextNetworkPolicy?.configurePage?.(nextPage),
-      ]);
-      installDialogAutoAccept(nextPage);
-      await loginCheonyu(
-        nextPage,
-        config,
-        runSignal,
-        {
-          verificationTarget: "list",
-        },
-      );
-    } catch (error) {
-      await Promise.resolve(nextBlockGuard?.dispose?.()).catch(() => null);
-      await nextContext?.close().catch(() => null);
-      throw error;
+    stickySession?.stop();
+    for (let preparationAttempt = 1; ; preparationAttempt++) {
+      if (stickyCollection) renewalBudget.remaining -= 1;
+      const preparationController = new AbortController();
+      const preparationSignal = stickyCollection
+        ? AbortSignal.any([taskSignal, preparationController.signal]) : runSignal;
+      let candidateSession = null;
+      let promoted = false;
+      if (preparationAttempt > 1) {
+        nextProxy = { ...initialProxyUsage, proxy: createCollectionProxy(config.proxy, true, config.proxyProvider) };
+      }
+      try {
+        nextContext = await browser.newContext({
+          viewport: config.viewport,
+          userAgent: config.userAgent,
+          ...(nextProxy.proxy ? { proxy: nextProxy.proxy } : {}),
+        });
+        registerDiagnosticContext(nextContext, {
+          proxyProfileId: nextProxy.proxyProfileId, proxyProfileName: nextProxyName, server: nextProxy.proxy?.server,
+        });
+        await networkUsageTracker.trackContext(nextContext, nextProxy);
+        nextBlockGuard = installHttpBlockGuard(nextContext, {
+          hostname: new URL(config.baseUrl).hostname,
+          label: "천유",
+          statusCodes: [403, 407, 429],
+          onBlocked: (error) => {
+            blockController.abort(error);
+            onProgress({
+              stage: "blocked",
+              message: error.message,
+            });
+          },
+        });
+        nextNetworkPolicy = await installLightweightNetworkPolicy(nextContext, {
+          showBrowser: config.showBrowser,
+          blockImages: config.blockImages,
+        });
+        nextPage = await nextContext.newPage();
+        await Promise.all([
+          networkUsageTracker.trackPage(nextPage, nextProxy),
+          nextNetworkPolicy?.configurePage?.(nextPage),
+        ]);
+        installDialogAutoAccept(nextPage);
+        if (stickyCollection) {
+          const candidateContext = nextContext;
+          candidateSession = await monitorCollectionSession(nextContext, error => {
+            if (promoted) return handleStickySessionFailure(error, candidateContext, preparationController);
+            preparationController.abort(error);
+            // Stop pending login navigation without closing the whole collection browser.
+            void candidateContext.close().catch(() => null);
+          }, config.proxyProvider);
+        }
+        const loginResult = await loginCheonyu(
+          nextPage,
+          config,
+          preparationSignal,
+          {
+            verificationTarget: initialLogin && verifyLoginWhilePreparingCart ? "cart" : "list",
+          },
+        );
+        if (stickyCollection) {
+          await candidateSession.check();
+          if (!initialLogin) {
+            await reconcileCollectionCart(nextPage, nextContext, config, submittedProductIds, {
+              signal: preparationSignal, checkSession: candidateSession.check,
+            });
+            await candidateSession.check();
+          }
+          throwIfAborted(preparationSignal);
+          stickySession = candidateSession;
+          resetCheonyuPopupWorkloadTracker(runSignal);
+          sessionController = preparationController;
+          runSignal = preparationSignal;
+          submittedProductIds.clear();
+          checkpointSessionError = null;
+          promoted = true;
+        }
+        if (initialLogin) initialLoginResult = loginResult;
+        break;
+      } catch (error) {
+        const failure = selectStickyFailure(error, preparationController.signal.reason);
+        recordDiagnostic("proxy-change-failed", {
+          ...describeDiagnosticPage(nextPage), pageNo, nextProxyProfileName: nextProxyName,
+          preparationAttempt, error: failure,
+        });
+        candidateSession?.stop();
+        await Promise.resolve(nextBlockGuard?.dispose?.()).catch(() => null);
+        await nextContext?.close().catch(() => null);
+        throwIfAborted(taskSignal);
+        if (!stickyCollection || !isRecoverableStickySessionError(failure) || renewalBudget.remaining <= 0) throw failure;
+        await verifyTunnelRecovery(failure, nextProxy.proxy);
+        onProgress({ stage: "proxy-session", currentPage: pageNo,
+          message: `새 스티키 세션 확인 실패 · 다른 세션으로 다시 로그인합니다 (${4 - renewalBudget.remaining}/3). ${pageNo}페이지부터 이어갑니다.` });
+        recordDiagnostic("sticky-renewal-retry", { pageNo, preparationAttempt, reason: stickyFailureReason(failure) });
+        await sleepWithSignal(preparationAttempt === 1 ? 5000 : 15000, taskSignal);
+        nextContext = null;
+        nextBlockGuard = null;
+        nextPage = null;
+      }
     }
 
     await Promise.resolve(previousBlockGuard?.dispose?.()).catch(() => null);
@@ -590,7 +724,9 @@ async function runCheonyu(
     blockGuard = nextBlockGuard;
     lightweightNetworkPolicy = nextNetworkPolicy;
     page = nextPage;
+    if (stickyCollection) activeStickyProxy = nextProxy.proxy;
     currentProxyRotationIndex = nextIndex;
+    recordDiagnostic("proxy-change-success", { ...describeDiagnosticPage(nextPage), pageNo });
     proxyRotationPageStart = pageNo;
     maintenanceHistory.push({
       pageNo,
@@ -612,14 +748,20 @@ async function runCheonyu(
   }) => {
     throwIfAborted(runSignal);
 
+    // Popup recovery is safe within the existing context, even after cart writes.
+    // Never turn this recovery into a new login/proxy session for sticky runs.
+    if (stickyCollection && mode === "popup-overload-next-proxy") mode = "popup-overload";
+
     if (mode === "replace-tab" || mode === "popup-overload") {
+      await stickySession?.check();
+      throwIfAborted(runSignal);
       const isPopupOverloadRecovery = mode === "popup-overload";
       const activeProxyUsage =
         proxyRotation[currentProxyRotationIndex] || initialProxyUsage;
       onProgress({
         stage: "page-recovery",
         message: isPopupOverloadRecovery
-          ? `${pageNo}페이지 팝업 누락률이 10%를 초과해 새 탭에서 누락 상품만 재시도합니다.`
+          ? `${pageNo}페이지 팝업 누락률이 10%를 초과해 로그인·프록시를 유지한 새 탭에서 누락 상품만 재시도합니다.`
           : `${pageNo}페이지 이동 실패로 같은 프록시 컨텍스트에서 수집 탭을 교체합니다.`,
         currentPage: pageNo,
       });
@@ -652,6 +794,7 @@ async function runCheonyu(
     }
 
     if (mode === "next-proxy" || mode === "popup-overload-next-proxy") {
+      if (stickyCollection) throw error;
       const isPopupOverloadRecovery = mode === "popup-overload-next-proxy";
       if (proxyRotation.length < 1) {
         if (isPopupOverloadRecovery) {
@@ -714,9 +857,9 @@ async function runCheonyu(
 
     browser = await browserType.launch({
       headless: config.headless,
-      args: getLightweightLaunchArgs({ showBrowser: config.showBrowser }),
+      args: getLightweightLaunchArgs(config),
     });
-    releaseAbort = bindAbortToBrowser(runSignal, browser);
+    releaseAbort = bindAbortToBrowser(taskSignal, browser);
     throwIfAborted(runSignal);
 
     context = await browser.newContext({
@@ -724,13 +867,17 @@ async function runCheonyu(
       userAgent: config.userAgent,
       ...(config.proxy ? { proxy: config.proxy } : {}),
     });
+    registerDiagnosticContext(context, {
+      proxyProfileId: config.proxyProfileId, proxyProfileName: config.proxyProfileName, server: config.proxy?.server,
+    });
     await networkUsageTracker.trackContext(context, initialProxyUsage);
 
     blockGuard = installHttpBlockGuard(context, {
       hostname: new URL(config.baseUrl).hostname,
       label: "천유",
+      statusCodes: [403, 407, 429],
       onBlocked: (error) => {
-        blockController.abort();
+        blockController.abort(error);
         onProgress({
           stage: "blocked",
           message: error.message,
@@ -740,6 +887,7 @@ async function runCheonyu(
 
     lightweightNetworkPolicy = await installLightweightNetworkPolicy(context, {
       showBrowser: config.showBrowser,
+      blockImages: config.blockImages,
     });
 
     page = await context.newPage();
@@ -749,23 +897,34 @@ async function runCheonyu(
     ]);
 
     installDialogAutoAccept(page);
-
     onProgress({
       stage: "login",
       message: "천유닷컴에 로그인하고 있습니다.",
     });
-    const verifyLoginWhilePreparingCart =
-      config.collectionMode === "general" &&
-      Boolean(config.clearCartBefore);
-    const loginResult = await loginCheonyu(
-      page,
-      config,
-      runSignal,
-      {
+    try {
+      if (stickyCollection) {
+        const initialContext = context;
+        const initialController = sessionController;
+        stickySession = await monitorCollectionSession(context,
+          error => handleStickySessionFailure(error, initialContext, initialController), config.proxyProvider);
+      }
+      initialLoginResult = await loginCheonyu(page, config, runSignal, {
         verificationTarget: verifyLoginWhilePreparingCart ? "cart" : "list",
-      },
-    );
-    throwIfAborted(runSignal);
+      });
+      throwIfAborted(runSignal);
+    } catch (error) {
+      throwIfAborted(taskSignal);
+      const failure = selectStickyFailure(error, sessionController.signal.reason);
+      if (!stickyCollection || !isRecoverableStickySessionError(failure)) throw failure;
+      await verifyTunnelRecovery(failure, activeStickyProxy);
+      // The first login has not changed the cart. Prepare a replacement session
+      // before the ordinary initial cart cleanup, which can have its own items.
+      const pageNo = config.pageOrder === "reverse" && config.pageEnd > 0 ? config.pageEnd : config.pageStart;
+      onProgress({ stage: "proxy-session", currentPage: pageNo,
+        message: "첫 연결이 끊겨 새 스티키 세션으로 로그인한 뒤 수집을 시작합니다." });
+      recordDiagnostic("sticky-initial-login-resume", { pageNo, reason: stickyFailureReason(failure) });
+      page = await rotateCheonyuProxyPage({ currentPage: page, pageNo, forceRestart: true, initialLogin: true });
+    }
 
     let clearBeforeResult = null;
 
@@ -776,8 +935,8 @@ async function runCheonyu(
       });
       clearBeforeResult = await clearCartAll(page, context, config, {
         cachedCartHtml:
-          loginResult?.verificationTarget === "cart"
-            ? loginResult.html
+          initialLoginResult?.verificationTarget === "cart"
+            ? initialLoginResult.html
             : null,
       });
       throwIfAborted(runSignal);
@@ -805,458 +964,598 @@ async function runCheonyu(
     let proxyTraversalStart = reversePageOrder ? null : config.pageStart;
     let waitBeforeCycleFirstPage = false;
     let nextCyclePageNotBeforeAt = 0;
+    let lastCommittedPage = null;
+    let collectionFinished = false;
+    let consecutiveSessionRecoveries = 0;
 
     while (true) {
       loop += 1;
-
-      const totalDetectedForLoop = Number(detectedTotalProductCount);
-      const remainingForDetectedCount = totalDetectedForLoop > 0
-        ? Math.max(0, totalDetectedForLoop - seenProductIds.size)
-        : CHEONYU_COLLECTION_CHUNK_SIZE;
-      const requestCount = totalDetectedForLoop > 0
-        ? Math.min(CHEONYU_COLLECTION_CHUNK_SIZE, remainingForDetectedCount)
-        : CHEONYU_COLLECTION_CHUNK_SIZE;
-
-      if (requestCount < 1) {
-        break;
-      }
-
-      const cycleNo = loop;
-
-      onProgress({
-        stage: "collecting",
-        message: `천유 상품 수집 ${cycleNo}차: 이번 차수 ${requestCount}개 처리`,
-        pageRange,
-        detectedTotalProductCount: detectedTotalProductCount || 0,
-        collectedProductCount: seenProductIds.size,
-      });
-
-      const cycleStartAt = performance.now();
-      const cycleResult = await bulkAddPages(
-        page,
-        {
-          ...config,
-        },
-        (progress) => {
-          onProgress({
-            ...progress,
-            cycleNo,
-            elapsedMs: performance.now() - startedAt,
-          });
-        },
-        runSignal,
-        {
-          maxProductCount: requestCount,
-          skipProductIds: Array.from(seenProductIds),
-          rotatePage:
-            proxyRotation.length > 0
-              ? rotateCheonyuProxyPage
-              : null,
-          resetPage: resetCheonyuPageKeepingContext,
-          recoverListPage: recoverCheonyuListPage,
-          proxyPageStart: proxyTraversalStart,
-          startPage: nextCyclePageStart,
-          waitBeforeFirstPage: waitBeforeCycleFirstPage,
-          pagePacingNotBeforeAt: nextCyclePageNotBeforeAt,
-          resolvedPageRange,
-          getProxyPageStart:
-            proxyRotation.length > 0
-              ? () => proxyRotationPageStart
-              : null,
-        },
-      );
-      if (!resolvedPageRange) {
-        const detectedRange = cycleResult?.pageRange;
-        const detectedPageStart = Number(detectedRange?.pageStart);
-        const detectedPageEnd = Number(detectedRange?.pageEnd);
-
-        if (
-          Number.isInteger(detectedPageStart) &&
-          Number.isInteger(detectedPageEnd) &&
-          detectedPageStart >= 1 &&
-          detectedPageEnd >= detectedPageStart
-        ) {
-          resolvedPageRange = { ...detectedRange };
-          for (const transientKey of [
-            "collectedLastPage",
-            "collectedPageCount",
-            "pageOrder",
-            "resumePage",
-            "stopReason",
-            "traversalStartPage",
-          ]) {
-            delete resolvedPageRange[transientKey];
+      const checkpoint = stickyCollection ? {
+        allProducts: new Map(allProductsMap), excludedProducts: new Map(allExcludedProductsMap),
+        seenProductIds: new Set(seenProductIds), allTargetsLength: allTargets.length,
+        allPopupOptionRows, allPageResultsLength: allPageResults.length,
+        inventoryLength: inventoryItems.length, coveragesLength: cycleCartCoverages.length,
+        archiveHistoryLength: cycleArchiveHistory.length, clearResultsLength: cycleClearResults.length,
+        cartHtml, pageRange, clearAfterResult, detectedTotalProductCount,
+        nextCyclePageStart, nextCyclePageNotBeforeAt, waitBeforeCycleFirstPage, proxyTraversalStart,
+      } : null;
+      let cycleResult = null;
+      let cycleCommitted = false;
+      let archiveFailed = false;
+      let preparationFailed = false;
+      try {
+        const renewalBudget = { remaining: 3 };
+        for (;;) {
+          try {
+            const shouldRenewSticky = stickySession?.needsRenewal() || Boolean(checkpointSessionError);
+            if (shouldRenewSticky) {
+              // The candidate session validates the cart again before resuming. A dead
+              // old session cannot be required to pass another IP check to replace it.
+              const remainingCart = checkpointSessionError ? []
+                : parseCartHtml(await readCartHtml(page, config), config, { requireTable: true });
+              if (remainingCart.length) {
+                const error = new Error("장바구니에 상품이 남아 있어 새 로그인 세션으로 전환하지 않았습니다. 저장 결과와 장바구니 상태를 확인하세요.");
+                error.code = "CART_CLEANUP_INCOMPLETE";
+                throw error;
+              }
+              onProgress({ stage: "proxy-session", message: "저장과 장바구니 정리를 마쳐 60분 스티키 로그인 세션을 갱신합니다." });
+              try {
+                preparationFailed = false;
+                page = await rotateCheonyuProxyPage({ currentPage: page,
+                  pageNo: collectionFinished ? lastCommittedPage : nextCyclePageStart,
+                  rotationIndex: loop, forceRestart: true, renewalBudget });
+              } catch (error) { preparationFailed = true; throw error; }
+            }
+            // Include the handover window after login/context disposal in validation.
+            await stickySession?.check();
+            break;
+          } catch (error) {
+            throwIfAborted(taskSignal);
+            if (renewalBudget.remaining <= 0) preparationFailed = true;
+            if (!atStickyCheckpoint || !isRecoverableStickySessionError(error) || renewalBudget.remaining <= 0) throw error;
+            try {
+              await verifyTunnelRecovery(error, activeStickyProxy);
+            } catch (verificationError) {
+              preparationFailed = true;
+              throw verificationError;
+            }
+            checkpointSessionError = error;
+            recordDiagnostic("sticky-checkpoint-renewal", { pageNo: nextCyclePageStart,
+              reason: stickyFailureReason(error), remainingAttempts: renewalBudget.remaining });
           }
-          Object.freeze(resolvedPageRange);
-          logCheonyuSuccess(
-            `[PAGE DETECT] 이번 실행 범위를 ${detectedPageStart}~${detectedPageEnd}페이지로 확정했습니다. 이후 차수와 프록시 교체에서 재사용합니다.`,
-          );
         }
-      }
-      nextCyclePageNotBeforeAt = Math.max(
-        0,
-        Number(cycleResult?.nextPageNotBeforeAt) || 0,
-      );
-      const cycleProxyPageStart = Number(cycleResult?.proxyPageStart);
-      if (Number.isFinite(cycleProxyPageStart)) {
-        proxyTraversalStart = cycleProxyPageStart;
-      } else if (
-        proxyTraversalStart === null ||
-        proxyTraversalStart === undefined ||
-        !Number.isFinite(Number(proxyTraversalStart))
-      ) {
-        proxyTraversalStart = Number(cycleResult?.pageRange?.traversalStartPage);
-      }
-      const cycleElapsedMs = performance.now() - cycleStartAt;
-      const cycleProfile = buildCheonyuCycleProfile({
-        cycleNo,
-        requestCount,
-        collectedNow: Number(cycleResult?.collectedProductCount || 0),
-        cycleResult,
-        elapsedMs: cycleElapsedMs,
-        stopReason: cycleResult?.pageRange?.stopReason,
-      });
-      const collectedNow = Number(cycleResult?.collectedProductCount || 0);
-      const cycleStopReason = String(cycleResult?.pageRange?.stopReason || "");
-      const cycleRiskSignals = detectCheonyuCycleRiskSignals(
-        cycleHealthHistory.concat(cycleProfile),
-      );
-      const isForcedRefresh = cycleNo > 0
-        ? cycleNo % CHEONYU_FORCE_REFRESH_EVERY_CYCLES === 0
-        : false;
-      const cycleRiskLabel = formatCycleRiskReason(
-        cycleRiskSignals,
-        isForcedRefresh,
-      );
+        atStickyCheckpoint = false;
+        if (collectionFinished) break;
 
-      pageRange = cycleResult.pageRange;
+        const totalDetectedForLoop = Number(detectedTotalProductCount);
+        const remainingForDetectedCount = totalDetectedForLoop > 0
+          ? Math.max(0, totalDetectedForLoop - seenProductIds.size)
+          : CHEONYU_COLLECTION_CHUNK_SIZE;
+        const requestCount = totalDetectedForLoop > 0
+          ? Math.min(CHEONYU_COLLECTION_CHUNK_SIZE, remainingForDetectedCount)
+          : CHEONYU_COLLECTION_CHUNK_SIZE;
 
-      const detectedFromCycle = Number(
-        cycleResult?.pageRange?.detectedTotalProductCount,
-      );
-      if (Number.isFinite(detectedFromCycle) && detectedFromCycle > 0) {
-        detectedTotalProductCount = detectedFromCycle;
-      }
-
-      for (const product of cycleResult.allProducts || []) {
-        const productId = String(product?.productId || "").trim();
-
-        if (!productId) continue;
-
-        if (!allProductsMap.has(productId)) {
-          allProductsMap.set(productId, product);
+        if (requestCount < 1) {
+          break;
         }
 
-        seenProductIds.add(productId);
-      }
+        const cycleNo = loop;
 
-      for (const product of cycleResult.allTargets || []) {
-        allTargets.push(product);
-      }
+        onProgress({
+          stage: "collecting",
+          message: `천유 상품 수집 ${cycleNo}차: 이번 차수 ${requestCount}개 처리`,
+          pageRange,
+          detectedTotalProductCount: detectedTotalProductCount || 0,
+          collectedProductCount: seenProductIds.size,
+        });
 
-      for (const product of cycleResult.allExcludedProducts || []) {
-        const productId = String(product?.productId || "").trim();
-
-        if (!productId) continue;
-
-        if (!allExcludedProductsMap.has(productId)) {
-          allExcludedProductsMap.set(productId, product);
-        }
-      }
-
-      allPopupOptionRows = [
-        ...allPopupOptionRows,
-        ...(cycleResult.allPopupOptionRows || []),
-      ];
-      allPageResults.push(...(cycleResult.pageResults || []));
-
-      const cycleProducts = Array.from(
-        new Map(
-          (cycleResult.allProducts || []).map((item) => [
-            String(item?.productId || ""),
-            item,
-          ]),
-        ).values(),
-      ).filter((item) => String(item?.productId || "").trim());
-      const cycleTargets = Array.from(
-        new Map(
-          (cycleResult.allTargets || []).map((item) => [
-            String(item?.productId || ""),
-            item,
-          ]),
-        ).values(),
-      ).filter((item) => String(item?.productId || "").trim());
-      const cyclePopupOptionRows = cycleResult.allPopupOptionRows || [];
-      const cycleBulkResults = (cycleResult.pageResults || [])
-        .map((item) => item.bulkResult)
-        .filter(Boolean);
-      const cycleUnavailableProductIds = Array.from(new Set(
-        cycleBulkResults.flatMap(
-          (result) => result.unavailableProductIds || [],
-        ).map(String),
-      ));
-      const cyclePopupDirectProductIds = Array.from(new Set(
-        cycleBulkResults.flatMap(
-          (result) => result.popupDirectProductIds || [],
-        ).map(String),
-      ));
-      const cycleCartSubmittedProductIds = Array.from(new Set(
-        cycleBulkResults.flatMap(
-          (result) => result.cartSubmittedProductIds || [],
-        ).map(String),
-      ));
-      const cycleCartSubmittedProductIdSet = new Set(
-        cycleCartSubmittedProductIds,
-      );
-      const cycleFallbackTargets = cycleTargets.filter((product) =>
-        cycleCartSubmittedProductIdSet.has(String(product.productId || "")),
-      );
-      const cyclePopupInventoryItems = createCheonyuPopupInventoryItems({
-        products: cycleProducts,
-        popupOptionRows: cyclePopupOptionRows,
-        directProductIds: cyclePopupDirectProductIds,
-        config,
-      });
-      const popupInventoryProductIdSet = new Set(
-        cyclePopupInventoryItems.map((item) => String(item.productId || "")),
-      );
-      const popupCoverage = {
-        complete: cyclePopupDirectProductIds.every((productId) =>
-          popupInventoryProductIdSet.has(String(productId)),
-        ),
-        optionCoverageComplete: true,
-        expectedProductCount: cyclePopupDirectProductIds.length,
-        actualProductCount: popupInventoryProductIdSet.size,
-        expectedRowCount: cyclePopupInventoryItems.length,
-        actualRowCount: cyclePopupInventoryItems.length,
-        rowCoverageAvailable: true,
-        expectedProductIds: cyclePopupDirectProductIds,
-        actualProductIds: Array.from(popupInventoryProductIdSet),
-        missingProductIds: cyclePopupDirectProductIds.filter(
-          (productId) => !popupInventoryProductIdSet.has(String(productId)),
-        ),
-        partialProductIds: [],
-        missingOptionRows: [],
-        extraOptionRows: [],
-        unavailableProductIds: [],
-      };
-
-      onProgress({
-        stage: "cycle-inventory",
-        message:
-          `천유 ${cycleNo}차 재고를 정리하고 있습니다. ` +
-          `팝업 직독 ${cyclePopupDirectProductIds.length}개, ` +
-          `장바구니 보완 ${cycleFallbackTargets.length}개`,
-        cycleNo,
-        collectedProductCount: seenProductIds.size,
-        targetProductCount: cycleTargets.length,
-        elapsedMs: performance.now() - startedAt,
-      });
-
-      const cycleCartResult = await probeCheonyuCartStock(
-        page,
-        context,
-        config,
-        cycleFallbackTargets,
-        {
-          probeQty: config.cartQty || 999,
-          clearAfter: false,
-          popupOptionRows: cyclePopupOptionRows.filter((row) =>
-            cycleCartSubmittedProductIdSet.has(String(row.productId || "")),
-          ),
-          unavailableProductIds: cycleUnavailableProductIds,
-          onProgress: (progress) => {
+        const cycleStartAt = performance.now();
+        cycleResult = await bulkAddPages(
+          page,
+          {
+            ...config,
+            ...(stickyCollection ? { onCartSubmission: productIds => {
+              for (const id of productIds) submittedProductIds.add(String(id));
+            } } : {}),
+          },
+          (progress) => {
             onProgress({
               ...progress,
               cycleNo,
               elapsedMs: performance.now() - startedAt,
             });
           },
-          signal: runSignal,
-        },
-      );
-
-      cartHtml = cycleCartResult.cartHtml || cartHtml;
-      const cycleInventoryItems = config.collectionMode === "detail"
-        ? mergeCheonyuDetailInventoryItems(
-            cyclePopupInventoryItems,
-            cycleCartResult.inventoryItems,
-          )
-        : [
-            ...cyclePopupInventoryItems,
-            ...(cycleCartResult.inventoryItems || []),
-          ];
-      const cycleCoverage = mergeCheonyuCycleCoverages([
-        { coverage: popupCoverage },
-        cycleCartResult,
-      ]);
-      if (config.collectionMode === "detail") {
-        // 상세 옵션은 팝업과 장바구니 양쪽에 있으므로 중복 집계하지 않는다.
-        cycleCoverage.expectedProductCount = cycleCoverage.expectedProductIds.length;
-        cycleCoverage.actualProductCount = cycleCoverage.actualProductIds.length;
-        cycleCoverage.expectedRowCount = mergeCheonyuDetailInventoryItems(
-          cyclePopupInventoryItems,
-          cyclePopupOptionRows.filter((row) => row.selectedForCart === true &&
-            cycleCartSubmittedProductIdSet.has(String(row.productId))),
-        ).length;
-        cycleCoverage.actualRowCount = cycleInventoryItems.length;
-        const missingBarcodeRows = cycleInventoryItems.filter((row) =>
-          row.hasOption === true && !String(row.barcode || "").trim(),
+          runSignal,
+          {
+            maxProductCount: stickyCollection ? 1 : requestCount,
+            skipProductIds: Array.from(seenProductIds),
+            onListPage,
+            rotatePage:
+              proxyRotation.length > 0
+                ? rotateCheonyuProxyPage
+                : null,
+            resetPage: resetCheonyuPageKeepingContext,
+            recoverListPage: recoverCheonyuListPage,
+            proxyPageStart: proxyTraversalStart,
+            startPage: nextCyclePageStart,
+            waitBeforeFirstPage: waitBeforeCycleFirstPage,
+            pagePacingNotBeforeAt: nextCyclePageNotBeforeAt,
+            resolvedPageRange,
+            getProxyPageStart:
+              proxyRotation.length > 0
+                ? () => proxyRotationPageStart
+                : null,
+          },
         );
-        if (missingBarcodeRows.length > 0) {
-          onProgress({
-            stage: "option-barcode",
-            level: "warn",
-            cycleNo,
-            missingOptionBarcodeCount: missingBarcodeRows.length,
-            message: `천유 옵션 ${missingBarcodeRows.length}개의 바코드를 확인하지 못했습니다. ` +
-              "품절·선택 불가 또는 장바구니 바코드 누락 옵션은 기존 바코드를 유지합니다.",
-          });
-        }
-      }
-      inventoryItems.push(...cycleInventoryItems);
-      cycleCartCoverages.push({
-        cycleNo,
-        coverage: cycleCoverage,
-      });
+        if (!resolvedPageRange) {
+          const detectedRange = cycleResult?.pageRange;
+          const detectedPageStart = Number(detectedRange?.pageStart);
+          const detectedPageEnd = Number(detectedRange?.pageEnd);
 
-      let cycleArchiveResult = null;
-      if (typeof onCycleArchive === "function") {
+          if (
+            Number.isInteger(detectedPageStart) &&
+            Number.isInteger(detectedPageEnd) &&
+            detectedPageStart >= 1 &&
+            detectedPageEnd >= detectedPageStart
+          ) {
+            resolvedPageRange = { ...detectedRange };
+            for (const transientKey of [
+              "collectedLastPage",
+              "collectedPageCount",
+              "pageOrder",
+              "resumePage",
+              "stopReason",
+              "traversalStartPage",
+            ]) {
+              delete resolvedPageRange[transientKey];
+            }
+            Object.freeze(resolvedPageRange);
+            logCheonyuSuccess(
+              `[PAGE DETECT] 이번 실행 범위를 ${detectedPageStart}~${detectedPageEnd}페이지로 확정했습니다. 이후 차수와 프록시 교체에서 재사용합니다.`,
+            );
+          }
+        }
+        nextCyclePageNotBeforeAt = Math.max(
+          0,
+          Number(cycleResult?.nextPageNotBeforeAt) || 0,
+        );
+        const cycleProxyPageStart = Number(cycleResult?.proxyPageStart);
+        if (Number.isFinite(cycleProxyPageStart)) {
+          proxyTraversalStart = cycleProxyPageStart;
+        } else if (
+          proxyTraversalStart === null ||
+          proxyTraversalStart === undefined ||
+          !Number.isFinite(Number(proxyTraversalStart))
+        ) {
+          proxyTraversalStart = Number(cycleResult?.pageRange?.traversalStartPage);
+        }
+        const cycleElapsedMs = performance.now() - cycleStartAt;
+        const cycleProfile = buildCheonyuCycleProfile({
+          cycleNo,
+          requestCount,
+          collectedNow: Number(cycleResult?.collectedProductCount || 0),
+          cycleResult,
+          elapsedMs: cycleElapsedMs,
+          stopReason: cycleResult?.pageRange?.stopReason,
+        });
+        const collectedNow = Number(cycleResult?.collectedProductCount || 0);
+        const cycleStopReason = String(cycleResult?.pageRange?.stopReason || "");
+        const cycleRiskSignals = detectCheonyuCycleRiskSignals(
+          cycleHealthHistory.concat(cycleProfile),
+        );
+        const isForcedRefresh = cycleNo > 0
+          ? cycleNo % CHEONYU_FORCE_REFRESH_EVERY_CYCLES === 0
+          : false;
+        const cycleRiskLabel = formatCycleRiskReason(
+          cycleRiskSignals,
+          isForcedRefresh,
+        );
+
+        pageRange = cycleResult.pageRange;
+
+        const detectedFromCycle = Number(
+          cycleResult?.pageRange?.detectedTotalProductCount,
+        );
+        if (Number.isFinite(detectedFromCycle) && detectedFromCycle > 0) {
+          detectedTotalProductCount = detectedFromCycle;
+        }
+
+        for (const product of cycleResult.allProducts || []) {
+          const productId = String(product?.productId || "").trim();
+
+          if (!productId) continue;
+
+          if (!allProductsMap.has(productId)) {
+            allProductsMap.set(productId, product);
+          }
+
+          seenProductIds.add(productId);
+        }
+
+        for (const product of cycleResult.allTargets || []) {
+          allTargets.push(product);
+        }
+
+        for (const product of cycleResult.allExcludedProducts || []) {
+          const productId = String(product?.productId || "").trim();
+
+          if (!productId) continue;
+
+          if (!allExcludedProductsMap.has(productId)) {
+            allExcludedProductsMap.set(productId, product);
+          }
+        }
+
+        allPopupOptionRows = [
+          ...allPopupOptionRows,
+          ...(cycleResult.allPopupOptionRows || []),
+        ];
+        allPageResults.push(...(cycleResult.pageResults || []));
+
+        const cycleProducts = Array.from(
+          new Map(
+            (cycleResult.allProducts || []).map((item) => [
+              String(item?.productId || ""),
+              item,
+            ]),
+          ).values(),
+        ).filter((item) => String(item?.productId || "").trim());
+        const cycleTargets = Array.from(
+          new Map(
+            (cycleResult.allTargets || []).map((item) => [
+              String(item?.productId || ""),
+              item,
+            ]),
+          ).values(),
+        ).filter((item) => String(item?.productId || "").trim());
+        const cyclePopupOptionRows = cycleResult.allPopupOptionRows || [];
+        const cycleBulkResults = (cycleResult.pageResults || [])
+          .map((item) => item.bulkResult)
+          .filter(Boolean);
+        const cycleUnavailableProductIds = Array.from(new Set(
+          cycleBulkResults.flatMap(
+            (result) => result.unavailableProductIds || [],
+          ).map(String),
+        ));
+        const cyclePopupDirectProductIds = Array.from(new Set(
+          cycleBulkResults.flatMap(
+            (result) => result.popupDirectProductIds || [],
+          ).map(String),
+        ));
+        const cycleCartSubmittedProductIds = Array.from(new Set(
+          cycleBulkResults.flatMap(
+            (result) => result.cartSubmittedProductIds || [],
+          ).map(String),
+        ));
+        const cycleCartSubmittedProductIdSet = new Set(
+          cycleCartSubmittedProductIds,
+        );
+        const cycleFallbackTargets = cycleTargets.filter((product) =>
+          cycleCartSubmittedProductIdSet.has(String(product.productId || "")),
+        );
+        const cyclePopupInventoryItems = createCheonyuPopupInventoryItems({
+          products: cycleProducts,
+          popupOptionRows: cyclePopupOptionRows,
+          directProductIds: cyclePopupDirectProductIds,
+          config,
+        });
+        const popupInventoryProductIdSet = new Set(
+          cyclePopupInventoryItems.map((item) => String(item.productId || "")),
+        );
+        const popupCoverage = {
+          complete: cyclePopupDirectProductIds.every((productId) =>
+            popupInventoryProductIdSet.has(String(productId)),
+          ),
+          optionCoverageComplete: true,
+          expectedProductCount: cyclePopupDirectProductIds.length,
+          actualProductCount: popupInventoryProductIdSet.size,
+          expectedRowCount: cyclePopupInventoryItems.length,
+          actualRowCount: cyclePopupInventoryItems.length,
+          rowCoverageAvailable: true,
+          expectedProductIds: cyclePopupDirectProductIds,
+          actualProductIds: Array.from(popupInventoryProductIdSet),
+          missingProductIds: cyclePopupDirectProductIds.filter(
+            (productId) => !popupInventoryProductIdSet.has(String(productId)),
+          ),
+          partialProductIds: [],
+          missingOptionRows: [],
+          extraOptionRows: [],
+          unavailableProductIds: [],
+        };
+
         onProgress({
-          stage: "cycle-archiving",
+          stage: "cycle-inventory",
           message:
-            `천유 ${cycleNo}차 ${cycleProducts.length}개 상품을 ` +
-            `아카이브에 저장하고 있습니다.`,
+            `천유 ${cycleNo}차 재고를 정리하고 있습니다. ` +
+            `팝업 직독 ${cyclePopupDirectProductIds.length}개, ` +
+            `장바구니 보완 ${cycleFallbackTargets.length}개`,
           cycleNo,
           collectedProductCount: seenProductIds.size,
           targetProductCount: cycleTargets.length,
-          inventoryRowCount: cycleInventoryItems.length,
           elapsedMs: performance.now() - startedAt,
         });
-        cycleArchiveResult = await onCycleArchive({
-          cycleNo,
-          products: cycleProducts,
-          inventoryItems: cycleInventoryItems,
-          coverage: cycleCoverage,
-          pageRange: cycleResult.pageRange,
-        });
-      }
-      cycleArchiveHistory.push({
-        cycleNo,
-        productCount: cycleProducts.length,
-        inventoryRowCount: cycleInventoryItems.length,
-        archived: Boolean(cycleArchiveResult),
-        archiveResult: cycleArchiveResult || null,
-        at: new Date().toISOString(),
-      });
 
-      if (cycleFallbackTargets.length > 0) {
-        onProgress({
-          stage: "cycle-cart-clear",
-          message:
-            `천유 ${cycleNo}차 아카이빙 완료 후 장바구니를 비우고 있습니다.`,
+        await stickySession?.check();
+        const cycleCartResult = await probeCheonyuCartStock(
+          page,
+          context,
+          config,
+          cycleFallbackTargets,
+          {
+            probeQty: config.cartQty || 999,
+            clearAfter: false,
+            popupOptionRows: cyclePopupOptionRows.filter((row) =>
+              cycleCartSubmittedProductIdSet.has(String(row.productId || "")),
+            ),
+            unavailableProductIds: cycleUnavailableProductIds,
+            onProgress: (progress) => {
+              onProgress({
+                ...progress,
+                cycleNo,
+                elapsedMs: performance.now() - startedAt,
+              });
+            },
+            signal: runSignal,
+          },
+        );
+
+        cartHtml = cycleCartResult.cartHtml || cartHtml;
+        const cycleInventoryItems = config.collectionMode === "detail" || stickyCollection
+          ? mergeCheonyuDetailInventoryItems(
+              cyclePopupInventoryItems,
+              cycleCartResult.inventoryItems,
+            )
+          : [
+              ...cyclePopupInventoryItems,
+              ...(cycleCartResult.inventoryItems || []),
+            ];
+        const cycleCoverage = mergeCheonyuCycleCoverages([
+          { coverage: popupCoverage },
+          cycleCartResult,
+        ]);
+        if (config.collectionMode === "detail" || stickyCollection) {
+          // 상세 옵션은 팝업과 장바구니 양쪽에 있으므로 중복 집계하지 않는다.
+          cycleCoverage.expectedProductCount = cycleCoverage.expectedProductIds.length;
+          cycleCoverage.actualProductCount = cycleCoverage.actualProductIds.length;
+          cycleCoverage.expectedRowCount = mergeCheonyuDetailInventoryItems(
+            cyclePopupInventoryItems,
+            cyclePopupOptionRows.filter((row) => row.selectedForCart === true &&
+              cycleCartSubmittedProductIdSet.has(String(row.productId))),
+          ).length;
+          cycleCoverage.actualRowCount = cycleInventoryItems.length;
+          const missingBarcodeRows = cycleInventoryItems.filter((row) =>
+            row.hasOption === true && !String(row.barcode || "").trim() &&
+            !config.knownOptionBarcodes?.has(`${row.productId}:${row.optionId}`),
+          );
+          if (missingBarcodeRows.length > 0) {
+            onProgress({
+              stage: "option-barcode",
+              level: "warn",
+              cycleNo,
+              missingOptionBarcodeCount: missingBarcodeRows.length,
+              message: `천유 옵션 ${missingBarcodeRows.length}개의 바코드를 확인하지 못했습니다. ` +
+                "품절·선택 불가 또는 장바구니 바코드 누락 옵션은 기존 바코드를 유지합니다.",
+            });
+          }
+        }
+        inventoryItems.push(...cycleInventoryItems);
+        cycleCartCoverages.push({
           cycleNo,
-          elapsedMs: performance.now() - startedAt,
+          coverage: cycleCoverage,
         });
-        clearAfterResult = await clearCartAll(page, context, config, {
-          cachedCartHtml: cycleCartResult.cartHtml || null,
-        });
-        cycleClearResults.push({
+
+        let cycleArchiveResult = null;
+        // A session loss before this boundary invalidates this page's temporary
+        // rows. A loss during a successful disk commit must not replay that page.
+        throwIfAborted(runSignal);
+        if (typeof onCycleArchive === "function") {
+          onProgress({
+            stage: "cycle-archiving",
+            message:
+              `천유 ${cycleNo}차 ${cycleProducts.length}개 상품을 ` +
+              `아카이브에 저장하고 있습니다.`,
+            cycleNo,
+            collectedProductCount: seenProductIds.size,
+            targetProductCount: cycleTargets.length,
+            inventoryRowCount: cycleInventoryItems.length,
+            elapsedMs: performance.now() - startedAt,
+          });
+          throwIfAborted(runSignal);
+          try {
+            cycleArchiveResult = await onCycleArchive({
+              cycleNo,
+              products: cycleProducts,
+              inventoryItems: cycleInventoryItems,
+              coverage: cycleCoverage,
+              pageRange: cycleResult.pageRange,
+            });
+          } catch (error) { archiveFailed = true; throw error; }
+        }
+        cycleCommitted = true;
+        lastCommittedPage = Number(cycleResult.pageRange?.collectedLastPage);
+        cycleArchiveHistory.push({
           cycleNo,
-          result: clearAfterResult,
+          productCount: cycleProducts.length,
+          inventoryRowCount: cycleInventoryItems.length,
+          archived: Boolean(cycleArchiveResult),
+          archiveResult: cycleArchiveResult || null,
           at: new Date().toISOString(),
         });
-      }
-      logCheonyuSuccess(
-        `[RUN] 천유 ${cycleNo}차 혼합 재고 수집·아카이브 완료 ` +
-          `(${cycleProducts.length}상품, ${cycleInventoryItems.length} 재고행, ` +
-          `팝업 ${cyclePopupDirectProductIds.length} / ` +
-          `장바구니 ${cycleFallbackTargets.length})`,
-      );
 
-      cycleHealthHistory.push(cycleProfile);
-      const cycleHealthHistoryLimit = CHEONYU_CYCLE_RELOAD_HEALTH_WINDOW * 3;
-      if (cycleHealthHistory.length > cycleHealthHistoryLimit) {
-        cycleHealthHistory.splice(
-          0,
-          cycleHealthHistory.length - cycleHealthHistoryLimit,
-        );
-      }
-
-      onProgress({
-        stage: "collecting",
-        message: `천유 ${cycleNo}차 완료 · 수집=${collectedNow}개, ` +
-          `평균 ${cycleProfile.msPerProduct}ms/개`,
-        cycleNo,
-        cycleHealthProfile: cycleProfile,
-        cycleRiskSignals,
-        cycleRiskLabel,
-        pageRange,
-        detectedTotalProductCount: detectedTotalProductCount || 0,
-        collectedProductCount: seenProductIds.size,
-      });
-
-      if (
-        cycleRiskLabel &&
-        cycleStopReason === "limit-reached" &&
-        collectedNow > 0
-      ) {
-        logCheonyuWarn(
-          `[RUN] 차수 ${cycleNo} 건강도 이상 감지: ${cycleRiskLabel}`,
-          cycleProfile,
+        if (cycleFallbackTargets.length > 0) {
+          throwIfAborted(runSignal);
+          await stickySession?.check();
+          onProgress({
+            stage: "cycle-cart-clear",
+            message:
+              `천유 ${cycleNo}차 아카이빙 완료 후 장바구니를 비우고 있습니다.`,
+            cycleNo,
+            elapsedMs: performance.now() - startedAt,
+          });
+          clearAfterResult = await clearCartAll(page, context, config, {
+            cachedCartHtml: cycleCartResult.cartHtml || null,
+          });
+          if (stickyCollection) {
+            await reconcileCollectionCart(page, context, config, submittedProductIds, {
+              signal: runSignal, checkSession: stickySession.check,
+            });
+            submittedProductIds.clear();
+          }
+          cycleClearResults.push({
+            cycleNo,
+            result: clearAfterResult,
+            at: new Date().toISOString(),
+          });
+        }
+        throwIfAborted(runSignal);
+        atStickyCheckpoint = stickyCollection;
+        consecutiveSessionRecoveries = 0;
+        logCheonyuSuccess(
+          `[RUN] 천유 ${cycleNo}차 혼합 재고 수집·아카이브 완료 ` +
+            `(${cycleProducts.length}상품, ${cycleInventoryItems.length} 재고행, ` +
+            `팝업 ${cyclePopupDirectProductIds.length} / ` +
+            `장바구니 ${cycleFallbackTargets.length})`,
         );
 
-        page = await recycleCheonyuPage(page, cycleNo, cycleRiskLabel);
+        cycleHealthHistory.push(cycleProfile);
+        const cycleHealthHistoryLimit = CHEONYU_CYCLE_RELOAD_HEALTH_WINDOW * 3;
+        if (cycleHealthHistory.length > cycleHealthHistoryLimit) {
+          cycleHealthHistory.splice(
+            0,
+            cycleHealthHistory.length - cycleHealthHistoryLimit,
+          );
+        }
+
+        onProgress({
+          stage: "collecting",
+          message: `천유 ${cycleNo}차 완료 · 수집=${collectedNow}개, ` +
+            `평균 ${cycleProfile.msPerProduct}ms/개`,
+          cycleNo,
+          cycleHealthProfile: cycleProfile,
+          cycleRiskSignals,
+          cycleRiskLabel,
+          pageRange,
+          detectedTotalProductCount: detectedTotalProductCount || 0,
+          collectedProductCount: seenProductIds.size,
+        });
+
+        if (
+          cycleRiskLabel &&
+          cycleStopReason === "limit-reached" &&
+          collectedNow > 0
+        ) {
+          logCheonyuWarn(
+            `[RUN] 차수 ${cycleNo} 건강도 이상 감지: ${cycleRiskLabel}`,
+            cycleProfile,
+          );
+
+          page = await recycleCheonyuPage(page, cycleNo, cycleRiskLabel);
+        }
+
+        throwIfAborted(runSignal);
+        if (collectedNow < 1) {
+          break;
+        }
+
+        const isCompletedByDetectLimit = Number.isFinite(
+          Number(detectedTotalProductCount),
+        ) && Number(detectedTotalProductCount) > 0
+          ? seenProductIds.size >= Number(detectedTotalProductCount)
+          : false;
+        if (isCompletedByDetectLimit) break;
+
+        if (cycleStopReason !== "limit-reached") {
+          break;
+        }
+
+        const resumePage = Number(
+          cycleResult?.resumePage || cycleResult?.pageRange?.resumePage,
+        );
+        const lastCollectedPage = Number(
+          cycleResult?.pageRange?.collectedLastPage,
+        );
+        const cyclePageEnd = Number(cycleResult?.pageRange?.pageEnd);
+        const cyclePageStart = Number(cycleResult?.pageRange?.pageStart);
+        const resumePageOutsideRange = reversePageOrder
+          ? resumePage < cyclePageStart
+          : resumePage > cyclePageEnd;
+
+        if (
+          !Number.isFinite(resumePage) ||
+          !Number.isFinite(cyclePageStart) ||
+          !Number.isFinite(cyclePageEnd) ||
+          resumePageOutsideRange
+        ) {
+          break;
+        }
+
+        waitBeforeCycleFirstPage =
+          Number.isFinite(lastCollectedPage) &&
+          resumePage === lastCollectedPage + pageStep;
+        nextCyclePageStart = resumePage;
+        logCheonyuInfo(
+          `[RUN] 다음 ${cycleNo + 1}차는 ${nextCyclePageStart}페이지부터 ` +
+            `${reversePageOrder ? "역순" : "정순"}으로 이어서 수집합니다.` +
+            (waitBeforeCycleFirstPage && config.collectionKind !== "inventory"
+              ? " 이전 페이지의 2분 처리 예산 중 남은 시간만 대기 후 진행합니다."
+              : " 현재 페이지의 미처리 상품부터 즉시 이어서 진행합니다."),
+        );
+      } catch (error) {
+        // Never turn cancellation, an HTTP block, or a disk-write failure into
+        // session recovery, even if an IP change happened at the same time.
+        throwIfAborted(taskSignal);
+        const failure = selectStickyFailure(error, sessionController.signal.reason || checkpointSessionError);
+        if (!stickyCollection || archiveFailed || preparationFailed || !isRecoverableStickySessionError(failure)) {
+          throw error;
+        }
+        consecutiveSessionRecoveries += 1;
+        if (consecutiveSessionRecoveries > 3) throw failure;
+        await verifyTunnelRecovery(failure, activeStickyProxy);
+        if (!cycleCommitted) {
+          allProductsMap.clear();
+          for (const [key, value] of checkpoint.allProducts) allProductsMap.set(key, value);
+          allExcludedProductsMap.clear();
+          for (const [key, value] of checkpoint.excludedProducts) allExcludedProductsMap.set(key, value);
+          seenProductIds.clear();
+          for (const id of checkpoint.seenProductIds) seenProductIds.add(id);
+          allTargets.length = checkpoint.allTargetsLength;
+          allPopupOptionRows = checkpoint.allPopupOptionRows;
+          allPageResults.length = checkpoint.allPageResultsLength;
+          inventoryItems.length = checkpoint.inventoryLength;
+          cycleCartCoverages.length = checkpoint.coveragesLength;
+          cycleArchiveHistory.length = checkpoint.archiveHistoryLength;
+          cycleClearResults.length = checkpoint.clearResultsLength;
+          ({ cartHtml, pageRange, clearAfterResult, detectedTotalProductCount,
+            nextCyclePageStart, nextCyclePageNotBeforeAt, waitBeforeCycleFirstPage,
+            proxyTraversalStart } = checkpoint);
+          loop -= 1;
+        } else {
+          // The saved page is durable, even if clearing its cart was interrupted.
+          const range = cycleResult.pageRange;
+          nextCyclePageStart = Number(cycleResult.resumePage ?? range.resumePage);
+          collectionFinished = range.stopReason !== "limit-reached" || !Number.isFinite(nextCyclePageStart) ||
+            (reversePageOrder ? nextCyclePageStart < range.pageStart : nextCyclePageStart > range.pageEnd) ||
+            (detectedTotalProductCount > 0 && seenProductIds.size >= detectedTotalProductCount);
+          waitBeforeCycleFirstPage = true;
+        }
+        checkpointSessionError = failure;
+        atStickyCheckpoint = true;
+        stickySession?.stop();
+        await context?.close().catch(() => null);
+        const delayMs = [5000, 15000, 30000][consecutiveSessionRecoveries - 1];
+        recordDiagnostic("sticky-collection-resume", { reason: stickyFailureReason(failure),
+          savedThroughPage: lastCommittedPage, resumePage: nextCyclePageStart,
+          cycleCommitted, attempt: consecutiveSessionRecoveries, delayMs });
+        onProgress({ stage: "proxy-session", currentPage: nextCyclePageStart,
+          message: `스티키 세션이 끊겨 새 세션으로 재로그인합니다 (${consecutiveSessionRecoveries}/3). ` +
+            (collectionFinished ? "마지막 저장을 마쳤으며 장바구니 정리를 확인합니다."
+              : `${lastCommittedPage === null ? "이번 실행의 저장 완료 페이지 없음" : `${lastCommittedPage}페이지까지 저장 완료`} · ` +
+                `${nextCyclePageStart ?? "시작"}페이지부터 자동으로 이어갑니다.`) });
+        await sleepWithSignal(delayMs, taskSignal);
       }
-
-      if (collectedNow < 1) {
-        break;
-      }
-
-      const isCompletedByDetectLimit = Number.isFinite(
-        Number(detectedTotalProductCount),
-      ) && Number(detectedTotalProductCount) > 0
-        ? seenProductIds.size >= Number(detectedTotalProductCount)
-        : false;
-      if (isCompletedByDetectLimit) break;
-
-      if (cycleStopReason !== "limit-reached") {
-        break;
-      }
-
-      const resumePage = Number(
-        cycleResult?.resumePage || cycleResult?.pageRange?.resumePage,
-      );
-      const lastCollectedPage = Number(
-        cycleResult?.pageRange?.collectedLastPage,
-      );
-      const cyclePageEnd = Number(cycleResult?.pageRange?.pageEnd);
-      const cyclePageStart = Number(cycleResult?.pageRange?.pageStart);
-      const resumePageOutsideRange = reversePageOrder
-        ? resumePage < cyclePageStart
-        : resumePage > cyclePageEnd;
-
-      if (
-        !Number.isFinite(resumePage) ||
-        !Number.isFinite(cyclePageStart) ||
-        !Number.isFinite(cyclePageEnd) ||
-        resumePageOutsideRange
-      ) {
-        break;
-      }
-
-      waitBeforeCycleFirstPage =
-        Number.isFinite(lastCollectedPage) &&
-        resumePage === lastCollectedPage + pageStep;
-      nextCyclePageStart = resumePage;
-      logCheonyuInfo(
-        `[RUN] 다음 ${cycleNo + 1}차는 ${nextCyclePageStart}페이지부터 ` +
-          `${reversePageOrder ? "역순" : "정순"}으로 이어서 수집합니다.` +
-          (waitBeforeCycleFirstPage
-            ? " 이전 페이지의 2분 처리 예산 중 남은 시간만 대기 후 진행합니다."
-            : " 현재 페이지의 미처리 상품부터 즉시 이어서 진행합니다."),
-      );
     }
+
+    if (stickyCollection) stickySession?.stop();
 
     const allProducts = Array.from(allProductsMap.values());
     const allExcludedProducts = Array.from(allExcludedProductsMap.values());
@@ -1501,6 +1800,16 @@ async function runCheonyu(
         );
 
         detailItems.push(...pageDetailItems);
+        if (typeof onDetailPage === "function") {
+          const pageProductIds = new Set(pageProducts.map((product) => String(product.productId)));
+          await onDetailPage({
+            pageNo: detailPageNo,
+            pageRange,
+            products: pageProducts,
+            inventoryItems: inventoryItems.filter((item) => pageProductIds.has(String(item.productId))),
+            detailItems: pageDetailItems,
+          });
+        }
         completedDetailTargetCount += pageProducts.length;
       }
 
@@ -1647,8 +1956,11 @@ async function runCheonyu(
       "천유 컬렉션 실행 실패",
       error && String(error.message || error),
     );
-    throw blockGuard?.getError() || error;
+    // A block can originate in a replacement context before it becomes the
+    // active context. Preserve that cause even after its guard is disposed.
+    throw blockController.signal.reason || blockGuard?.getError() || error;
   } finally {
+    stickySession?.stop();
     resetCheonyuPopupWorkloadTracker(runSignal, page);
     blockGuard?.dispose();
     releaseAbort();

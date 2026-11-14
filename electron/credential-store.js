@@ -4,6 +4,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
+const { inferProxyProvider, validateProxyProvider } = require("../src/utils/collection-proxy");
 
 const STORE_VERSION = 1;
 
@@ -39,7 +40,9 @@ function normalizeStoredData(value) {
 
   return {
     version: STORE_VERSION,
-    proxies: Array.isArray(value.proxies) ? value.proxies : [],
+    proxies: Array.isArray(value.proxies)
+      ? value.proxies.map((profile) => ({ ...profile, provider: profile.provider || inferProxyProvider(profile.server), includeInRotation: profile.includeInRotation !== false }))
+      : [],
     openAiKeys: Array.isArray(value.openAiKeys) ? value.openAiKeys : [],
     shippingAccounts: Array.isArray(value.shippingAccounts) ? value.shippingAccounts : [],
     selectedShippingAccountId: String(value.selectedShippingAccountId || ""),
@@ -94,8 +97,10 @@ function createCredentialStore({ safeStorage, userDataDir, normalizeProxyCredent
         id: profile.id,
         name: profile.name,
         server: profile.server,
+        provider: profile.provider,
         username: profile.username || "",
         hasPassword: Boolean(profile.password),
+        includeInRotation: profile.includeInRotation !== false,
         createdAt: profile.createdAt,
         updatedAt: profile.updatedAt,
       })),
@@ -151,6 +156,13 @@ function createCredentialStore({ safeStorage, userDataDir, normalizeProxyCredent
         : String(existing?.password || "")
       : "";
 
+    if (Object.hasOwn(input, "includeInRotation") && typeof input.includeInRotation !== "boolean") {
+      throw new Error("수집 순환 포함 여부가 올바르지 않습니다.");
+    }
+    const includeInRotation = Object.hasOwn(input, "includeInRotation")
+      ? input.includeInRotation
+      : existing?.includeInRotation !== false;
+
     assertUniqueName(data.proxies, id, name, "프록시");
 
     const normalized = normalizeProxyCredentials(
@@ -162,12 +174,18 @@ function createCredentialStore({ safeStorage, userDataDir, normalizeProxyCredent
       "등록 프록시",
     );
     const now = new Date().toISOString();
+    const provider = validateProxyProvider(normalized, input.provider || inferProxyProvider(normalized.server));
+    if (existing && existing.provider !== provider && !passwordProvided && provider !== "other") {
+      throw new Error("공급자를 변경할 때는 해당 공급자의 프록시 비밀번호를 입력하세요.");
+    }
     const profile = {
       id: existing?.id || `proxy_${randomUUID()}`,
       name,
+      provider,
       server: normalized.server,
       username: normalized.username || "",
       password: normalized.password || "",
+      includeInRotation,
       createdAt: existing?.createdAt || now,
       updatedAt: now,
     };

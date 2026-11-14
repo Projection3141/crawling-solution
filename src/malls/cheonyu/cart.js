@@ -269,10 +269,31 @@ async function clearCartAll(
   return clearCartByCartIds(context, cartIds, config);
 }
 
+/** Remove only products journaled before this collector submitted them. */
+async function reconcileCollectionCart(page, context, config, productIds, { signal, checkSession } = {}) {
+  const owned = new Set(Array.from(productIds || [], String));
+  const assertActive = async () => {
+    if (signal?.aborted) throw signal.reason;
+    await checkSession?.();
+  };
+  const fail = () => Object.assign(new Error(
+    "장바구니의 수집 항목 정리를 확인하지 못했습니다. 확인되지 않은 항목은 삭제하지 않고 작업을 중단합니다.",
+  ), { code: "CART_CLEANUP_INCOMPLETE", retryable: false });
+  await assertActive();
+  const items = parseCartHtml(await readCartHtml(page, config), config, { requireTable: true });
+  if (!items.length) return;
+  if (items.some(item => !owned.has(String(item.productId)) || !(item.cartCheckId || item.inPIDX))) throw fail();
+  await assertActive();
+  await clearCartByCartIds(context, items.map(item => item.cartCheckId || item.inPIDX), config);
+  await assertActive();
+  if (parseCartHtml(await readCartHtml(page, config), config, { requireTable: true }).length) throw fail();
+}
+
 module.exports = {
   CHEONYU_CART,
   clearCartAll,
   clearCartByCartIds,
+  reconcileCollectionCart,
   parseCartHtml,
   readCartHtml,
 };

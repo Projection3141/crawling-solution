@@ -5,6 +5,8 @@ const cheerio = require("cheerio");
 const { extractPageNumber } = require("../shared/parsing");
 const { performance } = require("node:perf_hooks");
 const { fillFirstAvailable } = require("../../utils/browser");
+const { recordDiagnostic, describeDiagnosticPage } = require("../../utils/collection-diagnostics");
+const { isRecoverableStickySessionError, isTerminalStickyConnectionError } = require("../../utils/collection-failure");
 const {
   formatMs,
   normalizeWhitespace,
@@ -35,6 +37,7 @@ const {
 } = require("./logger");
 
 const CHEONYU_PAGE_PACING_BUDGET_MS = 2 * 60 * 1000;
+const isAuthenticatedNewOptionProbe = config => config.newProductOptionAccount === true && config.anonymousCollection === false;
 const CHEONYU_PAGE_HARD_COOLDOWN_MS = 30 * 1000;
 const CHEONYU_POPUP_PROGRESS_POLL_MS = 2000;
 const CHEONYU_POPUP_MAX_ADAPTIVE_WAIT_MS = 20 * 1000;
@@ -186,6 +189,7 @@ async function gotoCheonyuSafely(
     readySelector,
     readyTimeoutMs: config.navigationTimeoutMs,
     acceptReadySelectorAfterNavigationError,
+    handoffProxyFailure: ["shortTerm", "inventory", "changes"].includes(config.collectionKind) || isAuthenticatedNewOptionProbe(config),
     onNavigationErrorReady: ({ error }) => {
       logCheonyuWarn(
         `[CHEONYU] ${label} 이동은 완료 신호 전에 실패했지만 ` +
@@ -211,7 +215,7 @@ async function gotoCheonyuSafely(
 }
 
 /** 공통 계정 설정으로 천유닷컴에 로그인한다. */
-async function loginCheonyu(
+async function loginCheonyuSteps(
   page,
   config,
   signal,
@@ -314,17 +318,23 @@ async function loginCheonyu(
   }
 
   const verifyOnCart = verificationTarget === "cart";
+  const verifyOnBrands = verificationTarget === "brands";
+  const verifyOnHome = verificationTarget === "home";
   const listSelectors = CHEONYU_SITE.selectors.list;
   const verificationUrl = verifyOnCart
     ? new URL(CHEONYU_SITE.urls.cart, config.baseUrl).toString()
-    : buildListUrl(1, config);
+    : verifyOnHome ? new URL("/", config.baseUrl).toString() : verifyOnBrands
+      ? new URL("/brand/brand.html", config.baseUrl).toString()
+      : buildListUrl(1, config);
   const verificationReadySelector = verifyOnCart
     ? [
         "#cartTable",
         'a[href*="/member/login"]',
         ...selectors.passwordInputs,
       ].join(", ")
-    : [
+    : verifyOnHome ? `${selectors.logoutLink}, ${selectors.passwordInputs.join(", ")}` : verifyOnBrands
+      ? `.brand-list-view, ${selectors.passwordInputs.join(", ")}`
+      : [
         selectors.logoutLink,
         listSelectors.productCount,
         listSelectors.productCheck,
@@ -335,14 +345,14 @@ async function loginCheonyu(
   logCheonyuInfo(
     verifyOnCart
       ? "[LOGIN] 장바구니 페이지에서 로그인 확인 및 정리 준비"
-      : "[LOGIN] 메인 페이지를 건너뛰고 전체 상품 목록으로 이동",
+      : verifyOnHome ? "[LOGIN] 메인 페이지에서 로그인 확인" : verifyOnBrands ? "[LOGIN] 브랜드 목록에서 로그인 확인" : "[LOGIN] 메인 페이지를 건너뛰고 전체 상품 목록으로 이동",
   );
 
   await gotoCheonyuSafely(
     page,
     verificationUrl,
     config,
-    verifyOnCart ? "로그인 확인 및 장바구니" : "로그인 확인 및 상품 목록",
+    verifyOnCart ? "로그인 확인 및 장바구니" : verifyOnBrands ? "로그인 확인 및 브랜드 목록" : "로그인 확인 및 상품 목록",
     signal,
     {
       readySelector: verificationReadySelector,
@@ -378,15 +388,28 @@ async function loginCheonyu(
   logCheonyuSuccess("[LOGIN] 천유닷컴 로그인 성공");
 
   return {
-    verificationTarget: verifyOnCart ? "cart" : "list",
+    verificationTarget: verifyOnCart ? "cart" : verifyOnBrands ? "brands" : "list",
     verificationUrl,
     html: verificationHtml,
   };
 }
 
+/** 로그인 시도와 결과를 실제 페이지의 프록시·세션에 연결해 남긴다. */
+async function loginCheonyu(page, config, signal, options) {
+  recordDiagnostic("login-start", describeDiagnosticPage(page));
+  try {
+    const result = await loginCheonyuSteps(page, config, signal, options);
+    recordDiagnostic("login-succeeded", describeDiagnosticPage(page));
+    return result;
+  } catch (error) {
+    recordDiagnostic("login-failed", { ...describeDiagnosticPage(page), error });
+    throw error;
+  }
+}
+
 /** 공통 카테고리·페이지 설정으로 천유 상품 목록 URL을 생성한다. */
 function buildListUrl(pageNo, config) {
-  const url = new URL(CHEONYU_SITE.urls.list, config.baseUrl);
+  const url = new URL(config.listUrl || CHEONYU_SITE.urls.list, config.baseUrl);
 
   url.searchParams.set("page", String(pageNo));
   url.searchParams.set("cateIDX", String(config.category));
@@ -487,13 +510,17 @@ async function addProductsFromListPagesToCart(
       currentPage: pageNo,
     });
 
-    const { candidates } = await collectListCandidates(
+    const { candidates, html } = await collectListCandidates(
       page,
       pageNo,
       config,
       null,
       signal,
     );
+    if (isAuthenticatedNewOptionProbe(config) && !parseLoginState(html).loggedIn) {
+      throw Object.assign(new Error("새 상품 목록에서 천유 로그인 상태를 확인하지 못했습니다."),
+        { code: "CHEONYU_LOGIN_REQUIRED" });
+    }
     const requestMap = new Map(
       pageProducts.map((item) => [String(item.productId), item]),
     );
@@ -720,9 +747,15 @@ function parseListHtml(html, pageNo, config) {
   const collectDetailFields = config.collectionMode === "detail";
   const candidates = [];
 
-  $(selectors.productCheck).each((index, check) => {
+  const listElements = config.anonymousCollection
+    ? $(selectors.productLink).toArray().filter((element, index, elements) =>
+      elements.findIndex(other => $(other).closest("li")[0] === $(element).closest("li")[0]) === index)
+    : $(selectors.productCheck).toArray();
+  $(listElements).each((index, check) => {
     const item = $(check).closest("li");
-    const productId = $(check).attr("value") || "";
+    const productId = config.anonymousCollection
+      ? new URL($(check).attr("href"), config.baseUrl).searchParams.get("qIDX") || ""
+      : $(check).attr("value") || "";
 
     if (!productId || !item.length) return;
 
@@ -742,6 +775,7 @@ function parseListHtml(html, pageNo, config) {
     const isSoldOut =
       item.find(selectors.soldOut).length > 0 ||
       item.closest(selectors.soldOut).length > 0;
+    const hasOptionHint = item.find('.m_pdt_list_icon img[src*="/btn_option.gif"]').length > 0;
     const hasAddButton = item.find(selectors.addButton).length > 0;
     const hasCountInput = item.find(selectors.countInput).length > 0;
     const cartAddable = !isSoldOut && hasAddButton && hasCountInput;
@@ -757,14 +791,15 @@ function parseListHtml(html, pageNo, config) {
       consumerPrice: Number.isFinite(consumerPrice) && consumerPrice > 0 ? consumerPrice : null,
       imageUrl: "",
       isSoldOut,
-      unavailableInCart: false,
-      hasAddButton,
-      hasCountInput,
-      cartAddable,
-      listMaxStock:
-        item.find(selectors.maxStockInput).first().attr("value") || "",
-      listPorderMinus:
-        item.find(selectors.porderMinusInput).first().attr("value") || "",
+      // Anonymous pages hide purchase controls; absence is not evidence of sold-out stock.
+      ...(!config.anonymousCollection ? {
+        unavailableInCart: false,
+        hasAddButton,
+        hasCountInput,
+        cartAddable,
+        listMaxStock: item.find(selectors.maxStockInput).first().attr("value") || "",
+        listPorderMinus: item.find(selectors.porderMinusInput).first().attr("value") || "",
+      } : {}),
       ...(collectDetailFields
         ? {
             brandHint: inferBrand(productName),
@@ -772,9 +807,10 @@ function parseListHtml(html, pageNo, config) {
             packageQty: packageInfo.packageQty,
             packageUnit: packageInfo.packageUnit,
             packageText: packageInfo.packageText,
+            hasOptionHint,
           }
         : {}),
-      saleStatus: cartAddable ? "ON_SALE" : "SOLD_OUT",
+      saleStatus: config.anonymousCollection ? (isSoldOut ? "SOLD_OUT" : null) : cartAddable ? "ON_SALE" : "SOLD_OUT",
     });
   });
 
@@ -1481,6 +1517,7 @@ async function addCheonyuProductBatchesToCart(
   signal,
   {
     popupStockMode = false,
+    popupOnly = false,
     recoverDeferredPage = null,
   } = {},
 ) {
@@ -1629,10 +1666,22 @@ async function addCheonyuProductBatchesToCart(
         typeof recoverDeferredPage === "function"
       ) {
         highMissingRecoveryCompleted = true;
+        // A partially processed cart must retain its login and sticky proxy.
+        const keepStickySession = ["shortTerm", "inventory"].includes(config.collectionKind);
+        const recoveryMode = keepStickySession ? "popup-overload" : "popup-overload-next-proxy";
+        recordDiagnostic("popup-recovery-start", {
+          ...describeDiagnosticPage(page), pageNo, missingRatio,
+          recovery: recoveryMode, missingProductCount: retryProducts.length,
+          targetProductCount: targets.length,
+          missingProductIds: retryProducts.map(product => String(product.productId)),
+        });
         logCheonyuWarn(
           `[BULK ${pageNo}] 팝업 누락률 ${(missingRatio * 100).toFixed(1)}% · ` +
-            `같은 프록시에서 즉시 재시도하지 않고 30초 휴식 후 ` +
-            `다음 프록시의 새 컨텍스트에서 ${retryProducts.length}개를 ` +
+            `30초 휴식 후 ` +
+            (keepStickySession
+              ? `로그인·스티키 세션을 유지한 새 탭에서 `
+              : `다음 프록시의 새 컨텍스트에서 `) +
+            `${retryProducts.length}개를 ` +
             `${CHEONYU_DEFERRED_RETRY_BATCH_SIZE}개씩 재시도합니다.`,
         );
         await closeCheonyuOptionPopup(page).catch(() => null);
@@ -1647,7 +1696,7 @@ async function addCheonyuProductBatchesToCart(
         page = await recoverDeferredPage({
           currentPage: page,
           pageNo,
-          mode: "popup-overload-next-proxy",
+          mode: recoveryMode,
           error: new Error(
             `천유 ${pageNo}페이지 팝업 누락률 ${(missingRatio * 100).toFixed(1)}%`,
           ),
@@ -1975,6 +2024,15 @@ async function addCheonyuProductBatchesToCart(
     const missingPopupProducts = batch.filter((product) =>
       missingPopupProductIdSet.has(String(product.productId)),
     );
+    recordDiagnostic("popup-batch-result", {
+      ...describeDiagnosticPage(page), pageNo, batchPath, deferredAttempt, submitToCart,
+      requestedProductCount: batch.length,
+      loadedProductCount: result.loadedProductIds?.length ?? null,
+      missingProductCount: missingPopupProducts.length, missingProductIds: missingPopupProductIds,
+      visibleWrapperCount: result.popupState?.visibleWrapperCount ?? null,
+      optionRowCount: result.popupState?.optionRowCount ?? null,
+      cartSubmittedProductIds: result.cartSubmittedProductIds || [],
+    });
 
     if (missingPopupProducts.length > 0) {
       if (deferredAttempt < maxDeferredAttempts) {
@@ -2019,7 +2077,7 @@ async function addCheonyuProductBatchesToCart(
       result,
     });
 
-    if (!submitToCart && result.cartFallbackProductIds?.length > 0) {
+    if (!popupOnly && !submitToCart && result.cartFallbackProductIds?.length > 0) {
       const fallbackProductIdSet = new Set(
         result.cartFallbackProductIds.map((productId) => String(productId)),
       );
@@ -2093,6 +2151,7 @@ function getCheonyuCartFallbackProductIds({
   selectableProducts = [],
   popupOptionRows = [],
   completePopupProductIds = [],
+  knownOptionBarcodes = null,
 }) {
   const completeIds = new Set(completePopupProductIds.map(String));
   const optionProductIds = new Set(
@@ -2102,7 +2161,10 @@ function getCheonyuCartFallbackProductIds({
   return selectableProducts
     .map((product) => String(product.productId || ""))
     .filter((productId) => !completeIds.has(productId) ||
-      (collectionMode === "detail" && optionProductIds.has(productId)));
+      (collectionMode === "detail" && optionProductIds.has(productId)) ||
+      (knownOptionBarcodes && popupOptionRows.some(row =>
+        String(row.productId) === productId && row.hasOption && row.selectable &&
+        !knownOptionBarcodes.has(`${productId}:${row.optionId}`))));
 }
 
 /** 옵션 팝업에서 disabled/품절 옵션을 제외하고 선택 가능한 옵션만 체크한다. */
@@ -2838,7 +2900,7 @@ async function waitForReadyCheonyuOptionPopup(
       partialState.visibleWrapperCount > 0 &&
       partialState.optionTableCount === partialState.visibleWrapperCount &&
       partialState.optionRowCount > 0 &&
-      partialState.completeRowCount === partialState.optionRowCount;
+      (config.popupInventoryOnly || partialState.completeRowCount === partialState.optionRowCount);
 
     if (!hasUsablePartialPopup) {
       throw error;
@@ -3172,7 +3234,9 @@ async function clickBulkCartAndConfirm(
           };
         }
 
-        const effectivePopupWaitTimeoutMs = Math.max(
+        const effectivePopupWaitTimeoutMs = config.popupInventoryOnly
+          ? getSafetyNumber(config, "inventoryPopupWaitMs", 30000, 500, 60000)
+          : Math.max(
           popupWaitTimeoutMs,
           getCheonyuProgressivePopupWaitMs(popupWorkloadTracker),
         );
@@ -3306,6 +3370,18 @@ async function clickBulkCartAndConfirm(
             )
             .slice(0, 10);
 
+          recordDiagnostic("popup-coverage-incomplete", {
+            ...describeDiagnosticPage(page), pageNo, attempt,
+            expectedProductCount: expectedProductIds.length,
+            parsedProductCount: parsedProductIds.size,
+            missingPopupProductIds, unexpectedPopupProductIds,
+            visibleWrapperCount: lastPopupState.visibleWrapperCount,
+            optionRowCount: lastPopupState.optionRowCount,
+            completeRowCount: lastPopupState.completeRowCount,
+            matchModeCounts, unresolvedDiagnostics, timings: popupTimings,
+            adaptiveStopReason: popupReadiness.adaptiveStopReason,
+          });
+
           logCheonyuWarn(
             `[BULK ${pageNo}] 팝업 상품 식별 불일치 ` +
               `${parsedProductIds.size}/${expectedProductIds.length}`,
@@ -3384,7 +3460,7 @@ async function clickBulkCartAndConfirm(
 
             return (
               productRows.length > 0 &&
-              productRows.every((row) => row.selectable !== true)
+              productRows.every((row) => row.complete === true && row.selectable !== true)
             );
           })
           .map((product) => String(product.productId));
@@ -3424,6 +3500,7 @@ async function clickBulkCartAndConfirm(
           })
           .map((product) => String(product.productId || ""));
         const cartFallbackProductIds = getCheonyuCartFallbackProductIds({
+          knownOptionBarcodes: config.knownOptionBarcodes,
           collectionMode: config.collectionMode,
           selectableProducts: selectableRequestedProducts,
           popupOptionRows,
@@ -3597,6 +3674,15 @@ async function clickBulkCartAndConfirm(
         );
 
         try {
+          throwIfAborted(signal);
+          // Record intent before dispatch: the server may commit even if the
+          // response is lost when a proxy session disconnects.
+          await config.onCartSubmission?.(
+            selectableExpectedProductIds,
+            popupOptionRows.filter(row => row.selectedForCart),
+            popupOptionRows,
+          );
+          throwIfAborted(signal);
           await page.evaluate(() => window.setOption());
           await page.waitForFunction(
             () => {
@@ -3657,7 +3743,7 @@ async function clickBulkCartAndConfirm(
             { timeout: 10000 },
           );
         } catch (error) {
-          throw createNonRetryableError(
+          const failure = createNonRetryableError(
             "Cheonyu cart submission or popup cleanup did not finish.",
             {
               code: "SET_OPTION_COMPLETION_TIMEOUT",
@@ -3667,6 +3753,8 @@ async function clickBulkCartAndConfirm(
               },
             },
           );
+          if (isAuthenticatedNewOptionProbe(config)) failure.cause = error;
+          throw failure;
         }
 
         await sleep(config.collectionMode === "general" ? 25 : 100);
@@ -3693,9 +3781,12 @@ async function clickBulkCartAndConfirm(
       },
       {
         label: `천유 ${pageNo}페이지 옵션 팝업`,
+        diagnosticDetails: { ...describeDiagnosticPage(page), pageNo },
         maxAttempts,
         signal,
         shouldRetry: (error) =>
+          !(isAuthenticatedNewOptionProbe(config) &&
+            (isRecoverableStickySessionError(error) || isTerminalStickyConnectionError(error))) &&
           isRetryableSiteError(error, {
             signal,
             retryUnknownErrors: true,
@@ -3741,7 +3832,8 @@ async function clickBulkCartAndConfirm(
     lastError = error;
   }
 
-  if (lastError?.code) {
+  if (lastError?.code || (isAuthenticatedNewOptionProbe(config) &&
+      (isRecoverableStickySessionError(lastError) || isTerminalStickyConnectionError(lastError)))) {
     throw lastError;
   }
 
@@ -3790,6 +3882,7 @@ async function bulkAddPages(
     pagePacingNotBeforeAt = 0,
     resolvedPageRange = null,
     getProxyPageStart = null,
+    onListPage = null,
   } = {},
 ) {
   throwIfAborted(signal);
@@ -3894,7 +3987,7 @@ async function bulkAddPages(
     // 다음 페이지로 이동하기 전 사이트 문서를 비워 백그라운드 요청을 멈춘다.
     if (pageNo !== traversalStartPage || waitBeforeFirstPage) {
       const previousPageNo = pageNo - pageStep;
-      const remainingPacingMs = nextPageNotBeforeAt
+      const remainingPacingMs = config.collectionKind === "inventory" ? 0 : nextPageNotBeforeAt
         ? Math.max(
             CHEONYU_PAGE_HARD_COOLDOWN_MS,
             nextPageNotBeforeAt - Date.now(),
@@ -3910,6 +4003,10 @@ async function bulkAddPages(
           pageRange,
         });
       }
+      recordDiagnostic("page-cooldown", {
+        ...describeDiagnosticPage(page), previousPageNo, nextPageNo: pageNo,
+        delayMs: remainingPacingMs,
+      });
       await page
         .goto("about:blank", {
           waitUntil: "commit",
@@ -3939,10 +4036,11 @@ async function bulkAddPages(
       activeProxyPageStart = reportedProxyPageStart;
     }
     const pageOffset = Math.abs(pageNo - activeProxyPageStart);
+    const proxyRotationPages = getSafetyNumber(config, "proxyRotationPages", 10, 1, 1000);
     const isProxyRotationBoundary =
       typeof rotatePage === "function" &&
       pageOffset >= 0 &&
-      pageOffset % 10 === 0;
+      pageOffset % proxyRotationPages === 0;
     if (
       typeof rotatePage === "function" &&
       isProxyRotationBoundary
@@ -3951,7 +4049,7 @@ async function bulkAddPages(
         currentPage: page,
         pageNo,
         pageRange,
-        rotationIndex: Math.floor(pageOffset / 10),
+        rotationIndex: Math.floor(pageOffset / proxyRotationPages),
         forceRestart: pageOffset > 0,
       });
       const rotatedProxyPageStart = toValidProxyPageStart(
@@ -4258,6 +4356,20 @@ async function bulkAddPages(
     });
     const excludedProductCount = allExcludedProductsMap.size;
 
+    // Commit before starting another page/context. A later login failure must
+    // not discard this page while the larger cart-reconciliation cycle is pending.
+    if (typeof onListPage === "function") {
+      await onListPage({
+        pageNo,
+        pageRange: { ...pageRange },
+        products: selectedCandidates,
+        targets: selectedTargets,
+        popupOptionItems: pageResult.bulkResult?.popupOptionRows || [],
+        excludedProducts: pageExcludedProducts,
+        pageResult: pageResults[pageResults.length - 1],
+      });
+    }
+
     onProgress({
       stage: "collecting",
       message: pageExcludedIds.length > 0
@@ -4309,7 +4421,62 @@ async function bulkAddPages(
   };
 }
 
+/** 재입고 상품 한 건의 담기 버튼으로 팝업을 열고 확정 버튼 없이 재고만 읽는다. */
+async function collectCheonyuRestockPopup(page, product, config, signal) {
+  throwIfAborted(signal);
+  await closeCheonyuOptionPopup(page);
+  const clicked = await page.evaluate(productId => {
+    const anchors = Array.from(document.querySelectorAll('a[href*="/product/view.html"]'));
+    const matches = anchors.filter(element => {
+      try { return new URL(element.href).searchParams.get("qIDX") === productId; } catch { return false; }
+    });
+    const buttons = matches.flatMap(anchor => {
+      const item = anchor.closest("tr") || anchor.closest("li");
+      return item ? Array.from(item.querySelectorAll('button, a, input[type="button"], input[type="image"], img[onclick]')) : [];
+    });
+    const button = buttons
+      .find(element => element.id === "btn_addCart" || /담기|장바구니/.test([
+        element.textContent, element.getAttribute("alt"), element.getAttribute("title"),
+        element.getAttribute("aria-label"), element.getAttribute("value"),
+      ].join(" ")));
+    if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") return false;
+    button.click();
+    return true;
+  }, String(product.productId));
+  if (!clicked) throw new Error(`재입고 상품 ${product.productId}의 담기 버튼을 사용할 수 없습니다.`);
+  try {
+    const unavailable = await confirmCheonyuUnavailableProductPopups(page, product.page, [product]);
+    if (unavailable.unresolvedMessages.length) throw new Error(`재입고 상품 ${product.productId}의 품절 팝업을 식별하지 못했습니다.`);
+    if (unavailable.unavailableProductIds.map(String).includes(String(product.productId))) {
+      Object.assign(product, { isSoldOut: true, unavailableInCart: true, saleStatus: "SOLD_OUT" });
+      return { popupOptionRows: [], popupDirectProductIds: [] };
+    }
+    try {
+      await waitForReadyCheonyuOptionPopup(page, { ...config, popupInventoryOnly: true },
+        getSafetyNumber(config, "inventoryPopupWaitMs", 15000, 500, 60000), 1, product.page);
+    } catch (error) {
+      if (error?.name !== "TimeoutError") throw error;
+      throw Object.assign(new Error(
+        `재입고 ${product.page}페이지 상품 ${product.productId}의 재고 팝업 대기 시간이 초과되었습니다.`,
+        { cause: error },
+      ), { code: "CHEONYU_RESTOCK_POPUP_TIMEOUT" });
+    }
+    throwIfAborted(signal);
+    const rows = await parseAndPreparePopupOptions(page, product.page, config, [product], false);
+    if (!rows.length || rows.some(row => row.productId !== String(product.productId) || !row.complete || row.productMatchMode === "unresolved")) {
+      throw new Error(`재입고 상품 ${product.productId}의 팝업 재고가 불완전합니다. 확인 기록은 갱신하지 않습니다.`);
+    }
+    return { popupOptionRows: rows, popupDirectProductIds: [String(product.productId)] };
+  } finally {
+    await closeCheonyuOptionPopup(page);
+  }
+}
+
 module.exports = {
+  collectCheonyuRestockPopup,
+  collectCheonyuPopupStock: (page, pageNo, config, products, signal) =>
+    addCheonyuProductBatchesToCart(page, pageNo, { ...config, popupInventoryOnly: true }, products, signal,
+      { popupStockMode: true, popupOnly: true }),
   CHEONYU_SITE,
   buildListUrl,
   bulkAddPages,

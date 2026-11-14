@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>상품 수집 개선 보고 · 천유 &amp; 네이버 커머스</title>
+<style>
+:root{--ink:#152c3b;--muted:#5e7180;--line:#dbe5e9;--teal:#007d72;--pale:#edf7f4;--blue:#3068ba;--paper:#fff;--bg:#e9eff2}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif;line-height:1.75;word-break:keep-all}main{max-width:1080px;margin:32px auto}.page{background:var(--paper);padding:48px 56px;margin:0 0 24px;border-radius:16px;box-shadow:0 8px 36px #19364a0c}.eyebrow{font-size:12px;letter-spacing:2px;font-weight:700;color:var(--teal);margin:0 0 16px}.topline{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:30px;font-size:12px;color:var(--muted)}h1{font-size:38px;line-height:1.35;letter-spacing:-1.5px;margin:0 0 18px}h2{font-size:25px;letter-spacing:-.8px;margin:0 0 16px}h3{font-size:17px;margin:24px 0 8px}p{font-size:14px;margin:0 0 14px}.lead{font-size:17px;color:var(--muted);max-width:820px}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:28px 0}.metric{padding:20px;background:var(--pale);border:1px solid #d7e9e3;border-radius:12px}.metric strong{font-size:32px;line-height:1.2;display:block;color:var(--teal);letter-spacing:-1px}.metric span{display:block;font-size:13px;margin-top:8px;font-weight:700}.metric small{display:block;font-size:11px;color:var(--muted);margin-top:4px}.flow{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 0}.card{border:1px solid var(--line);border-radius:12px;padding:18px}.card h3{margin:8px 0;font-size:17px}.card p{font-size:12px;margin:0}.pill{display:inline-block;font-size:11px;border-radius:20px;padding:3px 10px;background:var(--pale);color:var(--teal);font-weight:700}.pill.blue{background:#ecf2fb;color:var(--blue)}.note{background:#f4f7fa;border-left:3px solid #7595ad;padding:14px 18px;font-size:12px;margin:20px 0}.success{background:var(--pale);border-left-color:var(--teal)}.small{font-size:12px;color:var(--muted)}.source{font-size:10px;color:var(--muted);line-height:1.6;margin-top:8px}.source a{color:var(--muted);text-underline-offset:3px}.footer{border-top:1px solid var(--line);margin-top:28px;padding-top:12px;display:flex;justify-content:space-between;font-size:10px;color:var(--muted)}figure{margin:18px 0;padding:20px;background:#f6f9fb;border-radius:12px;border:1px solid var(--line)}svg{width:100%;height:auto;display:block;font-family:"Malgun Gothic",sans-serif}figcaption{font-size:11px;color:var(--muted);margin-top:12px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:12px;margin:18px 0}th,td{text-align:left;vertical-align:top;padding:12px 14px;border-bottom:1px solid var(--line)}th{background:#eef3f6;color:#445c6b;font-size:11px}td:first-child{font-weight:700;width:26%}.focus{background:#f0faf6}.chart{padding:22px;border:1px solid var(--line);border-radius:12px;margin:20px 0}.bar-row{display:grid;grid-template-columns:175px 1fr 70px;gap:14px;align-items:center;margin:12px 0;font-size:12px}.bar-track{background:#eef3f6;border-radius:4px;height:24px}.bar{height:100%;border-radius:4px;background:#9aabba}.bar.teal{background:var(--teal)}.bar.blue{background:#587da7}.bar-row b{text-align:right}.chart h3{margin:0 0 16px}.toolbar{max-width:1080px;margin:24px auto 0;display:flex;justify-content:flex-end;padding:0 8px}button{border:0;background:var(--ink);color:white;padding:10px 16px;border-radius:8px;cursor:pointer;font:inherit;font-size:12px}.divider{height:1px;background:var(--line);margin:24px 0}
+@media(max-width:700px){main{margin:12px}.page{padding:26px 20px}.topline{gap:20px}h1{font-size:29px}h2{font-size:22px}.metrics,.flow,.grid2{grid-template-columns:1fr}.metric strong{font-size:28px}.bar-row{grid-template-columns:120px 1fr 50px;gap:8px;font-size:10px}figure{padding:10px}th,td{padding:9px 8px;font-size:11px}.toolbar{margin-top:12px}}
+@media print{@page{size:A4;margin:12mm}body{background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}main{margin:0;max-width:none}.page{padding:0;margin:0;box-shadow:none;border-radius:0;break-after:page}.page:last-child{break-after:auto}.toolbar{display:none}h1{font-size:29px}h2{font-size:22px}p{font-size:11px;line-height:1.7}.lead{font-size:13px}.topline{margin-bottom:18px;padding-bottom:10px}.metrics{margin:18px 0}.metric{padding:14px}.metric strong{font-size:27px}.flow{margin:14px 0}.card{padding:13px}.card p,td{font-size:10px}h3{margin-top:16px}figure{padding:12px;margin:12px 0}.note{padding:10px 13px;margin:14px 0;font-size:10px}.source{font-size:8px}.footer{margin-top:18px}.chart{padding:15px;margin:14px 0}th,td{padding:9px}.small,figcaption{font-size:9px}.bar-row{margin:9px 0}table{margin:12px 0}figure,.card,.metrics,.chart,table,.note{break-inside:avoid}}
+@media print{.page:last-child p{margin-bottom:10px}.page:last-child h3{margin-top:10px}.page:last-child .divider{margin:14px 0}.page:last-child .metrics{margin:12px 0}.page:last-child .metric{padding:10px}.page:last-child .metric strong{font-size:24px}}
+.flow{grid-template-columns:repeat(4,1fr)}
+@media(max-width:700px){.flow{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="toolbar"><button onclick="window.print()">인쇄 / PDF로 저장</button></div>
+<main>
+<section class="page">
+  <div class="topline"><span>MALL COLLECTOR · DEVELOPMENT REPORT</span><span>2026.11.09 · 진행 보고</span></div>
+  <p class="eyebrow">01 / 수집 구조와 검증 결과</p>
+  <h1>상품 수집의 목적별 분리 및 가정용 프록시 연결 추가</h1>
+  <p class="lead">천유의 수집을 최초 등록·장기 갱신·단기 갱신·재고파악으로 분리했습니다. <br>네이버 커머스 상품 정보 수집 기능을 추가했으며, DataImpulse를 테스트용으로 사용해 수집 성공을 확인했습니다.</p>
+  <div class="metrics">
+    <div class="metric"><strong>목적별 수집</strong><span>정보의 변경 주기에 맞춰 분리</span><small>최초 · 장기 · 단기 · 재고파악</small></div>
+    <div class="metric"><strong>로그인 분리</strong><span>공개 정보는 비로그인으로 수집</span><small>재고·옵션별 바코드는 로그인 후 확인</small></div>
+    <div class="metric"><strong>브라우저 선택</strong><span>화면 표시와 이미지 차단 선택</span><small>이미지 표시 · 이미지 차단 표시 · 미표기</small></div>
+  </div>
+  <p>상품 정보의 변경 주기에 따라 수집 작업을 분리했습니다. <br>최초 등록은 신규 상품 정보를 저장하고, 장기 갱신은 기존 상품의 공개 상세정보를 다시 확인합니다. <br>재고처럼 자주 달라지는 정보와 누락된 옵션별 바코드는 로그인하는 단기 갱신에서 처리합니다.</p>
+  <div class="flow">
+    <article class="card"><span class="pill">비로그인</span><h3>최초 등록</h3><p>신규·상세 미완료 상품의 이름, 대표 바코드, 이미지, 스펙, 소비자가를 저장합니다.</p></article>
+    <article class="card"><span class="pill">비로그인 · 기본 90일</span><h3>장기 갱신</h3><p>마지막 상세 수집 성공 후 설정 기간이 지난 상품의 공개 정보를 갱신합니다.</p></article>
+    <article class="card"><span class="pill blue">로그인 · 스티키 60분</span><h3>단기 갱신</h3><p>재고, 옵션 구성, 소비자가를 확인하고 누락된 옵션별 바코드를 보완합니다.</p></article>
+    <article class="card"><span class="pill blue">로그인 · 스티키 60분</span><h3>재고파악</h3><p>상품·옵션 식별값과 재고 수량·상태만 저장합니다. 가격·바코드·상세정보 갱신과 번역은 제외합니다.</p></article>
+  </div>
+  <p>사이드바의 <b>새 수집(신규)</b>에서 실행하고 <b>실행 현황</b>에서 진행 상태를 확인할 수 있습니다. 브라우저는 이미지 표시, 이미지 차단 표시, 미표기의 3가지 모드를 제공하며, 이미지 차단 표시 모드에서도 화면 스타일을 유지합니다.</p>
+  <div class="note success"><b>수집 성공 및 트래픽 사용량</b><br>천유 기존 일반수집과 상세수집은 각각 1페이지 기준으로 성공했습니다. 사용자 확인 기준 사용량은 <b>일반수집 1페이지당 0.02GB</b>, <b>상세수집 1페이지당 1.6GB</b>입니다.</div>
+  <p>네이버 커머스 페이지의 상품 정보를 수집하는 기능도 추가했습니다. 운영 측에서는 천유와 마찬가지로 계정·IP별 이용량 제한이 있는 것으로 파악하고 있어, 가정용 프록시를 적용한 수집 테스트를 진행하고 있습니다.</p>
+  <div class="footer"><span>사용자 확인 결과 + 구현 내역 기준</span><span>01 / 04</span></div>
+</section>
+<section class="page">
+  <div class="topline"><span>MALL COLLECTOR · CONNECTION DESIGN</span><span>ISP → RESIDENTIAL</span></div>
+  <p class="eyebrow">02 / 접속 방식의 변화</p>
+  <h2>고정 IP 중심에서 회전·고정 유지의 2가지 운용으로</h2>
+  <p><b>도입 배경</b> · 운영 과정에서 천유의 접속 차단(밴)을 경험했으며, 운영 측은 IP별·계정별 트래픽 사용량에 따른 제재로 파악했습니다. 이에 공개 정보는 비로그인으로 수집해 로그인 계정과 직접 연결되는 요청을 줄이고, 가정용 프록시의 IP 회전(셰이킹)을 활용하기로 했습니다. 재고·옵션별 바코드 확인에 필요한 로그인 작업은 별도로 분리했습니다.</p>
+  <p>기존 고정형 ISP 프록시는 등록한 IP를 중심으로 연결합니다. 일반적인 ISP 상품은 통신사에 등록된 IP를 서버 인프라에서 제공합니다. 새로 적용한 Residential은 실제 가정용 회선의 IP 풀을 이용하며, 공개 정보 수집에는 회전 연결을, 로그인 작업에는 일정 시간 같은 IP를 유지하는 스티키 연결을 적용합니다.</p>
+  <figure>
+    <svg viewBox="0 0 880 235" role="img" aria-labelledby="network-title network-desc">
+      <title id="network-title">기존 ISP와 Residential의 접속 구조 비교</title><desc id="network-desc">기존 ISP는 등록한 고정 IP를 통해 접속합니다. Residential은 공급자 게이트웨이에서 가정 회선 IP 풀로 연결하며 회전 연결 또는 같은 IP를 유지하는 스티키 연결을 선택합니다.</desc>
+      <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="none" stroke="#6f8797"/></marker></defs>
+      <text x="12" y="24" font-size="15" font-weight="700" fill="#152c3b">기존 ISP · 고정 IP 중심</text>
+      <g fill="#fff" stroke="#bccbd5" stroke-width="1.5"><rect x="12" y="43" width="160" height="53" rx="9"/><rect x="258" y="43" width="325" height="53" rx="9"/><rect x="694" y="43" width="170" height="53" rx="9"/></g>
+      <g font-size="14" text-anchor="middle" fill="#152c3b"><text x="92" y="75">수집 앱</text><text x="420" y="75">등록한 ISP IP · A</text><text x="779" y="75">천유 / 커머스</text></g>
+      <g stroke="#6f8797" stroke-width="2" marker-end="url(#arrow)"><path d="M180 69 H247"/><path d="M592 69 H683"/></g>
+      <text x="12" y="137" font-size="15" font-weight="700" fill="#007d72">Residential · 2가지 연결 방식</text>
+      <g fill="#edf7f4" stroke="#9dcfc3" stroke-width="1.5"><rect x="12" y="157" width="160" height="53" rx="9"/><rect x="219" y="157" width="175" height="53" rx="9"/><rect x="439" y="150" width="206" height="68" rx="9"/><rect x="694" y="157" width="170" height="53" rx="9"/></g>
+      <g font-size="14" text-anchor="middle" fill="#152c3b"><text x="92" y="189">수집 앱</text><text x="306" y="189">공급자 게이트웨이</text><text x="542" y="177">가정 회선 IP 풀</text><text x="542" y="199" font-size="12">회전 A·B·C / 스티키 A 유지</text><text x="779" y="189">천유 / 커머스</text></g>
+      <g stroke="#6f8797" stroke-width="2" marker-end="url(#arrow)"><path d="M180 183 H208"/><path d="M402 183 H429"/><path d="M653 183 H684"/></g>
+    </svg>
+    <figcaption>구조 설명용 그림입니다. A·B·C는 예시 IP이며 실제 보유 IP 수를 뜻하지 않습니다. 앱이 접속하는 게이트웨이 주소와 사이트에 보이는 출구 IP는 구분됩니다.</figcaption>
+  </figure>
+  <p>Residential을 적용하면서 IP를 개별 등록하는 방식 외에 공급자의 IP 풀을 사용할 수 있게 됐습니다. 반면 가정 회선 상태에 따라 응답 시간과 IP 유지 시간이 달라질 수 있고, GB 사용량이 비용에 직접 연결됩니다. 기존 ISP 요금과 동일 조건의 측정 자료가 없어 ISP 대비 비용·속도·차단 감소율은 산정하지 않았습니다.</p>
+  <p class="source">접속 구조와 일반적 특성 근거 · <a href="https://decodo.com/blog/isp-vs-residential-proxies">Decodo — ISP vs. Residential Proxies</a></p>
+  <h3>스티키 세션은 일정 시간 같은 출구 IP를 유지하는 연결입니다.</h3>
+  <p>로그인 → 재고 확인 → 장바구니 작업을 같은 IP로 이어가도록 두 공급자 모두 <b>60분</b>으로 설정했습니다. 앱은 <b>30초 간격</b>으로 IP를 확인하며, <b>50분 경과 후</b> 페이지 저장과 장바구니 정리가 끝난 시점에 새 세션으로 갱신합니다. 로그인 쿠키와 계정 상태는 앱에서 별도로 관리합니다.</p>
+  <figure>
+    <svg viewBox="0 0 880 145" role="img" aria-labelledby="sticky-title">
+      <title id="sticky-title">60분 스티키 세션 운용 시간표. 0분 로그인, 같은 IP로 수집, 50분 이후 안전한 시점에서 갱신, 갱신되지 않으면 59분 이후 점검에서 중단합니다.</title>
+      <rect x="28" y="47" width="680" height="40" rx="8" fill="#007d72"/><rect x="708" y="47" width="122" height="40" fill="#dbe9f4" rx="8"/>
+      <text x="360" y="72" text-anchor="middle" font-size="14" fill="white">IP A 유지 · 로그인 → 재고 확인 → 저장·장바구니 정리</text>
+      <g fill="#152c3b" font-size="12"><text x="28" y="29">0분 · 로그인</text><text x="650" y="29">50분 · 갱신 대상</text><text x="830" y="29" text-anchor="end">60분</text><text x="28" y="112">30초마다 IP 확인</text><text x="830" y="112" text-anchor="end">저장·정리 완료 후 새 세션으로 연결</text></g>
+      <path d="M708 42 V93" stroke="#152c3b" stroke-width="1.5" stroke-dasharray="4 4"/>
+      <text x="830" y="137" text-anchor="end" font-size="11" fill="#5e7180">갱신되지 않으면 59분 경과 후 점검에서 중단</text>
+    </svg>
+    <figcaption>앱의 운용 기준을 나타낸 개념도입니다. 60분은 요청하는 유지 시간이며, 제공 IP 연결이 종료되면 더 일찍 변경될 수 있습니다. IP 변경·확인 실패 시 작업과 자동 반복을 중단합니다.</figcaption>
+  </figure>
+  <p class="small">IP 회전 이후에도 로그인 계정은 동일하게 식별됩니다. 계정별 이용량 제한과 사이트의 접근 제한은 계속 적용됩니다.</p>
+  <div class="footer"><span>세션 시간은 현재 앱 구현 기준 · 회선 안정성은 공급자 조건에 영향받음</span><span>02 / 04</span></div>
+</section>
+<section class="page">
+  <div class="topline"><span>MALL COLLECTOR · PROVIDER COMPARISON</span><span>공개 요금 확인 · 2026.11.09</span></div>
+  <p class="eyebrow">03 / 공급자 비교와 비용</p>
+  <h2>Residentail 프록시: 50GB 기준 $150, $50</h2>
+  <div class="chart">
+    <h3>50GB 사용 시 비용 비교 <span class="small">USD · 세금·할인 제외</span></h3>
+    <div class="bar-row"><span>Decodo 종량제</span><div class="bar-track"><div class="bar" style="width:100%"></div></div><b>$200</b></div>
+    <div class="bar-row"><span>Decodo 월 구독 50GB</span><div class="bar-track"><div class="bar blue" style="width:75%"></div></div><b>$150</b></div>
+    <div class="bar-row"><span>DataImpulse 50GB</span><div class="bar-track"><div class="bar teal" style="width:25%"></div></div><b>$50</b></div>
+    <p class="small">산식 · (150 − 50) ÷ 150 × 100 ≈ 66.7% / (200 − 50) ÷ 200 × 100 = 75%<br>요금표 기반 계산이며 실제 운영비 절감 실측값은 아닙니다. 재시도와 리소스 다운로드에 따라 사용 GB가 달라집니다.</p>
+  </div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>비교 항목</th><th>Decodo Residential</th><th>DataImpulse Residential</th></tr></thead>
+    <tbody>
+      <tr><td>50GB 기준 단가</td><td>월 구독 $3/GB<br>종량제 $4/GB</td><td class="focus">$1/GB<br>구매 트래픽 만료 없음</td></tr>
+      <tr><td>스티키 최대 설정</td><td>24시간 = 1,440분</td><td>120분 = 2시간</td></tr>
+      <tr><td>현재 앱의 로그인 설정</td><td>60분</td><td class="focus">60분 · 동일 적용</td></tr>
+      <tr><td>국가 지정</td><td>추가 요금 없음</td><td>추가 요금 없음</td></tr>
+      <tr><td>도시·우편번호·ASN 지정</td><td>추가 요금 없음</td><td>기본 요금의 2배 적용<br>$1/GB 기준 $2/GB</td></tr>
+      <tr><td>회전 / 스티키 연결</td><td>2가지 모두 지원</td><td>2가지 모두 지원</td></tr>
+    </tbody>
+  </table></div>
+  <p>Decodo는 최대 스티키 설정 시간이 DataImpulse의 <b>12배</b>이고, 세부 지역 지정에 추가 요금이 없습니다. 현재 앱은 두 공급자 모두 60분을 사용하므로 이 설정 시간 차이가 현재 수집에서 직접적인 이점으로 이어지지는 않습니다. DataImpulse는 현재 필요한 연결 기능을 지원하면서 기본 GB 단가가 낮습니다.</p>
+  <div class="note"><b>숫자로 확인된 범위</b><br>천유 기존 수집 성공 범위는 일반 1페이지·상세 1페이지입니다. DataImpulse 테스트는 성공으로 확인됐으나, 반복 횟수·장시간 안정성·속도 개선율·이미지 차단에 따른 트래픽 절감률은 아직 수치화하지 않았습니다. 공급자의 최대 세션 설정값은 실제 IP 유지 시간을 보장하지 않습니다.</div>
+  
+    <h2>기존 수집 사용량 데이터 기반 예상 사용량</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>신규 수집</th><th>1페이지 예상 사용량</th><th>산정 조건</th></tr></thead>
+    <tbody>
+      <tr><td>최초 등록</td><td><b>약 1.6GB</b></td><td>해당 페이지의 상품 전체가 신규·상세 미완료여서 상세정보를 모두 수집하는 경우. 기존 상세수집 사용량을 준용.</td></tr>
+      <tr><td>장기 갱신</td><td><b>전체 상품 갱신 시 약 1.6GB</b></td><td>페이지 내 상품 전체가 갱신 대상인 경우. 일부만 대상이면 사용량 감소가 예상되며, 대상 비율별 사용량은 추가 측정 필요.</td></tr>
+      <tr><td>단기 갱신</td><td><b>약 0.02GB + 추가 확인분</b></td><td>기존 일반수집과 유사한 재고 확인 기준. 누락된 옵션별 바코드를 장바구니에서 추가 확인하면 사용량 증가 가능.</td></tr>
+      <tr><td>재고파악</td><td><b>약 0.02GB</b></td><td>기존 일반수집을 준용한 추정값. 재고 확인에 필요한 작업만 수행하며 신규 모드의 실제 사용량은 추가 측정 필요.</td></tr>
+    </tbody>
+  </table></div>
+  
+  <div class="footer"><span>비교 기준 · 일반 Residential / 동일 50GB / 세금·할인 제외</span><span>03 / 04</span></div>
+</section>
+
+</main>
+</body>
+</html>

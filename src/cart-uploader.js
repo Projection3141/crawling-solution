@@ -36,7 +36,7 @@ const {
 async function createCartBrowser(config, browserType) {
   const browser = await browserType.launch({
     headless: config.headless,
-    args: getLightweightLaunchArgs({ showBrowser: config.showBrowser }),
+    args: getLightweightLaunchArgs(config),
   });
   let context = null;
 
@@ -49,6 +49,7 @@ async function createCartBrowser(config, browserType) {
 
     await installLightweightNetworkPolicy(context, {
       showBrowser: config.showBrowser,
+      blockImages: config.blockImages,
     });
 
     const page = await context.newPage();

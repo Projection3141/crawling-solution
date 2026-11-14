@@ -2,6 +2,7 @@
 // 목적: 과자생각 상품 상세 페이지에서 카테고리·이미지·가격·스펙을 추출하고 상세정보 수집을 실행한다.
 
 const cheerio = require("cheerio");
+const { describeDiagnosticContext } = require("../../utils/collection-diagnostics");
 const { toAbsoluteUrl, pickByIncludes } = require("../shared/parsing");
 const { getCcdomeSpecLabelJa } = require("./spec-labels");
 const {
@@ -533,6 +534,7 @@ async function collectCcdomeDetails(
   config,
   onProgress = () => {},
   signal,
+  onDetailPage = null,
 ) {
   const targets = Array.from(
     new Map(
@@ -544,6 +546,8 @@ async function collectCcdomeDetails(
   const limitedTargets = targets;
 
   if (limitedTargets.length < 1) return [];
+  const workerController = new AbortController();
+  signal = signal ? AbortSignal.any([signal, workerController.signal]) : workerController.signal;
 
   const concurrency = Math.min(
     limitedTargets.length,
@@ -568,6 +572,14 @@ async function collectCcdomeDetails(
   const details = new Array(limitedTargets.length);
   let nextIndex = 0;
   let completedCount = 0;
+  const pageGroups = new Map();
+  const completedPages = new Set();
+  for (let index = 0; index < limitedTargets.length; index += 1) {
+    const pageNo = Number(limitedTargets[index].page);
+    if (!Number.isInteger(pageNo) || pageNo < 1) continue;
+    if (!pageGroups.has(pageNo)) pageGroups.set(pageNo, []);
+    pageGroups.get(pageNo).push(index);
+  }
 
   for (let index = 0; index < concurrency; index += 1) {
     const workerPage = await context.newPage();
@@ -681,6 +693,7 @@ async function collectCcdomeDetails(
         {
           label: `과자생각 상세 상품 ${product.productId}`,
           maxAttempts: retryCount,
+          diagnosticDetails: { ...describeDiagnosticContext(context), productId: product.productId },
           signal,
           shouldRetry: (error) =>
             isRetryableSiteError(error, {
@@ -766,7 +779,19 @@ async function collectCcdomeDetails(
       });
 
       details[targetIndex] = await collectOne(worker, product, targetIndex);
+      throwIfAborted(signal);
       completedCount += 1;
+      const pageNo = Number(product.page);
+      const pageIndexes = pageGroups.get(pageNo);
+      if (typeof onDetailPage === "function" && pageIndexes &&
+        !completedPages.has(pageNo) && pageIndexes.every((index) => details[index])) {
+        completedPages.add(pageNo);
+        await onDetailPage({
+          pageNo,
+          products: pageIndexes.map((index) => limitedTargets[index]),
+          detailItems: pageIndexes.map((index) => details[index]),
+        });
+      }
 
       onProgress({
         stage: "detail",
@@ -787,12 +812,18 @@ async function collectCcdomeDetails(
     }
   }
 
+  const workerPromises = workers.map((worker) => runWorker(worker));
   try {
-    await Promise.all(workers.map((worker) => runWorker(worker)));
+    await Promise.all(workerPromises);
+  } catch (error) {
+    workerController.abort();
+    throw error;
   } finally {
     await Promise.all(
       workers.map((worker) => worker.page.close().catch(() => null)),
     );
+    // A completed page may still be saving when another worker fails.
+    await Promise.allSettled(workerPromises);
   }
 
   return details.filter(Boolean);
