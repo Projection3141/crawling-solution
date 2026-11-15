@@ -269,13 +269,57 @@ C:\Users\사용자명\MallCollector\archive\v앱버전_archive.json
 
 앱을 계속 켜 두어야 하며 **앱 재시작·화면 새로고침 후 반복 예약은 자동 복원되지 않습니다.** PC 절전 중에는 실행되지 않습니다. 결과·로그 파일도 계속 쌓이므로 저장 공간을 주기적으로 확인하세요. 전체 상세 갱신 범위가 20페이지를 넘으면 작업을 나누어 설정해야 합니다.
 
-## 6. 코드 변경 후 확인
+## 6. 프로젝트 구조와 수정할 파일
+
+| 경로 | 역할 |
+| --- | --- |
+| `public/` | 화면과 사용자 입력. `index.html`은 메뉴와 설정 UI, `app.js`는 계정·프록시 관리와 실행 현황, `lifecycle-collection-view.js`는 **새 수집(신규)**의 입력과 실행 요청을 담당합니다. |
+| `electron/` | 데스크톱 앱 실행과 IPC. `preload.js`가 화면에 호출 API를 노출하고, `main.js`가 요청을 받아 수집 시작·취소, 실행 상태, 사용자 설정을 관리합니다. |
+| `src/` | 수집 공통 로직. `config.js`에서 입력을 검증하고 실행 설정을 만들며, `crawler.js`에서 수집기 호출, 중간 저장, 결과 변환과 아카이브 병합을 처리합니다. |
+| `src/malls/` | 쇼핑몰별 수집기. `cheonyu/`는 천유닷컴, `ccdome/`은 과자생각, `shared/`는 공통 목록 파싱을 담당합니다. 천유의 기존 일반·상세 수집은 `cheonyu/index.js`에서 시작합니다. |
+| `src/utils/` | 브라우저·프록시 연결, 재시도, 진단 로그, 상품 형식, 아카이브, 페이지별 중간 저장에 쓰는 공통 코드입니다. |
+| `translate/` · `scripts/` | 번역·엔화 환산 코드와 Chromium 설치·문법 검사·연결 진단 스크립트입니다. |
+| `tests/` · `out/` | `tests/`는 저장소의 회귀 테스트입니다. `forge.config.js`가 배포 패키지에서 이 폴더를 제외하며, 프로젝트의 `out/`에는 빌드 결과와 설치 파일이 생성됩니다. |
+
+### 새 수집(신규) 수정
+
+[신규 수집 화면](public/lifecycle-collection-view.js)에서 분류와 계정·프록시를 선택하면 [Electron 실행 처리](electron/main.js)를 거쳐 [공통 수집 실행](src/crawler.js)으로 전달됩니다. 세 분류의 실행 순서는 [천유 신규 수집](src/malls/cheonyu/lifecycle-collection.js)의 `runCheonyuLifecycle()`에서 확인할 수 있습니다. 사용자 기능과 수집 범위는 [수집 종류별 데이터와 절차](#3-수집-종류별-데이터와-절차)를 참고하세요.
+
+| 수정하려는 동작 | 먼저 볼 파일 |
+| --- | --- |
+| 분류·세부 항목·입력 및 실행 요청 | [lifecycle-collection-view.js](public/lifecycle-collection-view.js). 허용 값과 기본값은 [config.js](src/config.js)도 확인합니다. |
+| 베스트 목록 링크와 상품·옵션 재고 | [lifecycle-collection.js](src/malls/cheonyu/lifecycle-collection.js)의 `collectBestInventory()`. 팝업을 열고 읽는 코드는 [site.js](src/malls/cheonyu/site.js)에 있습니다. |
+| 신상품 대상 월, 페이지, 아카이브 대조 및 상세 | [lifecycle-collection.js](src/malls/cheonyu/lifecycle-collection.js)의 새 제품 수집 분기. 상세 항목 파싱은 [detail.js](src/malls/cheonyu/detail.js)에 있습니다. |
+| 신상품 옵션 바코드 및 작업 후 장바구니 정리 | [new-product-options.js](src/malls/cheonyu/new-product-options.js)의 `createNewProductOptionProbe()`. 목록·상세는 비로그인으로 읽고, 이 단계는 선택한 계정으로 로그인합니다. |
+| 품절 표시, 재입고 기간·팝업 재시도 | [product-changes.js](src/malls/cheonyu/product-changes.js)의 `collectProductChanges()`. 재입고 기준일과 상품 번호의 읽기·갱신은 [restock-collection-state.js](src/utils/restock-collection-state.js)에 있습니다. |
+| IP 확인 오류, 세션 교체 및 페이지 재개 | [lifecycle-connection.js](src/malls/cheonyu/lifecycle-connection.js)의 `createLifecycleConnection()`. IP 확인과 같은 세션 내 재시도는 [decodo.js](src/utils/decodo.js), 오류 분류는 [collection-failure.js](src/utils/collection-failure.js)에서 확인합니다. |
+| 결과 JSON·CSV, 페이지별 저장 및 아카이브 병합 | [crawler.js](src/crawler.js)의 `runCollection()`. 파일 위치는 [files.js](src/utils/files.js), 누적 상품 병합은 [product-archive.js](src/utils/product-archive.js)에 있습니다. |
+
+실행 결과는 설정한 결과 폴더의 `<쇼핑몰>/<실행 ID>/` 아래에 저장합니다. 수집이 실패했을 때는 앱 설정 폴더의 `collection-diagnostics/<실행 ID>.jsonl`에서 실패 원인과 재시도 이력을 확인할 수 있습니다.
+
+### 계정·프록시 관리 수정
+
+| 수정하려는 동작 | 먼저 볼 파일과 처리 흐름 |
+| --- | --- |
+| 쇼핑몰 계정 등록·이름 변경·삭제 | [app.js](public/app.js)의 `registerAccount()`와 `saveRegisteredAccount()`부터 확인합니다. 등록 계정은 앱 화면의 로컬 저장소에 보관되며, 수집과 장바구니의 계정 선택 목록에서 사용합니다. |
+| 천유 가입 화면 자동 입력과 가입 완료 처리 | [test-account-signup.js](electron/test-account-signup.js)의 `runTestAccountSignup()`부터 확인합니다. [main.js](electron/main.js)가 가입 완료 요청을 처리하고, [test-account-store.js](electron/test-account-store.js)가 생성 계정의 비밀번호를 암호화해 백업합니다. [app.js](public/app.js)의 `registerCreatedCheonyuAccount()`가 한국 시간 기준 `천유_YYMMDD`로 등록 계정 목록에 추가합니다. |
+| 프록시 등록·편집·공급자 선택 | [app.js](public/app.js)의 `saveProxyProfile()`에서 [preload.js](electron/preload.js)와 [main.js](electron/main.js)를 거쳐 [credential-store.js](electron/credential-store.js)의 `saveProxy()`를 호출합니다. 등록 정보는 사용자 설정 폴더의 `credentials.bin`에 암호화해 저장합니다. |
+| Decodo·DataImpulse 세션 설정 | [collection-proxy.js](src/utils/collection-proxy.js)의 `createCollectionProxy()`에서 공급자와 회전·스티키 연결을 구성합니다. 작업 도중 같은 계정으로 로그인하고 중단된 페이지를 다시 읽는 코드는 [lifecycle-connection.js](src/malls/cheonyu/lifecycle-connection.js)에 있습니다. |
+| 운송장 계정과 전송 작업 | [shipping-accounts.js](public/shipping-accounts.js)가 별도 설정 화면을 관리하고, [credential-store.js](electron/credential-store.js)가 운송장 계정을 저장합니다. 정기 실행과 전송은 [shipping-scheduler.js](src/shipping-scheduler.js)를 확인합니다. |
+
+## 7. 코드 변경 후 확인
 
 ```powershell
 npm run check
 ```
 
-바코드·옵션 재고, 상품 전송 대기 복구·60분 재시도, 전송 로그 기록·정리는 다음 테스트로 검증할 수 있습니다.
+새 수집과 계정 등록을 수정했다면 관련 테스트부터 실행합니다.
+
+```powershell
+node --test tests/lifecycle-collection.test.js tests/lifecycle-workflows.test.js tests/product-changes.test.js tests/new-product-options-workflow.test.js tests/sticky-session-monitor.test.js tests/test-account-signup.test.js
+```
+
+바코드·옵션 재고, 상품 전송 대기 복구·60분 재시도, 전송 로그 기록·정리를 포함한 전체 테스트는 다음 명령으로 실행합니다.
 
 ```powershell
 npm test

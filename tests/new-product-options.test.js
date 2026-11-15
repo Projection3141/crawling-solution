@@ -26,7 +26,7 @@ const products = [
 ];
 
 function fixture({ rows = [baselineRow], onSubmit, popupRows = options, barcode = "8801234567890", targets = products,
-  preflight, quantity = 1 } = {}) {
+  preflight, quantity = 1, cartOptionText = "A/B", cartQuantity = 1 } = {}) {
   let cart = rows.map(row => ({ ...row }));
   let submissions = 0;
   const deletes = [];
@@ -64,7 +64,7 @@ function fixture({ rows = [baselineRow], onSubmit, popupRows = options, barcode 
       if (!await post(`stepCode=6&cartCode=&addStr=group66@@101,${quantity}`)) throw new Error("request aborted");
       submissions++;
       cart.push({ cartCheckId: `added-${submissions}`, productId: "66",
-        requestedQty: 1, optionText: "A/B", barcode });
+        requestedQty: cartQuantity, optionText: cartOptionText, barcode });
       await onSubmit?.(submissions);
       return { pageResults: [{ bulkResult: { excludedProductIds: [], popupOptionRows: popupRows } }] };
     },
@@ -97,6 +97,21 @@ test("collects the verified option barcode and preserves unrelated existing cart
   assert.deepEqual(f.deletes, ["added-1"]);
   assert.deepEqual(f.cart, [baselineRow]);
   assert.equal(f.read.hasPendingCart(), false);
+});
+
+test("matches distinct detail, popup, and cart labels using the detail stock note", async () => {
+  const f = fixture({
+    targets: [{ productId: "66", detailOptions: [
+      { optionId: "101", optionName: "3 실버하트 (현 재고 3개)" },
+      { optionId: "102", optionName: "품절" },
+    ] }],
+    popupRows: [{ ...options[0], optionText: "3 실버하트 (3개)" }, options[1]],
+    cartOptionText: "3 실버하트",
+  });
+  const result = await f.read({});
+  assert.equal(result.inventoryItems.find(row => row.optionId === "101").barcode, "8801234567890");
+  assert.deepEqual(f.deletes, ["added-1"]);
+  assert.deepEqual(f.cart, [baselineRow]);
 });
 
 test("does not add a product already present in the account's cart", async () => {
@@ -134,6 +149,42 @@ test("an ambiguous option label aborts before any cart write", async () => {
   await assert.rejects(f.read({}), /고유하게 대조/);
   assert.equal(f.submissions, 0);
   assert.equal(f.read.hasPendingCart(), false);
+});
+
+test("two option IDs sharing a detail label after removing the stock note abort before any cart write", async () => {
+  const f = fixture({
+    popupRows: [options[0], { ...options[0], optionId: "102", submitOptionId: "102", optionText: "품절 (3개)" }],
+    targets: [{ productId: "66", detailOptions: [
+      { optionId: "101", optionName: "A/B" },
+      { optionId: "102", optionName: "A/B (현 재고 3개)" },
+    ] }],
+  });
+  await assert.rejects(f.read({}), /고유하게 대조/);
+  assert.equal(f.submissions, 0);
+  assert.equal(f.read.hasPendingCart(), false);
+  assert.deepEqual(f.cart, [baselineRow]);
+});
+
+test("an unmatched cart label or quantity is reported without deleting cart rows", async () => {
+  for (const [cartFields, reason] of [
+    [{ cartOptionText: "알 수 없는 옵션" }, "CART_OPTION_LABEL_MISMATCH"],
+    [{ cartOptionText: "A", targets: [{ productId: "66", detailOptions: [
+      { optionId: "101", optionName: "A (3개)" },
+    ] }] }, "CART_OPTION_LABEL_MISMATCH"],
+    [{ cartQuantity: 2 }, "CART_OPTION_QUANTITY_MISMATCH"],
+  ]) {
+    const f = fixture({ ...cartFields, popupRows: [{ ...options[0], optionText: "A / B (3개)" }, options[1]] });
+    await assert.rejects(f.read({}), error => {
+      assert.equal(error.code, "CART_CLEANUP_INCOMPLETE");
+      assert.equal(error.details.reason, reason);
+      assert.equal(error.details.productId, "66");
+      return true;
+    });
+    assert.equal(f.submissions, 1);
+    assert.equal(f.read.hasPendingCart(), true);
+    assert.deepEqual(f.deletes, []);
+    assert.deepEqual(f.cart.map(row => row.cartCheckId), ["existing", "added-1"]);
+  }
 });
 
 test("a missing barcode fails the collection after removing only the owned row", async () => {

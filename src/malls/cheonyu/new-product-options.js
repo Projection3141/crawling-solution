@@ -1,6 +1,8 @@
 const { throwIfAborted } = require("../../utils/common");
 const { sleepWithSignal } = require("../../utils/site-safety");
 const { isRecoverableStickySessionError, isTerminalStickyConnectionError } = require("../../utils/collection-failure");
+const { describeDiagnosticPage, recordDiagnostic } = require("../../utils/collection-diagnostics");
+const { normalizeStockStatus } = require("../../utils/inventory");
 const { addProductsFromListPagesToCart, parseLoginState } = require("./site");
 const { clearCartByCartIds, parseCartHtml, readCartHtml } = require("./cart");
 const {
@@ -78,9 +80,9 @@ function isCartHandshake(data, eligible) {
     ids.every(id => eligible.has(id)) && counts.every(count => count === "1");
 }
 
-function cleanupError(cause) {
+function cleanupError(reason, details = {}, cause) {
   return Object.assign(new Error("새 상품 수집에서 추가한 장바구니 행의 정리를 확인하지 못했습니다. 장바구니를 확인하세요.", { cause }),
-    { code: "CART_CLEANUP_INCOMPLETE", retryable: false });
+    { code: "CART_CLEANUP_INCOMPLETE", retryable: false, details: { reason, ...details } });
 }
 
 function checkedCartRows(rows) {
@@ -88,7 +90,11 @@ function checkedCartRows(rows) {
   for (const row of rows) {
     const id = cartRowId(row);
     if (!id || !row.productId || byId.has(id)) {
-      throw cleanupError();
+      throw cleanupError("INVALID_CART_ROW_IDENTITY", {
+        productId: row.productId,
+        hasCartRowId: Boolean(id),
+        duplicateCartRowId: byId.has(id),
+      });
     }
     byId.set(id, row);
   }
@@ -96,21 +102,37 @@ function checkedCartRows(rows) {
 }
 
 function findOwnedRows(current, before, pending) {
-  const pendingProducts = new Set(Array.from(pending.values(), row => String(row.productId)));
   for (const [id, previous] of before) {
     const row = current.get(id);
     if (!row || cartKey(row) !== cartKey(previous) || row.requestedQty !== previous.requestedQty) {
-      throw cleanupError();
+      throw cleanupError("EXISTING_CART_ROW_CHANGED", {
+        productId: previous.productId, expectedQuantity: previous.requestedQty, cartQuantity: row?.requestedQty,
+      });
     }
+  }
+  const pendingProducts = new Set();
+  const optionByCartKey = new Map();
+  for (const [key, option] of pending) {
+    pendingProducts.add(String(option.productId));
+    for (const nameKey of option.cartMatchKeys) optionByCartKey.set(nameKey, key);
   }
   const owned = new Map();
   for (const [id, row] of current) {
     if (before.has(id) || !pendingProducts.has(String(row.productId))) continue;
-    const key = cartKey(row);
+    const key = optionByCartKey.get(cartKey(row));
     const expected = pending.get(key);
-    if (!expected || row.requestedQty !== expected.requestedQty || owned.has(key)) {
-      throw cleanupError();
-    }
+    if (!expected) throw cleanupError("CART_OPTION_LABEL_MISMATCH", {
+      productId: row.productId, cartOption: row.optionText,
+      expectedOptions: Array.from(pending.values()).filter(item => String(item.productId) === String(row.productId))
+        .map(({ optionId, optionText, detailOption }) => ({ optionId, popupOption: optionText, detailOption })),
+    });
+    if (row.requestedQty !== expected.requestedQty) throw cleanupError("CART_OPTION_QUANTITY_MISMATCH", {
+      productId: row.productId, optionId: expected.optionId, cartOption: row.optionText,
+      expectedQuantity: expected.requestedQty, cartQuantity: row.requestedQty,
+    });
+    if (owned.has(key)) throw cleanupError("DUPLICATE_CART_OPTION_ROW", {
+      productId: row.productId, optionId: expected.optionId, cartOption: row.optionText,
+    });
     owned.set(key, row);
   }
   return owned;
@@ -154,14 +176,14 @@ function createNewProductOptionProbe(config, { listUrl, sourcePage, products, on
     throwIfAborted(connection.signal);
   }
 
-  async function readCart(connection) {
+  async function readCart(connection, { observeStock = false } = {}) {
     await checkActive(connection);
-    const html = await readCartHtml(connection.page, cartConfig);
+    const html = await readCartHtml(connection.page, cartConfig, { observeStock });
     if (!parseLoginState(html).loggedIn) {
       throw Object.assign(new Error("장바구니에서 천유 로그인 상태를 확인하지 못했습니다."),
         { code: "CHEONYU_LOGIN_REQUIRED" });
     }
-    return checkedCartRows(parseCartHtml(html, cartConfig, { requireTable: true }));
+    return checkedCartRows(parseCartHtml(html, cartConfig, { requireTable: true, observeStock }));
   }
 
   async function cleanup(connection, current) {
@@ -175,7 +197,10 @@ function createNewProductOptionProbe(config, { listUrl, sourcePage, products, on
     if (owned.size) {
       await checkActive(connection);
       await clearCartByCartIds(connection.context, Array.from(owned.values(), cartRowId), cartConfig);
-      if (findOwnedRows(await readCart(connection), baseline, pending).size) throw cleanupError();
+      const remaining = findOwnedRows(await readCart(connection), baseline, pending);
+      if (remaining.size) throw cleanupError("CART_ROWS_REMAIN_AFTER_DELETE", {
+        remainingCount: remaining.size,
+      });
     }
     pending.clear();
   }
@@ -189,17 +214,28 @@ function createNewProductOptionProbe(config, { listUrl, sourcePage, products, on
 
   function rememberSubmission(ids, popupRows) {
     const observed = new Map();
-    const options = new Set();
+    const usedCartKeys = new Set(Array.from(pending.values()).flatMap(row => row.cartMatchKeys));
     const submitted = new Set(ids.map(String));
     const valid = popupRows.length > 0 && popupRows.every(row => {
-      const id = String(row.productId);
-      const key = cartKey(row);
       const identity = optionKey(row);
-      if (!submitted.has(id) || !isIdentifiedOption(row) || !row.complete ||
+      if (!submitted.has(String(row.productId)) || !isIdentifiedOption(row) || !row.complete ||
           !row.optionText || row.requestedQty !== 1 ||
-          pending.has(key) || observed.has(key) || options.has(identity)) return false;
-      observed.set(key, row);
-      options.add(identity);
+          pending.has(identity) || observed.has(identity)) return false;
+
+      // The cart may omit the stock note attached to this option on the detail page.
+      const detail = hints.get(identity);
+      const cartMatchKeys = new Set([cartKey(row)]);
+      if (detail?.optionText) {
+        cartMatchKeys.add(cartKey(detail));
+        const name = String(detail.optionText).normalize("NFKC")
+          .replace(/\s*\(\s*현\s*재고\s*\d+(?:,\d{3})*\s*개\s*\)\s*$/, "").trim();
+        if (name) cartMatchKeys.add(createCartOptionMatchKey(detail.productId, name));
+      }
+      for (const key of cartMatchKeys) {
+        if (usedCartKeys.has(key)) return false;
+        usedCartKeys.add(key);
+      }
+      observed.set(identity, { ...row, cartMatchKeys: [...cartMatchKeys], detailOption: detail?.optionText });
       return true;
     });
     if (!valid || new Set(popupRows.map(row => String(row.productId))).size !== submitted.size) {
@@ -285,18 +321,30 @@ function createNewProductOptionProbe(config, { listUrl, sourcePage, products, on
       let owned = new Map();
       for (let attempt = 0; pending.size && attempt < 3; attempt++) {
         if (attempt) await sleepWithSignal(500, connection.signal);
-        cart = await readCart(connection);
+        cart = await readCart(connection, { observeStock: true });
         owned = findOwnedRows(cart, baseline, pending);
         if (owned.size === pending.size) break;
       }
       const cartInventory = [];
       for (const [key, popup] of pending) {
         const row = owned.get(key);
-        const inventory = byOption.get(optionKey(popup));
+        const inventory = byOption.get(key);
         if (!row || !inventory || !/^\d{13}$/.test(String(row.barcode || ""))) {
           throw new Error(`상품 ${popup.productId} 옵션 ${popup.optionId}의 장바구니 바코드를 확인하지 못했습니다.`);
         }
-        cartInventory.push({ ...inventory, barcode: row.barcode, rowSource: "cart" });
+        const latestStock = row.observedMaxStock;
+        const stock = latestStock == null ? {} : {
+          maxStock: latestStock,
+          isSoldOut: latestStock === 0,
+          stockLimited: row.requestedQty > latestStock,
+          stockStatus: normalizeStockStatus({ maxStock: latestStock, stockLimited: row.requestedQty > latestStock,
+            lowStockThreshold: config.lowStockThreshold }),
+        };
+        if (latestStock != null && latestStock !== inventory.maxStock) {
+          recordDiagnostic("new-product-cart-stock-changed", { ...describeDiagnosticPage(connection.page), sourcePage,
+            productId: row.productId, optionId: popup.optionId, popupStock: inventory.maxStock, cartStock: latestStock });
+        }
+        cartInventory.push({ ...inventory, ...stock, barcode: row.barcode, rowSource: "cart" });
       }
       await cleanup(connection, cart);
       const merged = mergeCheonyuDetailInventoryItems(popupInventory, cartInventory);
@@ -305,17 +353,25 @@ function createNewProductOptionProbe(config, { listUrl, sourcePage, products, on
         popupOptionItems };
       return completed;
     } catch (error) {
+      let failure = error;
       if (pending.size && !connection.signal?.aborted && !isRecoverableStickySessionError(error) &&
           !isTerminalStickyConnectionError(error)) {
         try {
           await cleanup(connection);
-        } catch (failure) {
-          if (connection.signal?.aborted || isRecoverableStickySessionError(failure) ||
-              isTerminalStickyConnectionError(failure)) throw failure;
-          throw cleanupError(failure);
+        } catch (cleanupFailure) {
+          if (connection.signal?.aborted || isRecoverableStickySessionError(cleanupFailure) ||
+              isTerminalStickyConnectionError(cleanupFailure)) throw cleanupFailure;
+          failure = cleanupFailure?.code === "CART_CLEANUP_INCOMPLETE"
+            ? cleanupFailure
+            : cleanupError("CART_CLEANUP_FAILED", {}, cleanupFailure);
         }
       }
-      throw error;
+      if (failure?.code === "CART_CLEANUP_INCOMPLETE") {
+        recordDiagnostic("new-product-cart-cleanup-failed", {
+          ...describeDiagnosticPage(connection.page), sourcePage, ...failure.details, error: failure.cause,
+        });
+      }
+      throw failure;
     }
   }
 

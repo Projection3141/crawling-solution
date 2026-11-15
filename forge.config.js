@@ -25,6 +25,7 @@ module.exports = {
       /[\\/]out([\\/]|$)/,
       /[\\/]release([\\/]|$)/,
       /[\\/]scripts([\\/]|$)/,
+      /^[\\/]tests([\\/]|$)/,
     ],
     win32metadata: {
       CompanyName: "Your Company",

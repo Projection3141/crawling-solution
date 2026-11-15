@@ -35,9 +35,10 @@ const CHEONYU_CART = {
     message: "#msgDiv",
   },
 };
+const STOCK_ADJUSTMENT_TABLE = "#popContent .cart_err_pop table.poptb";
 
 /** 천유 장바구니의 렌더링 완료 HTML을 읽는다. */
-async function readCartHtml(page, config) {
+async function readCartHtml(page, config, { observeStock = false } = {}) {
   const url = new URL(CHEONYU_CART.urls.cart, config.baseUrl).toString();
   const response = await page.goto(url, {
     waitUntil: "domcontentloaded",
@@ -55,7 +56,31 @@ async function readCartHtml(page, config) {
     .catch(() => null);
 
   await sleep(config.collectionMode === "general" ? 350 : 1500);
+  if (observeStock) {
+    await page.waitForFunction(({ cartRows, adjustmentTable }) =>
+      !document.querySelector(cartRows) || typeof window.GetInfoComplete === "undefined" ||
+      (window.GetInfoComplete === 1 && (!window.isOver || document.querySelector(adjustmentTable))),
+    { cartRows: CHEONYU_CART.selectors.row, adjustmentTable: STOCK_ADJUSTMENT_TABLE },
+    { timeout: config.navigationTimeoutMs });
+  }
   return page.content();
+}
+
+function readStockQuantity(value) {
+  const text = String(value ?? "").trim();
+  const quantity = Number(text);
+  return /^\d+$/.test(text) && Number.isSafeInteger(quantity) ? quantity : null;
+}
+
+function readStockAdjustments($) {
+  const quantities = new Map();
+  $(`${STOCK_ADJUSTMENT_TABLE} tr[id='cartListOver']`).each((_, element) => {
+    const row = $(element);
+    const id = row.find("input[id='inPIDXOver']").attr("value");
+    const stock = readStockQuantity(row.find("input[id='inMaxStockOver']").attr("value"));
+    if (id) quantities.set(id, quantities.has(id) ? null : stock);
+  });
+  return quantities;
 }
 
 /** 장바구니 HTML을 옵션 상세 재고 row로 변환한다. */
@@ -64,11 +89,13 @@ function parseCartHtml(
   config,
   {
     requireTable = false,
+    observeStock = false,
   } = {},
 ) {
   const $ = cheerio.load(html);
   const selectors = CHEONYU_CART.selectors;
   const collectDetailFields = config.collectionMode === "detail";
+  const stockAdjustments = observeStock ? readStockAdjustments($) : null;
   const items = [];
 
   if (requireTable && $(selectors.table).length < 1) {
@@ -124,9 +151,8 @@ function parseCartHtml(
     const requestedQty = toNumber(
       item.find(selectors.requestedQty).first().attr("value"),
     );
-    const maxStock = toNumber(
-      item.find(selectors.maxStock).first().attr("value"),
-    );
+    const rawMaxStock = item.find(selectors.maxStock).first().attr("value");
+    const maxStock = toNumber(rawMaxStock);
     const porderMinus =
       item.find(selectors.porderMinus).first().attr("value") || "";
     /**
@@ -171,6 +197,9 @@ function parseCartHtml(
       submitOptionId: "",
       requestedQty,
       maxStock,
+      ...(observeStock ? {
+        observedMaxStock: stockAdjustments.get(inPIDX || cartCheckId) ?? readStockQuantity(rawMaxStock),
+      } : {}),
       stockStatus,
       stockLimited,
       porderMinus,

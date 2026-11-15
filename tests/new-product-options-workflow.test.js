@@ -21,7 +21,11 @@ const { getRecentMonths } = require("../src/malls/cheonyu/lifecycle-collection")
 const existingId = "97001";
 const singleId = "97002";
 const optionId = "97003";
+const detailOptionName = "3 실버하트";
+const popupOptionName = `${detailOptionName} (3개)`;
 const cartBarcode = "0012345678901";
+const starName = "5. 실버스타";
+const starBarcode = "0012345678902";
 const representativeBarcode = "8800000012345";
 const home = '<a href="/product/news.html"><img alt="신상품 더보기"></a>';
 const logout = '<a href="/member/logout.html">로그아웃</a>';
@@ -48,8 +52,9 @@ function listProduct(id) {
 
 function detail(id) {
   const options = id === optionId ? `<div class="option_wrap"><table id="opSelectedList"><tbody>
-    <tr><td><input type="checkbox" id="optionCHK" value="11" disabled></td><td class="option_txt">파랑</td></tr>
+    <tr><td><input type="checkbox" id="optionCHK" value="11" disabled></td><td class="option_txt">${detailOptionName} (현 재고 3개)</td></tr>
     <tr><td><input type="checkbox" id="optionCHK" value="12" disabled></td><td class="option_txt">빨강</td></tr>
+    <tr><td><input type="checkbox" id="optionCHK" value="13" disabled></td><td class="option_txt">${starName} (현 재고 5개)</td></tr>
     </tbody></table></div>` : "";
   return `<div id="productView"><div class="info_wrap"><div class="pdt_name"><span>상품 ${id}</span></div></div>
     <div class="pdt-top-info"><span class="info-number">${id}</span><span class="info-number">${representativeBarcode}</span></div>
@@ -71,7 +76,7 @@ function newsPage(loggedIn, prematureSubmit) {
   const popup = `<div class="many_add" data-product-id="${optionId}">
     <div class="subject"><p>상품 ${optionId}</p></div><table id="opSelectedList"><tbody>
       <tr><td><input type="hidden" id="inIDXPOP" value="fixture-group"></td></tr>
-      ${popupRow("11", "파랑", 7)}${popupRow("12", "빨강", 0)}
+      ${popupRow("11", popupOptionName, 3)}${popupRow("12", "빨강", 0)}${popupRow("13", `${starName} (5개)`, 5)}
     </tbody></table></div>`;
   return logout + list + `<button class="all_add_btn" onclick="showPopup()">옵션 확인</button>
     <div id="popups"></div><script>
@@ -101,7 +106,7 @@ function newsPage(loggedIn, prematureSubmit) {
 function cartRow({ id, cartId, name = "", barcode, quantity, maxStock }) {
   return `<tr class="tr-nth"><td>
     <input name="cartCheck" id="cartCheck" value="${cartId}">
-    <input name="inPIDX" id="inPIDX" value="${id}">
+    <input name="inPIDX" id="inPIDX" value="${cartId}">
     <div class="product_dsc"><a class="c" href="/product/view.html?qIDX=${id}">상품 ${id}</a></div>
     <span class="dtfont-pd">상품번호 [ ${id} ] ${barcode}</span>
     <ul class="option_list">${name ? `<li>${name}</li>` : ""}</ul>
@@ -109,6 +114,21 @@ function cartRow({ id, cartId, name = "", barcode, quantity, maxStock }) {
     <input name="inMaxStock" id="inMaxStock" value="${maxStock}">
     <input id="inOnePrice" value="4300">
   </td></tr>`;
+}
+
+function cartStockAdjustment(cart) {
+  const affectedIds = ["cart-existing", "cart-added"].filter(id => cart.has(id));
+  const rows = affectedIds.map(id => `<tr id="cartListOver"><td>
+    <input id="inPIDXOver" value="${id}"><input id="inMaxStockOver" value="0">
+    <input id="inPcountOver" value="${cart.get(id).quantity}">
+  </td></tr>`).join("");
+  const popup = `<div class="cart_err_pop">주문 수량이 현재 재고보다 초과되었습니다.
+    <table class="poptb">${rows}</table></div>`;
+  return `<div id="popContent"></div><script>
+    window.GetInfoComplete = 1;
+    window.isOver = 1;
+    setTimeout(() => document.querySelector('#popContent').innerHTML = ${JSON.stringify(popup)}, 1750);
+  </script>`;
 }
 
 function fixture({ prematureSubmit = false } = {}) {
@@ -133,9 +153,11 @@ function fixture({ prematureSubmit = false } = {}) {
         assert.equal(index, 1);
         assert.equal(loggedIn, true);
         assert.equal(new URL(url).pathname, "/order/ajaxCart.php");
-        assert.deepEqual(form, { mode: "delete", qIDX: "cart-added" });
-        deletes.push(form.qIDX);
-        cart.delete(form.qIDX);
+        assert.deepEqual(form, { mode: "delete", qIDX: "cart-added,cart-added-star" });
+        for (const id of form.qIDX.split(",")) {
+          deletes.push(id);
+          cart.delete(id);
+        }
         return { ok: () => true, status: () => 200, text: async () => "ok" };
       };
       await context.route("**/*", async route => {
@@ -165,17 +187,19 @@ function fixture({ prematureSubmit = false } = {}) {
         } else if (url.pathname === "/order/cart.html") {
           assert.equal(index, 1);
           assert.equal(loggedIn, true);
-          body = logout + `<table id="cartTable">${Array.from(cart.values(), cartRow).join("")}</table>`;
+          body = logout + `<table id="cartTable">${Array.from(cart.values(), cartRow).join("")}</table>` + cartStockAdjustment(cart);
         } else if (url.pathname === "/order/ajaxCartAddCheck.php") {
           assert.equal(index, 1);
           assert.equal(loggedIn, true);
           assert.equal(request.method(), "POST");
           const form = Object.fromEntries(new URLSearchParams(request.postData()));
           if (form.stepCode === "6") {
-            assert.deepEqual(form, { stepCode: "6", cartCode: "", addStr: "fixture-group@@11,1" });
+            assert.deepEqual(form, { stepCode: "6", cartCode: "", addStr: "fixture-group@@11,1|13,1" });
             submits.push({ products: selectedProducts, optionData: form.addStr });
-            cart.set("cart-added", { id: optionId, cartId: "cart-added", name: "파랑",
-              barcode: cartBarcode, quantity: 1, maxStock: 7 });
+            cart.set("cart-added", { id: optionId, cartId: "cart-added", name: detailOptionName,
+              barcode: cartBarcode, quantity: 1, maxStock: 3 });
+            cart.set("cart-added-star", { id: optionId, cartId: "cart-added-star", name: starName,
+              barcode: starBarcode, quantity: 1, maxStock: 2 });
           } else {
             assert.deepEqual(form, { inIDX: optionId, inCount: "1" });
             selectedProducts = form.inIDX.split(",");
@@ -201,12 +225,13 @@ function assertOptionProduct(product) {
   assert.equal(product.wholesalePrice, null);
   assert.deepEqual(product.options.map(({ id, nameKo, barcode, stockQuantity, status }) =>
     ({ id, nameKo, barcode, stockQuantity, status })), [
-    { id: "11", nameKo: "파랑", barcode: cartBarcode, stockQuantity: 7, status: "ON_SALE" },
+    { id: "11", nameKo: popupOptionName, barcode: cartBarcode, stockQuantity: 0, status: "SOLD_OUT" },
     { id: "12", nameKo: "빨강", barcode: null, stockQuantity: 0, status: "SOLD_OUT" },
+    { id: "13", nameKo: `${starName} (5개)`, barcode: starBarcode, stockQuantity: 2, status: "ON_SALE" },
   ]);
 }
 
-test("new options wait for a cart account, then a separate sticky session saves verified option rows", async () => {
+test("new options match all three labels and save the latest cart stock when a shortage popup opens", async () => {
   const guest = fixture();
   const pending = await runCollection(config(), { runId: "option-pending", browserType: guest.browserType });
   assert.deepEqual(pending.payload.products.map(product => product.id), [singleId]);
@@ -250,12 +275,13 @@ test("new options wait for a cart account, then a separate sticky session saves 
   assert.equal(authenticated.requests.filter(request => request.pathname === "/member/loginResult.html").length, 1);
   assert.ok(authenticated.requests.filter(request => request.index === 0)
     .every(request => !request.loggedIn && !/member|order/.test(request.pathname)));
-  assert.deepEqual(authenticated.submits, [{ products: [optionId], optionData: "fixture-group@@11,1" }]);
-  assert.deepEqual(authenticated.deletes, ["cart-added"]);
+  assert.deepEqual(authenticated.submits, [{ products: [optionId], optionData: "fixture-group@@11,1|13,1" }]);
+  assert.deepEqual(authenticated.deletes, ["cart-added", "cart-added-star"]);
   assert.deepEqual(Array.from(authenticated.cart.keys()), ["cart-existing"]);
+  assert.equal(authenticated.cart.get("cart-existing").quantity, 3);
 
   assert.equal(result.payload.summary.optionPendingCount, 0);
-  assert.equal(result.payload.summary.optionBarcodeCount, 1);
+  assert.equal(result.payload.summary.optionBarcodeCount, 2);
   assertOptionProduct(result.payload.products[0]);
   assertOptionProduct(checkpointResult[0]);
   const archived = (await readProductArchive()).products[`cheonyu:${optionId}`];
