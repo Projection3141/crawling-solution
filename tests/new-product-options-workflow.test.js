@@ -21,6 +21,12 @@ const { getRecentMonths } = require("../src/malls/cheonyu/lifecycle-collection")
 const existingId = "97001";
 const singleId = "97002";
 const optionId = "97003";
+const reviewOptionId = "97004";
+const laterOptionId = "97005";
+const samePageOptionId = "97006";
+const ambiguousOptionId = "97007";
+const allExcludedOptionId = "97008";
+const unmatchedName = "현장에서 변경한 옵션명";
 const detailOptionName = "3 실버하트";
 const popupOptionName = `${detailOptionName} (3개)`;
 const cartBarcode = "0012345678901";
@@ -51,10 +57,11 @@ function listProduct(id) {
 }
 
 function detail(id) {
-  const options = id === optionId ? `<div class="option_wrap"><table id="opSelectedList"><tbody>
+  const starDetailName = [ambiguousOptionId, allExcludedOptionId].includes(id) ? detailOptionName : starName;
+  const options = id !== singleId ? `<div class="option_wrap"><table id="opSelectedList"><tbody>
     <tr><td><input type="checkbox" id="optionCHK" value="11" disabled></td><td class="option_txt">${detailOptionName} (현 재고 3개)</td></tr>
     <tr><td><input type="checkbox" id="optionCHK" value="12" disabled></td><td class="option_txt">빨강</td></tr>
-    <tr><td><input type="checkbox" id="optionCHK" value="13" disabled></td><td class="option_txt">${starName} (현 재고 5개)</td></tr>
+    <tr><td><input type="checkbox" id="optionCHK" value="13" disabled></td><td class="option_txt">${starDetailName} (현 재고 5개)</td></tr>
     </tbody></table></div>` : "";
   return `<div id="productView"><div class="info_wrap"><div class="pdt_name"><span>상품 ${id}</span></div></div>
     <div class="pdt-top-info"><span class="info-number">${id}</span><span class="info-number">${representativeBarcode}</span></div>
@@ -70,16 +77,24 @@ function popupRow(id, name, quantity) {
   </td></tr>`;
 }
 
-function newsPage(loggedIn, prematureSubmit) {
-  const list = `<div id="sub_list"><ul>${[existingId, singleId, optionId].map(listProduct).join("")}</ul></div>`;
+function cartGroupId(id) {
+  return id === optionId ? "fixture-group" : `fixture-group-${id}`;
+}
+
+function newsPage(loggedIn, prematureSubmit, { products, pagination }) {
+  const list = `<div id="sub_list"><ul>${products.map(listProduct).join("")}</ul></div>${pagination}`;
   if (!loggedIn) return list;
-  const popup = `<div class="many_add" data-product-id="${optionId}">
-    <div class="subject"><p>상품 ${optionId}</p></div><table id="opSelectedList"><tbody>
-      <tr><td><input type="hidden" id="inIDXPOP" value="fixture-group"></td></tr>
-      ${popupRow("11", popupOptionName, 3)}${popupRow("12", "빨강", 0)}${popupRow("13", `${starName} (5개)`, 5)}
-    </tbody></table></div>`;
+  const discardOnly = products.includes(allExcludedOptionId);
+  const popups = Object.fromEntries(products.filter(id => id !== singleId && id !== existingId).map(id => [id,
+    `<div class="many_add" data-product-id="${id}">
+      <div class="subject"><p>상품 ${id}</p></div><table id="opSelectedList"><tbody>
+        <tr><td><input type="hidden" id="inIDXPOP" value="${cartGroupId(id)}"></td></tr>
+        ${popupRow("11", popupOptionName, 3)}${popupRow("12", "빨강", 0)}${popupRow("13", `${starName} (5개)`, 5)}
+      </tbody></table></div>`,
+  ]));
   return logout + list + `<button class="all_add_btn" onclick="showPopup()">옵션 확인</button>
     <div id="popups"></div><script>
+      const popups = ${JSON.stringify(popups)};
       const checkedProducts = () => [...document.querySelectorAll('input[name=inPcheck]:checked')].map(input => input.value);
       const post = form => fetch('/order/ajaxCartAddCheck.php', { method: 'POST', body: new URLSearchParams(form) });
       const submit = addStr => post({ stepCode: '6', cartCode: '', addStr });
@@ -90,14 +105,22 @@ function newsPage(loggedIn, prematureSubmit) {
         } else {
           await post({ inIDX: products.join(','), inCount: products.map(() => '1').join(',') });
         }
-        document.querySelector('#popups').innerHTML = ${JSON.stringify(popup)};
+        document.querySelector('#popups').innerHTML = products.map(id => popups[id]).join('');
       };
-      window.closeCartIn = () => { document.querySelector('#popups').innerHTML = ''; };
+      const hidePopup = () => { document.querySelector('#popups').innerHTML = ''; };
+      window.closeCartIn = () => {
+        if (${discardOnly} && document.querySelector('.many_add') && !confirm('선택한 옵션을 취소할까요?')) return;
+        hidePopup();
+      };
+      if (${discardOnly}) window.disablePopup = hidePopup;
       window.setOption = async () => {
-        const selected = [...document.querySelectorAll('tr[id=inOptionTR]')].filter(row =>
-          row.querySelector('input[id=optionCHKPOP]').checked);
-        const data = selected.map(row => [row.querySelector('input[id=inOPidx]').value, row.querySelector('input[id=inOPcount]').value].join(','));
-        await submit(document.querySelector('input[id=inIDXPOP]').value + '@@' + data.join('|'));
+        const groups = [...document.querySelectorAll('.many_add')].map(popup => {
+          const selected = [...popup.querySelectorAll('tr[id=inOptionTR]')].filter(row =>
+            row.querySelector('input[id=optionCHKPOP]').checked);
+          const data = selected.map(row => [row.querySelector('input[id=inOPidx]').value, row.querySelector('input[id=inOPcount]').value].join(','));
+          return popup.querySelector('input[id=inIDXPOP]').value + '@@' + data.join('|');
+        });
+        await submit(groups.join('##'));
         window.closeCartIn();
       };
     </script>`;
@@ -117,7 +140,7 @@ function cartRow({ id, cartId, name = "", barcode, quantity, maxStock }) {
 }
 
 function cartStockAdjustment(cart) {
-  const affectedIds = ["cart-existing", "cart-added"].filter(id => cart.has(id));
+  const affectedIds = Array.from(cart.keys()).filter(id => !id.endsWith("-star"));
   const rows = affectedIds.map(id => `<tr id="cartListOver"><td>
     <input id="inPIDXOver" value="${id}"><input id="inMaxStockOver" value="0">
     <input id="inPcountOver" value="${cart.get(id).quantity}">
@@ -131,9 +154,17 @@ function cartStockAdjustment(cart) {
   </script>`;
 }
 
-function fixture({ prematureSubmit = false } = {}) {
+function fixture({ prematureSubmit = false, reviewMismatch = false } = {}) {
   const [currentMonth] = getRecentMonths();
-  const contexts = [], requests = [], submits = [], deletes = [], unexpected = [];
+  const pagination = `<div class="pagination"><a href="?cateIDX=ALL&amp;searchDate=${currentMonth}&amp;page=3">3</a></div>`;
+  const pages = reviewMismatch ? new Map([
+    ["1", { products: [reviewOptionId, samePageOptionId, ambiguousOptionId], pagination }],
+    ["2", { products: [laterOptionId], pagination: "" }],
+    ["3", { products: [allExcludedOptionId], pagination: "" }],
+  ]) : new Map([
+    ["1", { products: [existingId, singleId, optionId], pagination: "" }],
+  ]);
+  const contexts = [], requests = [], submits = [], deletes = [], unexpected = [], dialogs = [];
   const cart = new Map([["cart-existing", {
     id: "97999", cartId: "cart-existing", barcode: "8800000097999", quantity: 3, maxStock: 40,
   }]]);
@@ -142,6 +173,7 @@ function fixture({ prematureSubmit = false } = {}) {
     return { close: () => browser.close(), async newContext(options) {
       const index = contexts.push(options) - 1;
       const context = await browser.newContext({ ...options, proxy: undefined });
+      context.on("dialog", dialog => { dialogs.push(dialog.message()); });
       let loggedIn = false;
       let selectedProducts = [];
       context.request.get = async url => {
@@ -153,7 +185,7 @@ function fixture({ prematureSubmit = false } = {}) {
         assert.equal(index, 1);
         assert.equal(loggedIn, true);
         assert.equal(new URL(url).pathname, "/order/ajaxCart.php");
-        assert.deepEqual(form, { mode: "delete", qIDX: "cart-added,cart-added-star" });
+        assert.equal(form.mode, "delete");
         for (const id of form.qIDX.split(",")) {
           deletes.push(id);
           cart.delete(id);
@@ -169,7 +201,8 @@ function fixture({ prematureSubmit = false } = {}) {
         if (url.pathname === "/") body = loggedIn ? logout + home : home;
         else if (url.pathname === "/product/news.html") {
           assert.equal(url.searchParams.get("cateIDX"), "ALL");
-          body = url.searchParams.get("searchDate") === currentMonth ? newsPage(loggedIn, prematureSubmit)
+          body = url.searchParams.get("searchDate") === currentMonth
+            ? newsPage(loggedIn, prematureSubmit, pages.get(url.searchParams.get("page")))
             : '<div id="sub_list">등록된 상품이 없습니다.</div>';
         } else if (url.pathname === "/product/view.html") {
           assert.equal(index, 0);
@@ -194,15 +227,22 @@ function fixture({ prematureSubmit = false } = {}) {
           assert.equal(request.method(), "POST");
           const form = Object.fromEntries(new URLSearchParams(request.postData()));
           if (form.stepCode === "6") {
-            assert.deepEqual(form, { stepCode: "6", cartCode: "", addStr: "fixture-group@@11,1|13,1" });
+            const addStr = selectedProducts.map(id => `${cartGroupId(id)}@@${id === ambiguousOptionId ? "" : "11,1|13,1"}`).join("##");
+            assert.deepEqual(form, { stepCode: "6", cartCode: "", addStr });
             submits.push({ products: selectedProducts, optionData: form.addStr });
-            cart.set("cart-added", { id: optionId, cartId: "cart-added", name: detailOptionName,
-              barcode: cartBarcode, quantity: 1, maxStock: 3 });
-            cart.set("cart-added-star", { id: optionId, cartId: "cart-added-star", name: starName,
-              barcode: starBarcode, quantity: 1, maxStock: 2 });
+            for (const id of selectedProducts.filter(id => id !== ambiguousOptionId)) {
+              const cartId = id === optionId ? "cart-added" : `cart-${id}`;
+              cart.set(cartId, { id, cartId, name: detailOptionName,
+                barcode: cartBarcode, quantity: 1, maxStock: 3 });
+              const starId = `${cartId}-star`;
+              cart.set(starId, { id, cartId: starId, name: id === reviewOptionId ? unmatchedName : starName,
+                barcode: starBarcode, quantity: 1, maxStock: 2 });
+            }
           } else {
-            assert.deepEqual(form, { inIDX: optionId, inCount: "1" });
             selectedProducts = form.inIDX.split(",");
+            assert.ok(selectedProducts.every(id => [optionId, reviewOptionId, samePageOptionId, laterOptionId,
+              ambiguousOptionId, allExcludedOptionId].includes(id)));
+            assert.equal(form.inCount, selectedProducts.map(() => "1").join(","));
           }
           body = "ok";
         } else {
@@ -214,11 +254,11 @@ function fixture({ prematureSubmit = false } = {}) {
       return context;
     } };
   } };
-  return { browserType, contexts, requests, submits, deletes, cart, unexpected };
+  return { browserType, contexts, requests, submits, deletes, cart, unexpected, dialogs };
 }
 
-function assertOptionProduct(product) {
-  assert.equal(product.id, optionId);
+function assertOptionProduct(product, productId = optionId) {
+  assert.equal(product.id, productId);
   assert.equal(product.type, "OPTION");
   assert.equal(product.barcode, representativeBarcode);
   assert.equal(product.originalPrice, 12000);
@@ -292,4 +332,54 @@ test("new options match all three labels and save the latest cart stock when a s
   assert.equal(checkpointRows.find(row => row.optionId === "11").barcode, cartBarcode);
   assert.ok(checkpointRows.every(row => !Object.hasOwn(row, "onePrice") && !Object.hasOwn(row, "addPrice")));
   assert.match(fs.readFileSync(result.files.inventory, "utf8"), new RegExp(cartBarcode));
+});
+
+test("defer ambiguous and mismatched option labels and finish collecting the rest of the batch and the next page", async () => {
+  const scenario = fixture({ reviewMismatch: true });
+  const result = await runCollection(config({ accountId: "fixture-member", accountPw: "fixture-password" }), {
+    runId: "option-review", browserType: scenario.browserType,
+  });
+  assert.deepEqual(scenario.unexpected, []);
+  assert.deepEqual(scenario.dialogs, []);
+  assert.deepEqual(scenario.submits.map(({ products }) => products), [[reviewOptionId, samePageOptionId, ambiguousOptionId], [laterOptionId]]);
+  assert.ok(scenario.submits[0].optionData.split("##").includes(`${cartGroupId(ambiguousOptionId)}@@`));
+  assert.deepEqual(scenario.deletes, [`cart-${samePageOptionId}`, `cart-${samePageOptionId}-star`,
+    `cart-${laterOptionId}`, `cart-${laterOptionId}-star`]);
+  assert.deepEqual(Array.from(scenario.cart.keys()), ["cart-existing", `cart-${reviewOptionId}`, `cart-${reviewOptionId}-star`]);
+  assert.equal(scenario.cart.get("cart-existing").quantity, 3);
+  assert.equal(scenario.cart.get(`cart-${reviewOptionId}`).quantity, 1);
+  assert.equal(scenario.cart.get(`cart-${reviewOptionId}-star`).quantity, 1);
+
+  const { products, summary } = result.payload;
+  assert.deepEqual(products.map(product => product.id), [samePageOptionId, laterOptionId]);
+  assertOptionProduct(products[0], samePageOptionId);
+  assertOptionProduct(products[1], laterOptionId);
+  assert.equal(summary.optionPendingCount, 3);
+  assert.equal(summary.optionReviewCount, 3);
+  const reviewById = new Map(summary.optionReviewItems.map(item => [item.productId, item]));
+  const cartReview = reviewById.get(reviewOptionId);
+  assert.equal(cartReview.sourcePage, 1);
+  assert.equal(cartReview.cartRowsRemain, true);
+  const mismatch = cartReview.reasons.find(reason => reason.code === "CART_OPTION_LABEL_MISMATCH");
+  assert.equal(mismatch.cartOption, unmatchedName);
+  assert.equal(mismatch.cartBarcode, starBarcode);
+  const ambiguous = reviewById.get(ambiguousOptionId);
+  assert.equal(ambiguous.sourcePage, 1);
+  assert.equal(ambiguous.cartRowsRemain, false);
+  assert.ok(ambiguous.reasons.some(reason => reason.code === "AMBIGUOUS_OPTION_LABEL" && reason.optionId === "13"));
+  const allExcluded = reviewById.get(allExcludedOptionId);
+  assert.equal(allExcluded.sourcePage, 3);
+  assert.equal(allExcluded.cartRowsRemain, false);
+  assert.ok(allExcluded.reasons.some(reason => reason.code === "AMBIGUOUS_OPTION_LABEL"));
+  assert.equal(path.basename(result.files.optionReview), "option-review.json");
+  assert.deepEqual(JSON.parse(fs.readFileSync(result.files.optionReview, "utf8")), summary.optionReviewItems);
+
+  const archive = await readProductArchive();
+  assert.ok(!archive.products[`cheonyu:${reviewOptionId}`]);
+  assert.ok(!archive.products[`cheonyu:${ambiguousOptionId}`]);
+  assert.ok(!archive.products[`cheonyu:${allExcludedOptionId}`]);
+  for (const id of [samePageOptionId, laterOptionId]) {
+    const archived = archive.products[`cheonyu:${id}`];
+    assertOptionProduct({ ...archived, options: Object.values(archived.options) }, id);
+  }
 });

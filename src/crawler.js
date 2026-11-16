@@ -638,6 +638,9 @@ async function runCollection(
 
   /** result.json은 현재 상품의 통합 archive 결과를 저장한다. */
   writeJson(files.resultJson, mergedBackendProducts);
+  const optionReviewFile = result.summary.optionReviewItems?.length
+    ? path.join(files.runDir, "option-review.json") : null;
+  if (optionReviewFile) writeJson(optionReviewFile, result.summary.optionReviewItems);
 
   const hasDetailResult =
     config.collectionMode === "detail" &&
@@ -710,6 +713,7 @@ async function runCollection(
       result: files.resultJson,
       translatedResult: translatedResultPath,
       detailResult: hasDetailResult ? files.detailResultJson : null,
+      ...(optionReviewFile ? { optionReview: optionReviewFile } : {}),
     },
   };
 }

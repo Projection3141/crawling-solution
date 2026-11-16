@@ -528,31 +528,66 @@ function registerCreatedCheonyuAccount({ id, pw }) {
   return saveRegisteredAccount({ name: `천유_${dateCode}`, loginId: id, password: pw }, { date });
 }
 
+
+/**
+ * 1. 천유 계정 생성 공통 함수
+ * - 기존 수동 생성 버튼과 자동생성이 동일한 로직 사용
+ * - 중복 실행 방지
+ * - 생성 결과 반환
+ */
 async function createCheonyuAccount(event) {
   const button = event.currentTarget;
   const status = document.querySelector("#testAccountSignupStatus");
-  if (button.disabled) return;
+
+  if (button.disabled) {
+    return { outcome: "busy" };
+  }
+
   button.disabled = true;
   status.hidden = false;
   status.textContent = "천유 계정 생성을 진행합니다.";
+
   try {
-    const { id, pw, canceled } = await window.collectorApp.runTestAccountSignup();
+    /** 2. 기존 Electron 계정 생성 API 호출 */
+    const { id, pw, canceled } =
+      await window.collectorApp.runTestAccountSignup();
+
     if (canceled) {
       status.textContent = "가입 확인이 취소되었습니다.";
-      return;
+      return { outcome: "canceled" };
     }
+
+    /** 3. 생성된 계정을 기존 목록에 등록 */
     try {
       const account = registerCreatedCheonyuAccount({ id, pw });
-      status.textContent = `"${account.name}" 계정을 등록했습니다. ID ${id}`;
+
+      status.textContent =
+        `"${account.name}" 계정을 등록했습니다. ID ${id}`;
+
+      return {
+        outcome: "success",
+        account,
+      };
     } catch {
-      status.textContent = `가입을 완료했지만 등록 계정 목록에 추가하지 못했습니다. ID ${id}`;
+      status.textContent =
+        `가입을 완료했지만 등록 계정 목록에 추가하지 못했습니다. ID ${id}`;
+
+      return { outcome: "failed" };
     }
   } catch (error) {
-    status.textContent = error.message || "천유 가입을 완료하지 못했습니다.";
+    status.textContent =
+      error.message || "천유 가입을 완료하지 못했습니다.";
+
+    return {
+      outcome: "failed",
+      error: status.textContent,
+    };
   } finally {
+    /** 4. 수동 버튼 잠금 해제 */
     button.disabled = false;
   }
 }
+
 
 function registerAccount() {
   clearError();
@@ -1850,7 +1885,107 @@ function getRunCheckpointMessage(run) {
   return `${requestedRange}했습니다. 저장된 ${label}: ${savedRange}페이지.${phaseNotice}`;
 }
 
-function createRunCard(run) {
+function appendOptionReviewFields(parent, fields) {
+  const values = document.createElement("dl");
+  values.className = "run-option-review-fields";
+  for (const [label, value] of fields) {
+    if (value == null || value === "") continue;
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const description = document.createElement("dd");
+    description.textContent = value;
+    values.append(term, description);
+  }
+  if (values.childElementCount) parent.append(values);
+}
+
+function createOptionReviewList(items, isOpen) {
+  const details = document.createElement("details");
+  details.className = "warning-message run-option-review";
+  details.open = isOpen;
+
+  const heading = document.createElement("summary");
+  heading.textContent = `보류한 옵션 상품 ${displayNumber(items.length)}개`;
+  const list = document.createElement("ul");
+  list.className = "run-option-review-list";
+  details.append(heading, list);
+
+  const reasonLabels = {
+    CART_OPTION_LABEL_MISMATCH: "장바구니 옵션명 불일치",
+    CART_OPTION_QUANTITY_MISMATCH: "장바구니 주문 수량 불일치",
+    DUPLICATE_CART_OPTION_ROW: "같은 옵션에 해당하는 장바구니 행이 여러 개",
+    AMBIGUOUS_OPTION_LABEL: "같은 이름이 여러 옵션에 해당",
+    MISSING_CART_OPTION: "장바구니 옵션 행을 찾지 못함",
+    MISSING_OPTION_BARCODE: "옵션 바코드를 확인하지 못함",
+    CART_PRODUCT_ALREADY_PRESENT: "같은 상품이 이미 장바구니에 있음",
+    POPUP_OPTION_ID_MISMATCH: "상세페이지와 팝업의 옵션을 대조하지 못함",
+  };
+
+  for (const item of items) {
+    const entry = document.createElement("li");
+    entry.dataset.productId = item.productId;
+    const title = document.createElement("strong");
+    title.textContent = [
+      `상품 ${item.productId}`,
+      item.productName,
+      item.sourceMonth,
+      item.sourcePage && `${item.sourcePage}페이지`,
+    ].filter(Boolean).join(" · ");
+    entry.append(title);
+
+    for (const reason of item.reasons || []) {
+      const section = document.createElement("div");
+      section.className = "run-option-review-reason";
+      const reasonTitle = document.createElement("strong");
+      reasonTitle.textContent = reasonLabels[reason.code] || reason.message || "옵션 대조 확인 필요";
+      section.append(reasonTitle);
+      appendOptionReviewFields(section, [
+        ["장바구니 옵션명", reason.cartOption],
+        ["장바구니 표기 바코드", reason.cartBarcode],
+        ["옵션 ID", reason.optionId],
+        ["일괄담기 팝업 옵션명", reason.popupOption || reason.option],
+        ["상세페이지 옵션명", reason.detailOption],
+        ["요청 수량", reason.expectedQuantity == null ? null : `${reason.expectedQuantity}개`],
+        ["장바구니 주문 수량", reason.cartQuantity == null ? null : `${reason.cartQuantity}개`],
+      ]);
+
+      if (reason.expectedOptions?.length) {
+        const label = document.createElement("p");
+        label.className = "run-option-review-candidate-label";
+        label.textContent = "비교한 옵션 후보";
+        const candidates = document.createElement("ol");
+        candidates.className = "run-option-review-candidates";
+        for (const option of reason.expectedOptions) {
+          const candidate = document.createElement("li");
+          appendOptionReviewFields(candidate, [
+            ["옵션 ID", option.optionId],
+            ["일괄담기 팝업 옵션명", option.popupOption || option.option],
+            ["상세페이지 옵션명", option.detailOption],
+          ]);
+          candidates.append(candidate);
+        }
+        section.append(label, candidates);
+      }
+      entry.append(section);
+    }
+
+    if (item.cartRowsRemain) {
+      const cartNotice = document.createElement("p");
+      cartNotice.textContent = "이 상품의 행이 장바구니에 남아 있습니다.";
+      entry.append(cartNotice);
+    }
+    list.append(entry);
+  }
+
+  return details;
+}
+
+function createRunCard(run, optionReviewOpen = true) {
+  const summary = run.summary || {};
+  const optionReviewItems = Array.isArray(summary.optionReviewItems) ? summary.optionReviewItems : [];
+  const optionReviewCount = run.status === "completed" && run.request?.collectionKind === "newProducts"
+    ? Math.max(Number(summary.optionReviewCount) || 0, optionReviewItems.length)
+    : 0;
   const card = document.createElement("article");
   card.className = "run-card";
   card.dataset.runId = run.id;
@@ -1886,6 +2021,10 @@ function createRunCard(run) {
   const badge = document.createElement("span");
   badge.className = `status-badge ${run.status || "idle"}`;
   badge.textContent = getStatusLabel(run.status);
+  if (optionReviewCount > 0) {
+    badge.classList.add("review");
+    badge.textContent = "완료 · 옵션 검토 필요";
+  }
 
   header.append(titleWrap, badge);
 
@@ -1903,7 +2042,13 @@ function createRunCard(run) {
       ? "수집이 완료되었습니다."
       : "수집을 준비하고 있습니다.");
 
+  if (optionReviewCount > 0) {
+    message.textContent = `수집 결과를 저장했습니다. 옵션 확인이 필요한 상품 ${displayNumber(optionReviewCount)}개는 등록을 보류했습니다.`;
+  }
   card.append(header, progressBar, message);
+  if (optionReviewCount > 0 && optionReviewItems.length > 0) {
+    card.append(createOptionReviewList(optionReviewItems, optionReviewOpen));
+  }
 
   const checkpointMessage = getRunCheckpointMessage(run);
   if (checkpointMessage) {
@@ -1968,7 +2113,6 @@ function createRunCard(run) {
   const metrics = document.createElement("div");
   metrics.className = "metrics-grid";
   const progress = run.progress || {};
-  const summary = run.summary || {};
 
   metrics.append(
     createMetricCard("수집 페이지", formatPageRange(progress, summary)),
@@ -2127,6 +2271,8 @@ function renderRunList(applicationState) {
   elements.activeRunCount.textContent =
     `실행 중 ${activeCount}건 · 전체 ${runs.length}건`;
 
+  const reviewStates = new Map(Array.from(elements.runList.querySelectorAll(".run-option-review"),
+    review => [review.closest(".run-card").dataset.runId, review.open]));
   elements.runList.replaceChildren();
 
   if (runs.length < 1) {
@@ -2136,7 +2282,7 @@ function renderRunList(applicationState) {
     elements.runList.append(empty);
   } else {
     for (const run of runs) {
-      elements.runList.append(createRunCard(run));
+      elements.runList.append(createRunCard(run, reviewStates.get(run.id)));
     }
   }
 
@@ -2724,3 +2870,506 @@ initialize().catch((error) => {
   elements.appBadge.textContent = "초기화 실패";
   showError(error.message);
 });
+
+
+/**
+ * 천유 계정 자동생성 스케줄러
+ *
+ * 기능
+ * 1. 일일 실행 목표 설정
+ * 2. 실행 즉시 첫 작업 시작
+ * 3. 작업 사이 최소 10분 간격 유지
+ * 4. 한국 시간 기준 일일 초기화
+ * 5. 다음 날 같은 시각부터 반복
+ * 6. localStorage 설정 복원
+ * 7. 중복 실행 및 자동생성 중지 처리
+ */
+
+const AUTO_SIGNUP_STORAGE_KEY =
+  "mall-collector-cheonyu-auto-signup-v1";
+
+const AUTO_SIGNUP_INTERVAL_MS = 10 * 60 * 1000;
+const AUTO_SIGNUP_DAY_MS = 24 * 60 * 60 * 1000;
+const AUTO_SIGNUP_KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+
+/** 1. 화면 요소 */
+const autoSignupUI = {
+  openButton: document.querySelector("#openAutoSignupButton"),
+  stopButton: document.querySelector("#stopAutoSignupButton"),
+  modal: document.querySelector("#autoSignupModal"),
+  closeButton: document.querySelector("#closeAutoSignupModalButton"),
+  cancelButton: document.querySelector("#cancelAutoSignupModalButton"),
+  executeButton: document.querySelector("#executeAutoSignupButton"),
+  countInput: document.querySelector("#autoSignupDailyCount"),
+  countHelp: document.querySelector("#autoSignupCountHelp"),
+  modalMessage: document.querySelector("#autoSignupModalMessage"),
+  status: document.querySelector("#autoSignupScheduleStatus"),
+  signupButton: document.querySelector("#runTestAccountSignupButton"),
+};
+
+/** 2. 한국 시간 기준 날짜 시작 */
+function getAutoSignupDayStart(timestamp = Date.now()) {
+  return (
+    Math.floor(
+      (timestamp + AUTO_SIGNUP_KST_OFFSET_MS) /
+      AUTO_SIGNUP_DAY_MS
+    ) *
+      AUTO_SIGNUP_DAY_MS -
+    AUTO_SIGNUP_KST_OFFSET_MS
+  );
+}
+
+/** 3. 한국 시간 기준 날짜 키 */
+function getAutoSignupDayKey(timestamp = Date.now()) {
+  return new Date(timestamp + AUTO_SIGNUP_KST_OFFSET_MS)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** 4. 한국 시간 표시 */
+function formatAutoSignupTime(timestamp) {
+  return new Date(timestamp).toLocaleString("ko-KR", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+/** 5. 저장된 계획 복원 */
+function readAutoSignupPlan() {
+  try {
+    const raw = JSON.parse(
+      localStorage.getItem(AUTO_SIGNUP_STORAGE_KEY) || "null"
+    );
+
+    if (!raw || typeof raw !== "object") return null;
+
+    const target = Number(raw.target);
+    const startOffsetMs = Number(raw.startOffsetMs);
+
+    if (
+      !Number.isInteger(target) ||
+      target < 1 ||
+      target > 144 ||
+      !Number.isFinite(startOffsetMs) ||
+      startOffsetMs < 0 ||
+      startOffsetMs >= AUTO_SIGNUP_DAY_MS
+    ) {
+      return null;
+    }
+
+    return {
+      enabled: raw.enabled === true,
+      target,
+      startOffsetMs,
+      dayKey: String(raw.dayKey || ""),
+      attempts: Math.max(0, Number(raw.attempts) || 0),
+      successes: Math.max(0, Number(raw.successes) || 0),
+      lastAttemptAtMs: Number(raw.lastAttemptAtMs) || 0,
+      nextAtMs: Number(raw.nextAtMs) || Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** 6. 실행 상태 */
+const autoSignupState = {
+  plan: readAutoSignupPlan(),
+  timerId: null,
+  running: false,
+  lastResult: "",
+};
+
+/** 7. 계획 저장 */
+function saveAutoSignupPlan() {
+  if (!autoSignupState.plan) return;
+
+  localStorage.setItem(
+    AUTO_SIGNUP_STORAGE_KEY,
+    JSON.stringify(autoSignupState.plan)
+  );
+}
+
+/** 8. 날짜 변경 시 일일 실행 횟수 초기화 */
+function syncAutoSignupDay(now = Date.now()) {
+  const plan = autoSignupState.plan;
+
+  if (!plan) return;
+
+  const dayKey = getAutoSignupDayKey(now);
+
+  if (plan.dayKey === dayKey) return;
+
+  plan.dayKey = dayKey;
+  plan.attempts = 0;
+  plan.successes = 0;
+
+  /** 날짜가 바뀌어도 직전 실행과 10분 간격 유지 */
+  plan.nextAtMs = Math.max(
+    getAutoSignupDayStart(now) + plan.startOffsetMs,
+    plan.lastAttemptAtMs + AUTO_SIGNUP_INTERVAL_MS
+  );
+
+  saveAutoSignupPlan();
+}
+
+/** 9. 다음 실행 시각 계산 */
+function getAutoSignupNextTime(now = Date.now()) {
+  const plan = autoSignupState.plan;
+
+  if (!plan?.enabled) return null;
+
+  const nextMidnight =
+    getAutoSignupDayStart(now) + AUTO_SIGNUP_DAY_MS;
+
+  /** 목표 달성 또는 당일 실행 시간이 끝났다면 다음 날로 이동 */
+  if (
+    plan.attempts >= plan.target ||
+    plan.nextAtMs >= nextMidnight
+  ) {
+    return Math.max(
+      nextMidnight + plan.startOffsetMs,
+      plan.lastAttemptAtMs + AUTO_SIGNUP_INTERVAL_MS
+    );
+  }
+
+  return Math.max(now, plan.nextAtMs);
+}
+
+/** 10. 자동생성 진행 상태 표시 */
+function renderAutoSignupStatus() {
+  const plan = autoSignupState.plan;
+  const status = autoSignupUI.status;
+
+  if (!plan) {
+    status.textContent = "자동생성이 설정되지 않았습니다.";
+    autoSignupUI.stopButton.hidden = true;
+    return;
+  }
+
+  const running = autoSignupState.running;
+  const enabled = plan.enabled;
+
+  autoSignupUI.stopButton.hidden = !enabled;
+
+  const progress =
+    `오늘 실행 ${plan.attempts}/${plan.target}회` +
+    ` · 등록 완료 ${plan.successes}개`;
+
+  if (!enabled) {
+    status.textContent = running
+      ? `자동생성 중지 요청 · 현재 작업 종료 대기 · ${progress}`
+      : `자동생성 중지됨 · ${progress}`;
+    return;
+  }
+
+  if (running) {
+    status.textContent = `자동생성 작업 진행 중 · ${progress}`;
+    return;
+  }
+
+  const nextAt = getAutoSignupNextTime();
+
+  status.textContent =
+    `자동생성 활성 · ${progress}` +
+    ` · 다음 실행 ${formatAutoSignupTime(nextAt)}` +
+    (autoSignupState.lastResult
+      ? ` · ${autoSignupState.lastResult}`
+      : "");
+}
+
+/** 11. 실행 타이머 정리 */
+function clearAutoSignupTimer() {
+  if (autoSignupState.timerId !== null) {
+    window.clearTimeout(autoSignupState.timerId);
+    autoSignupState.timerId = null;
+  }
+}
+
+/** 12. 다음 자동생성 예약 */
+function scheduleAutoSignup() {
+  clearAutoSignupTimer();
+  syncAutoSignupDay();
+
+  renderAutoSignupStatus();
+
+  const plan = autoSignupState.plan;
+
+  if (!plan?.enabled || autoSignupState.running) return;
+
+  const now = Date.now();
+  const nextAt = getAutoSignupNextTime(now);
+
+  if (nextAt === null) return;
+
+  /** 자정에 일일 카운터를 갱신하도록 중간 점검 */
+  const midnight =
+    getAutoSignupDayStart(now) + AUTO_SIGNUP_DAY_MS;
+
+  const wakeAt = Math.min(nextAt, midnight);
+  const delay = Math.max(0, wakeAt - now);
+
+  autoSignupState.timerId = window.setTimeout(() => {
+    autoSignupState.timerId = null;
+    void executeAutoSignupStep();
+  }, delay);
+}
+
+/** 13. 기존 계정 생성 처리기를 1회 실행 */
+async function executeAutoSignupStep() {
+  syncAutoSignupDay();
+
+  const plan = autoSignupState.plan;
+
+  if (!plan?.enabled || autoSignupState.running) {
+    scheduleAutoSignup();
+    return;
+  }
+
+  const now = Date.now();
+  const nextAt = getAutoSignupNextTime(now);
+
+  /** 예약 시각에 도달하지 않았다면 다시 대기 */
+  if (
+    nextAt === null ||
+    plan.attempts >= plan.target ||
+    now < nextAt
+  ) {
+    scheduleAutoSignup();
+    return;
+  }
+
+  /** 수동 생성 또는 다른 자동생성 작업과 충돌 방지 */
+  if (autoSignupUI.signupButton.disabled) {
+    plan.nextAtMs = now + AUTO_SIGNUP_INTERVAL_MS;
+    autoSignupState.lastResult = "기존 계정 생성 작업으로 이번 실행 연기";
+
+    saveAutoSignupPlan();
+    scheduleAutoSignup();
+    return;
+  }
+
+  /** 실행 전 횟수를 먼저 저장하여 새로고침 중복 요청 방지 */
+  plan.attempts += 1;
+  plan.lastAttemptAtMs = now;
+  plan.nextAtMs = now + AUTO_SIGNUP_INTERVAL_MS;
+
+  const executionDay = plan.dayKey;
+
+  autoSignupState.running = true;
+  autoSignupState.lastResult = "";
+  saveAutoSignupPlan();
+  renderAutoSignupStatus();
+
+  let result;
+
+  try {
+    /**
+     * 실제 수동 버튼과 동일한 함수 호출
+     * 가입 확인 및 계정 목록 저장 절차 유지
+     */
+    result = await createCheonyuAccount({
+      currentTarget: autoSignupUI.signupButton,
+    });
+
+    if (result?.outcome === "success") {
+      if (plan.dayKey === executionDay) {
+        plan.successes += 1;
+      }
+
+      autoSignupState.lastResult = "최근 작업 등록 완료";
+    } else if (result?.outcome === "canceled") {
+      autoSignupState.lastResult = "최근 작업 가입 취소";
+    } else {
+      autoSignupState.lastResult = "최근 작업 실패";
+    }
+  } catch (error) {
+    autoSignupState.lastResult =
+      `최근 작업 오류: ${error.message || "알 수 없는 오류"}`;
+  } finally {
+    autoSignupState.running = false;
+
+    /**
+     * 이전 가입 작업이 10분 이상 걸렸다면
+     * 완료 이후 최소 10분을 기다려 중복 실행 방지
+     */
+    if (plan.nextAtMs <= Date.now()) {
+      plan.nextAtMs = Date.now() + AUTO_SIGNUP_INTERVAL_MS;
+    }
+
+    saveAutoSignupPlan();
+    scheduleAutoSignup();
+  }
+}
+
+/** 14. 모달 열기 */
+function openAutoSignupModal() {
+  syncAutoSignupDay();
+
+  const now = Date.now();
+  const plan = autoSignupState.plan;
+
+  const attempts = plan?.attempts || 0;
+
+  /** 현재 시각부터 자정까지 가능한 10분 간격 실행 횟수 */
+  const availableSlots = Math.ceil(
+    (
+      getAutoSignupDayStart(now) +
+      AUTO_SIGNUP_DAY_MS -
+      now
+    ) / AUTO_SIGNUP_INTERVAL_MS
+  );
+
+  const maxTarget = Math.min(144, attempts + availableSlots);
+
+  autoSignupUI.countInput.max = String(maxTarget);
+  autoSignupUI.countInput.value = String(
+    Math.min(
+      maxTarget,
+      Math.max(1, plan?.target || 5)
+    )
+  );
+
+  autoSignupUI.countHelp.textContent =
+    `오늘 남은 실행 가능 횟수 ${availableSlots}회` +
+    ` · 이미 실행 ${attempts}회` +
+    ` · 오늘 목표 최대 ${maxTarget}회`;
+
+  autoSignupUI.modalMessage.textContent = "";
+  autoSignupUI.modal.hidden = false;
+  autoSignupUI.countInput.focus();
+}
+
+/** 15. 모달 닫기 */
+function closeAutoSignupModal() {
+  autoSignupUI.modal.hidden = true;
+  autoSignupUI.openButton.focus();
+}
+
+/** 16. 실행 버튼 클릭 */
+function startAutoSignup() {
+  if (autoSignupState.running) {
+    autoSignupUI.modalMessage.textContent =
+      "현재 생성 작업이 끝난 후 설정할 수 있습니다.";
+    return;
+  }
+
+  syncAutoSignupDay();
+
+  const target = Number(autoSignupUI.countInput.value);
+  const maxTarget = Number(autoSignupUI.countInput.max);
+
+  if (
+    !Number.isInteger(target) ||
+    target < 1 ||
+    target > maxTarget
+  ) {
+    autoSignupUI.modalMessage.textContent =
+      `하루 생성 개수는 1~${maxTarget}개로 설정하세요.`;
+    return;
+  }
+
+  const now = Date.now();
+  const existingPlan = autoSignupState.plan;
+  const today = getAutoSignupDayKey(now);
+
+  const sameDay = existingPlan?.dayKey === today;
+
+  const attempts = sameDay ? existingPlan.attempts : 0;
+  const successes = sameDay ? existingPlan.successes : 0;
+  const lastAttemptAtMs =
+    sameDay ? existingPlan.lastAttemptAtMs : 0;
+
+  /** 같은 날 다시 실행해도 이미 사용한 횟수 유지 */
+  autoSignupState.plan = {
+    enabled: true,
+    target,
+    dayKey: today,
+    startOffsetMs: now - getAutoSignupDayStart(now),
+    attempts,
+    successes,
+    lastAttemptAtMs,
+    nextAtMs: Math.max(
+      now,
+      lastAttemptAtMs + AUTO_SIGNUP_INTERVAL_MS
+    ),
+  };
+
+  autoSignupState.lastResult = "";
+
+  saveAutoSignupPlan();
+  closeAutoSignupModal();
+
+  /** 즉시 첫 작업 예약 */
+  scheduleAutoSignup();
+}
+
+/** 17. 중지 버튼 클릭 */
+function stopAutoSignup() {
+  const plan = autoSignupState.plan;
+
+  if (!plan) return;
+
+  plan.enabled = false;
+
+  clearAutoSignupTimer();
+  saveAutoSignupPlan();
+  renderAutoSignupStatus();
+}
+
+/** 18. 화면 이벤트 연결 */
+autoSignupUI.openButton.addEventListener(
+  "click",
+  openAutoSignupModal
+);
+
+autoSignupUI.closeButton.addEventListener(
+  "click",
+  closeAutoSignupModal
+);
+
+autoSignupUI.cancelButton.addEventListener(
+  "click",
+  closeAutoSignupModal
+);
+
+autoSignupUI.executeButton.addEventListener(
+  "click",
+  startAutoSignup
+);
+
+autoSignupUI.stopButton.addEventListener(
+  "click",
+  stopAutoSignup
+);
+
+/** 19. 모달 바깥쪽 클릭 시 닫기 */
+autoSignupUI.modal.addEventListener("click", (event) => {
+  if (event.target === autoSignupUI.modal) {
+    closeAutoSignupModal();
+  }
+});
+
+/** 20. ESC 키로 모달 닫기 */
+document.addEventListener("keydown", (event) => {
+  if (
+    event.key === "Escape" &&
+    !autoSignupUI.modal.hidden
+  ) {
+    closeAutoSignupModal();
+  }
+});
+
+/** 21. 페이지 종료 시 타이머 정리 */
+window.addEventListener("beforeunload", () => {
+  clearAutoSignupTimer();
+});
+
+/** 22. 저장된 계획 자동 복원 */
+scheduleAutoSignup();

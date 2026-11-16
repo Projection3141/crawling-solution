@@ -422,7 +422,8 @@ h3 {
   color: var(--state-wait-text);
 }
 
-.status-badge.canceling {
+.status-badge.canceling,
+.status-badge.review {
   background: var(--state-warning-bg);
   color: var(--warning);
 }
@@ -815,6 +816,60 @@ button:disabled {
 }
 
 .warning-message p + p {
+  margin-top: 6px;
+}
+
+.run-option-review summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.run-option-review-list {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.run-option-review-list > li {
+  border-top: 1px solid var(--line);
+  padding: 12px 0;
+}
+
+.run-option-review-list > li:last-child {
+  padding-bottom: 0;
+}
+
+.run-option-review-reason {
+  margin: 8px 0;
+}
+
+.run-option-review-fields {
+  display: grid;
+  grid-template-columns: fit-content(45%) minmax(0, 1fr);
+  gap: 2px 12px;
+  margin: 4px 0 0;
+}
+
+.run-option-review-fields dt {
+  font-weight: 600;
+}
+
+.run-option-review-fields dd {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.run-option-review p.run-option-review-candidate-label {
+  margin-top: 8px;
+}
+
+.run-option-review-candidates {
+  margin: 4px 0 0;
+  padding-left: 24px;
+}
+
+.run-option-review-candidates li + li {
   margin-top: 6px;
 }
 

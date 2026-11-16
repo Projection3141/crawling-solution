@@ -114,9 +114,60 @@ test("new collection UI shares execution status, cancellation and repeat schedul
     run.status = "completed";
     run.finishedAtMs = Date.now();
     run.progress = { stage: "completed", message: "완료" };
+    run.summary = {
+      optionTargetCount: 3,
+      optionPendingCount: 3,
+      optionReviewCount: 2,
+      optionReviewItems: [{
+        productId: "96952",
+        productName: "벨라 다이어리",
+        sourcePage: 2,
+        sourceMonth: "2026-11",
+        cartRowsRemain: true,
+        reasons: [{
+          code: "CART_OPTION_LABEL_MISMATCH",
+          cartOption: "은색 하트",
+          cartBarcode: "8809779835750",
+          expectedOptions: [
+            { optionId: "120132", popupOption: "3 실버하트 (3개)", detailOption: "3 실버하트 (현 재고 3개)" },
+            { optionId: "120135", popupOption: "5. 실버스타 (5개)", detailOption: "5. 실버스타" },
+          ],
+        }],
+      }, {
+        productId: "96953",
+        productName: "다른 상품",
+        cartRowsRemain: false,
+        reasons: [{
+          code: "AMBIGUOUS_OPTION_LABEL",
+          optionId: "120136",
+          popupOption: "분홍",
+          detailOption: "분홍",
+        }],
+      }],
+    };
     window.fixtureStateListener({ runs: window.fixtureRuns, activeRunCount: 0, shipping: {}, cart: {} });
   });
+  const completedCard = page.locator('.run-card[data-run-id="fixture-2"]');
+  assert.match(await completedCard.locator(".status-badge").innerText(), /옵션 검토 필요/);
+  assert.match(await completedCard.locator(".status-message").innerText(), /상품 2개는 등록을 보류/);
+  const review = completedCard.locator(".run-option-review");
+  assert.equal(await review.evaluate(element => element.open), true);
+  const mismatch = review.locator('[data-product-id="96952"]');
+  const ambiguity = review.locator('[data-product-id="96953"]');
+  assert.match(await mismatch.innerText(), /상품 96952 · 벨라 다이어리 · 2026-11 · 2페이지/);
+  assert.match(await mismatch.innerText(), /장바구니 옵션명 불일치/);
+  assert.match(await ambiguity.innerText(), /같은 이름이 여러 옵션에 해당/);
+  assert.match(await mismatch.innerText(), /이 상품의 행이 장바구니에 남아 있습니다/);
+  assert.deepEqual(await mismatch.locator(".run-option-review-fields").evaluateAll(lists =>
+    lists.map(list => Object.fromEntries(Array.from(list.querySelectorAll("dt"), term =>
+      [term.textContent, term.nextElementSibling.textContent])))), [
+    { "장바구니 옵션명": "은색 하트", "장바구니 표기 바코드": "8809779835750" },
+    { "옵션 ID": "120132", "일괄담기 팝업 옵션명": "3 실버하트 (3개)", "상세페이지 옵션명": "3 실버하트 (현 재고 3개)" },
+    { "옵션 ID": "120135", "일괄담기 팝업 옵션명": "5. 실버스타 (5개)", "상세페이지 옵션명": "5. 실버스타" },
+  ]);
+  await review.locator("summary").click();
   await page.getByRole("button", { name: "반복 예약 중지" }).click();
+  assert.equal(await review.evaluate(element => element.open), false);
   assert.equal(await page.getByRole("button", { name: "반복 예약 중지" }).count(), 0);
   assert.equal(await page.evaluate(() => window.fixtureInputs.length), 2);
   assert.equal(await page.evaluate(() => window.fixtureInputs[1].accountId), "fixture-member");

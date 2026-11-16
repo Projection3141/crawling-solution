@@ -186,7 +186,7 @@ async function runCheonyuLifecycle(config, { browserType = chromium, signal, onP
     const pageRange = { mode: "auto", pageStart: 1, pageEnd: scopes.reduce((sum, scope) => sum + scope.lastPage, 0),
       requestedPageEnd: 0, collectedPageCount: 0, collectedLastPage: null, stopReason: "completed-range",
       scope: "recent-months", months };
-    const products = [], detailItems = [], inventoryItems = [], popupOptionItems = [];
+    const products = [], detailItems = [], inventoryItems = [], popupOptionItems = [], optionReviewItems = [];
     const seen = new Set();
     let pageNo = 0, targetCount = 0, optionTargetCount = 0, optionPendingCount = 0;
     for (const scope of scopes) {
@@ -238,7 +238,7 @@ async function runCheonyuLifecycle(config, { browserType = chromium, signal, onP
         const optionProductIds = new Set(optionTargets.map(product => String(product.productId)));
         const optionCandidates = optionTargets.filter(product => product.isSoldOut
           ? getDetailOptionHints(product).length > 0 : config.newProductOptionAccount);
-        let pageOptions = { inventoryItems: [], popupOptionItems: [] };
+        let pageOptions = { inventoryItems: [], popupOptionItems: [], optionReviewItems: [] };
         let optionFailure;
         if (optionCandidates.length) {
           const cartConfig = { ...config, anonymousCollection: false };
@@ -264,17 +264,21 @@ async function runCheonyuLifecycle(config, { browserType = chromium, signal, onP
         }
         if (runSignal.aborted && optionFailure?.code === "CART_CLEANUP_INCOMPLETE") throw optionFailure;
         throwIfAborted(runSignal);
+        const pageReview = new Map((pageOptions.optionReviewItems || []).map(item => [item.productId, item]));
+        optionReviewItems.push(...pageReview.values());
         const verified = new Set(pageOptions.inventoryItems.map(row => String(row.productId)));
         const completed = [], pending = [];
         for (const detail of successful) {
           const id = String(detail.productId);
           if (optionProductIds.has(id) && !verified.has(id)) {
-            pending.push({ ...detail, detailError: "옵션 바코드 확인을 완료하지 못했습니다." });
+            pending.push({ ...detail, detailError: pageReview.has(id)
+              ? "옵션 정보를 검토할 때까지 상품 저장을 보류했습니다."
+              : "옵션 바코드 확인을 완료하지 못했습니다." });
           } else completed.push(detail);
         }
         optionPendingCount += pending.length;
         if (pending.length) onProgress({ stage: "option-pending", level: "warn", currentPage: pageNo, optionPendingCount,
-          message: `옵션 정보 확인을 마치지 못한 상품 ${pending.length}개를 보류합니다. 계정 또는 장바구니 상태를 확인하세요.` });
+          message: `옵션 정보 확인을 마치지 못한 상품 ${pending.length}개를 보류했습니다.` });
         // Keep pending option products out of the archive so the next run can retry them.
         await onDetailPage?.({ pageNo, pageRange: checkpointRange, products: targets,
           inventoryItems: pageOptions.inventoryItems, detailItems: completed });
@@ -293,6 +297,7 @@ async function runCheonyuLifecycle(config, { browserType = chromium, signal, onP
         anonymousCollection: true, inventoryBest: config.inventoryBest, months, pageRange,
         collectedProductCount: products.length, targetProductCount: targetCount,
         optionTargetCount, optionPendingCount, optionBarcodeCount: inventoryItems.filter(row => row.barcode).length,
+        optionReviewCount: optionReviewItems.length, optionReviewItems,
         detailTargetCount: targetCount, detailCandidateCount: products.length,
         detailItemCount: detailItems.length, productSummaryCount: 0, elapsedMs, elapsedText: formatMs(elapsedMs) } };
   } catch (error) {

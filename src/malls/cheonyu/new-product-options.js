@@ -35,7 +35,8 @@ function cartRowId(row) {
 }
 
 function submissionPlan(selectedRows, popupRows) {
-  const groups = new Set(popupRows.filter(row => row.hasOption && row.cartGroupId).map(row => String(row.cartGroupId)));
+  // The popup serializes empty groups even after all their checkboxes are cleared.
+  const groups = new Set(popupRows.filter(row => row.productId && row.cartGroupId).map(row => String(row.cartGroupId)));
   const writes = new Set();
   for (const row of selectedRows) {
     const group = String(row.cartGroupId || "");
@@ -101,7 +102,7 @@ function checkedCartRows(rows) {
   return byId;
 }
 
-function findOwnedRows(current, before, pending) {
+function inspectCartRows(current, before, pending, protectedProducts) {
   for (const [id, previous] of before) {
     const row = current.get(id);
     if (!row || cartKey(row) !== cartKey(previous) || row.requestedQty !== previous.requestedQty) {
@@ -110,32 +111,51 @@ function findOwnedRows(current, before, pending) {
       });
     }
   }
-  const pendingProducts = new Set();
+  const submittedByProduct = new Map();
   const optionByCartKey = new Map();
   for (const [key, option] of pending) {
-    pendingProducts.add(String(option.productId));
+    const productId = String(option.productId);
+    if (!submittedByProduct.has(productId)) submittedByProduct.set(productId, []);
+    submittedByProduct.get(productId).push(option);
     for (const nameKey of option.cartMatchKeys) optionByCartKey.set(nameKey, key);
   }
+
   const owned = new Map();
+  const presentProducts = new Set();
+  const issues = [];
+  const uncertainProducts = new Set(protectedProducts);
   for (const [id, row] of current) {
-    if (before.has(id) || !pendingProducts.has(String(row.productId))) continue;
+    const productId = String(row.productId);
+    if (before.has(id) || !submittedByProduct.has(productId)) continue;
+    presentProducts.add(productId);
     const key = optionByCartKey.get(cartKey(row));
     const expected = pending.get(key);
-    if (!expected) throw cleanupError("CART_OPTION_LABEL_MISMATCH", {
-      productId: row.productId, cartOption: row.optionText,
-      expectedOptions: Array.from(pending.values()).filter(item => String(item.productId) === String(row.productId))
-        .map(({ optionId, optionText, detailOption }) => ({ optionId, popupOption: optionText, detailOption })),
-    });
-    if (row.requestedQty !== expected.requestedQty) throw cleanupError("CART_OPTION_QUANTITY_MISMATCH", {
-      productId: row.productId, optionId: expected.optionId, cartOption: row.optionText,
-      expectedQuantity: expected.requestedQty, cartQuantity: row.requestedQty,
-    });
-    if (owned.has(key)) throw cleanupError("DUPLICATE_CART_OPTION_ROW", {
-      productId: row.productId, optionId: expected.optionId, cartOption: row.optionText,
-    });
-    owned.set(key, row);
+    const reason = { productId, cartOption: row.optionText, cartBarcode: row.barcode || undefined };
+    if (!expected) {
+      reason.code = "CART_OPTION_LABEL_MISMATCH";
+      reason.expectedOptions = submittedByProduct.get(productId).map(({ optionId, optionText, detailOption }) =>
+        ({ optionId, popupOption: optionText, detailOption }));
+    } else {
+      Object.assign(reason, { optionId: expected.optionId, popupOption: expected.optionText, detailOption: expected.detailOption });
+      if (row.requestedQty !== expected.requestedQty) {
+        Object.assign(reason, { code: "CART_OPTION_QUANTITY_MISMATCH", expectedQuantity: expected.requestedQty,
+          cartQuantity: row.requestedQty });
+      } else if (owned.has(key)) {
+        reason.code = "DUPLICATE_CART_OPTION_ROW";
+      }
+    }
+    if (reason.code) {
+      issues.push(reason);
+      uncertainProducts.add(productId);
+    } else {
+      owned.set(key, row);
+    }
   }
-  return owned;
+  // One unverified row makes the purchase variants for that product uncertain.
+  for (const [key, row] of owned) {
+    if (uncertainProducts.has(String(row.productId))) owned.delete(key);
+  }
+  return { owned, issues, presentProducts, uncertainProducts };
 }
 
 /** Keep page-local ownership across retries of the same logged-in operation. */
@@ -167,8 +187,32 @@ function createNewProductOptionProbe(config, { listUrl, sourcePage, products, on
   const matchesCartEndpoint = url => url.pathname === cartEndpoint.pathname &&
     url.hostname.replace(/^www\./i, "") === cartEndpoint.hostname.replace(/^www\./i, "");
   const pending = new Map();
+  const review = new Map();
+  const protectedCartProducts = new Set();
+  const productsById = new Map(products.map(product => [String(product.productId), product]));
   let baseline;
   let completed;
+
+  function deferProduct(productId, reason) {
+    const product = productsById.get(productId);
+    if (!review.has(productId)) {
+      review.set(productId, { productId, productName: product.productName, productUrl: product.productUrl,
+        sourcePage, sourceMonth: product.sourceMonth, listUrl, reasons: [], cartRowsRemain: false });
+    }
+    const item = review.get(productId);
+    const key = JSON.stringify(reason);
+    if (item.reasons.some(existing => JSON.stringify(existing) === key)) return;
+    item.reasons.push(reason);
+    recordDiagnostic("new-product-option-review", { productId, sourcePage, sourceMonth: product.sourceMonth, ...reason });
+  }
+
+  function recordCartIssues(analysis) {
+    for (const productId of analysis.uncertainProducts) protectedCartProducts.add(productId);
+    for (const { productId, ...reason } of analysis.issues) deferProduct(productId, reason);
+    for (const productId of new Set(Array.from(pending.values(), row => String(row.productId)))) {
+      if (review.has(productId)) review.get(productId).cartRowsRemain = analysis.presentProducts.has(productId);
+    }
+  }
 
   async function checkActive(connection) {
     throwIfAborted(connection.signal);
@@ -186,21 +230,25 @@ function createNewProductOptionProbe(config, { listUrl, sourcePage, products, on
     return checkedCartRows(parseCartHtml(html, cartConfig, { requireTable: true, observeStock }));
   }
 
-  async function cleanup(connection, current) {
+  async function cleanup(connection, current, analysis) {
     if (!pending.size) return;
-    let owned = findOwnedRows(current || await readCart(connection), baseline, pending);
-    if (!current && !owned.size) {
+    let initial = analysis || inspectCartRows(current || await readCart(connection), baseline, pending, protectedCartProducts);
+    if (!current && !initial.owned.size) {
       // The old request may have reached the server shortly before its connection closed.
       await sleepWithSignal(500, connection.signal);
-      owned = findOwnedRows(await readCart(connection), baseline, pending);
+      initial = inspectCartRows(await readCart(connection), baseline, pending, protectedCartProducts);
     }
-    if (owned.size) {
+    recordCartIssues(initial);
+    if (initial.owned.size) {
+      const ids = Array.from(initial.owned.values(), cartRowId);
       await checkActive(connection);
-      await clearCartByCartIds(connection.context, Array.from(owned.values(), cartRowId), cartConfig);
-      const remaining = findOwnedRows(await readCart(connection), baseline, pending);
-      if (remaining.size) throw cleanupError("CART_ROWS_REMAIN_AFTER_DELETE", {
-        remainingCount: remaining.size,
-      });
+      await clearCartByCartIds(connection.context, ids, cartConfig);
+      const snapshot = await readCart(connection);
+      const remaining = inspectCartRows(snapshot, baseline, pending, protectedCartProducts);
+      recordCartIssues(remaining);
+      if (remaining.owned.size || ids.some(id => snapshot.has(id))) {
+        throw cleanupError("CART_ROWS_REMAIN_AFTER_DELETE", { remainingCount: remaining.owned.size });
+      }
     }
     pending.clear();
   }
@@ -212,18 +260,28 @@ function createNewProductOptionProbe(config, { listUrl, sourcePage, products, on
       (!productsWithHints.has(productId) || hints.has(optionKey(row)));
   }
 
-  function rememberSubmission(ids, popupRows) {
+  function rememberSubmission(ids, selectedRows, popupRows) {
     const observed = new Map();
-    const usedCartKeys = new Set(Array.from(pending.values()).flatMap(row => row.cartMatchKeys));
+    const usedCartKeys = new Map();
+    for (const option of pending.values()) {
+      for (const key of option.cartMatchKeys) usedCartKeys.set(key, option);
+    }
     const submitted = new Set(ids.map(String));
-    const valid = popupRows.length > 0 && popupRows.every(row => {
+    const selectedProductIds = new Set();
+    for (const row of selectedRows) {
+      const productId = String(row.productId);
       const identity = optionKey(row);
-      if (!submitted.has(String(row.productId)) || !isIdentifiedOption(row) || !row.complete ||
-          !row.optionText || row.requestedQty !== 1 ||
-          pending.has(identity) || observed.has(identity)) return false;
-
-      // The cart may omit the stock note attached to this option on the detail page.
+      if (!submitted.has(productId) || !eligible.has(productId) || row.requestedQty !== 1) {
+        throw new Error("장바구니에 담을 상품 또는 수량을 확인하지 못했습니다.");
+      }
+      selectedProductIds.add(productId);
       const detail = hints.get(identity);
+      const names = { optionId: row.optionId, popupOption: row.optionText, detailOption: detail?.optionText };
+      if (!isIdentifiedOption(row) || !row.complete || !row.optionText) {
+        deferProduct(productId, { code: "POPUP_OPTION_ID_MISMATCH", ...names });
+        continue;
+      }
+
       const cartMatchKeys = new Set([cartKey(row)]);
       if (detail?.optionText) {
         cartMatchKeys.add(cartKey(detail));
@@ -231,17 +289,26 @@ function createNewProductOptionProbe(config, { listUrl, sourcePage, products, on
           .replace(/\s*\(\s*현\s*재고\s*\d+(?:,\d{3})*\s*개\s*\)\s*$/, "").trim();
         if (name) cartMatchKeys.add(createCartOptionMatchKey(detail.productId, name));
       }
-      for (const key of cartMatchKeys) {
-        if (usedCartKeys.has(key)) return false;
-        usedCartKeys.add(key);
+      const conflict = pending.get(identity) || observed.get(identity) ||
+        Array.from(cartMatchKeys).map(key => usedCartKeys.get(key)).find(Boolean);
+      if (conflict) {
+        deferProduct(productId, { code: "AMBIGUOUS_OPTION_LABEL", ...names, expectedOptions: [
+          { optionId: conflict.optionId, popupOption: conflict.optionText, detailOption: conflict.detailOption },
+        ] });
+        continue;
       }
-      observed.set(identity, { ...row, cartMatchKeys: [...cartMatchKeys], detailOption: detail?.optionText });
-      return true;
-    });
-    if (!valid || new Set(popupRows.map(row => String(row.productId))).size !== submitted.size) {
-      throw new Error("상세·팝업 옵션을 고유하게 대조하지 못했습니다. 장바구니에는 담지 않습니다.");
+      const option = { ...row, cartMatchKeys: [...cartMatchKeys], detailOption: detail?.optionText };
+      observed.set(identity, option);
+      for (const key of cartMatchKeys) usedCartKeys.set(key, option);
     }
-    for (const [key, row] of observed) pending.set(key, row);
+    if (selectedProductIds.size !== submitted.size) throw new Error("장바구니에 담을 옵션을 확인하지 못했습니다.");
+
+    const approved = selectedRows.filter(row => !review.has(String(row.productId)));
+    const plan = approved.length ? submissionPlan(approved, popupRows) : undefined;
+    for (const [key, row] of observed) {
+      if (!review.has(String(row.productId))) pending.set(key, row);
+    }
+    return { plan, excludedProductIds: [...submitted].filter(id => review.has(id)) };
   }
 
   async function readOptions(connection) {
@@ -250,10 +317,20 @@ function createNewProductOptionProbe(config, { listUrl, sourcePage, products, on
     try {
       await cleanup(connection);
       baseline = await readCart(connection);
-      if (Array.from(baseline.values()).some(row => eligible.has(String(row.productId)))) {
-        throw new Error("새 상품 수집 대상이 이미 장바구니에 있습니다. 해당 행의 수량을 보호하기 위해 옵션 수집을 중단합니다.");
+      for (const row of baseline.values()) {
+        const productId = String(row.productId);
+        if (!eligible.has(productId)) continue;
+        if (!review.has(productId)) deferProduct(productId, { code: "CART_PRODUCT_ALREADY_PRESENT", cartOption: row.optionText });
+        review.get(productId).cartRowsRemain = true;
       }
-      onProgress({ stage: "inventory", message: `새 옵션 상품 ${optionProducts.length}개의 장바구니 바코드를 확인합니다.` });
+      const requested = optionProducts.filter(product => !review.has(product.productId));
+      if (!requested.length) {
+        completed = { inventoryItems: Array.from(hints.values()).filter(row => !review.has(row.productId)),
+          popupOptionItems: [], optionReviewItems: Array.from(review.values()) };
+        return completed;
+      }
+      const requestedIds = new Set(requested.map(product => product.productId));
+      onProgress({ stage: "inventory", message: `새 옵션 상품 ${requested.length}개의 장바구니 바코드를 확인합니다.` });
       // The site's initial bulk click can ask the browser to jump straight to
       // step 6. Permit that write only once we have verified the popup rows.
       const rejected = new AbortController();
@@ -265,7 +342,7 @@ function createNewProductOptionProbe(config, { listUrl, sourcePage, products, on
         const url = new URL(request.url());
         if (!operationSignal.aborted && request.method() === "POST" &&
             url.protocol === cartEndpoint.protocol && url.port === cartEndpoint.port) {
-          if (isCartHandshake(data, eligible)) return route.fallback();
+          if (isCartHandshake(data, requestedIds)) return route.fallback();
           if (data.get("stepCode") === "6" && data.getAll("stepCode").length === 1 &&
               data.getAll("addStr").length === 1 && data.getAll("cartCode").length <= 1 &&
               matchesSubmission(data.get("addStr"), authorizedSubmission) &&
@@ -280,14 +357,14 @@ function createNewProductOptionProbe(config, { listUrl, sourcePage, products, on
       await connection.page.route(matchesCartEndpoint, guard);
       let result;
       try {
-        result = await addProductsFromListPagesToCart(connection.page, optionProducts, {
+        result = await addProductsFromListPagesToCart(connection.page, requested, {
           ...cartConfig,
           onCartSubmission: async (ids, rows, popupRows) => {
             await checkActive(connection);
             throwIfAborted(operationSignal);
-            const plan = submissionPlan(rows, popupRows.filter(isIdentifiedOption));
-            rememberSubmission(ids, rows);
+            const { plan, excludedProductIds } = rememberSubmission(ids, rows, popupRows);
             authorizedSubmission = plan;
+            return excludedProductIds;
           },
         }, () => {}, operationSignal);
         if (rejected.signal.aborted) throw rejected.signal.reason;
@@ -307,30 +384,37 @@ function createNewProductOptionProbe(config, { listUrl, sourcePage, products, on
         directProductIds: Array.from(eligible), config });
       const byOption = new Map(popupInventory.map(row => [optionKey(row), row]));
       const observedProducts = new Set(popupInventory.map(row => String(row.productId)));
-      const missingOption = Array.from(hints.values()).find(row =>
-        eligible.has(row.productId) && !unavailable.has(row.productId) && !byOption.has(optionKey(row)));
-      if (missingOption) {
-        throw new Error(`상품 ${missingOption.productId} 옵션 ${missingOption.optionId}의 팝업 정보를 확인하지 못했습니다.`);
-      }
-      for (const productId of eligible) {
-        if (!unavailable.has(productId) && !observedProducts.has(productId)) {
-          throw new Error(`상품 ${productId}의 옵션 정보를 확인하지 못했습니다.`);
+      for (const hint of hints.values()) {
+        const productId = hint.productId;
+        if (requestedIds.has(productId) && !review.has(productId) && !unavailable.has(productId) && !byOption.has(optionKey(hint))) {
+          deferProduct(productId, { code: "POPUP_OPTION_ID_MISMATCH", optionId: hint.optionId, detailOption: hint.optionText });
         }
       }
-      let cart;
-      let owned = new Map();
+      for (const productId of requestedIds) {
+        if (!review.has(productId) && !unavailable.has(productId) && !observedProducts.has(productId)) {
+          deferProduct(productId, { code: "POPUP_OPTION_ID_MISMATCH" });
+        }
+      }
+
+      let cart, analysis;
       for (let attempt = 0; pending.size && attempt < 3; attempt++) {
         if (attempt) await sleepWithSignal(500, connection.signal);
         cart = await readCart(connection, { observeStock: true });
-        owned = findOwnedRows(cart, baseline, pending);
-        if (owned.size === pending.size) break;
+        analysis = inspectCartRows(cart, baseline, pending, protectedCartProducts);
+        if (Array.from(pending.entries()).every(([key, row]) =>
+          analysis.owned.has(key) || analysis.uncertainProducts.has(String(row.productId)))) break;
       }
+      if (analysis) recordCartIssues(analysis);
       const cartInventory = [];
       for (const [key, popup] of pending) {
-        const row = owned.get(key);
+        const productId = String(popup.productId);
+        if (analysis.uncertainProducts.has(productId)) continue;
+        const row = analysis.owned.get(key);
         const inventory = byOption.get(key);
         if (!row || !inventory || !/^\d{13}$/.test(String(row.barcode || ""))) {
-          throw new Error(`상품 ${popup.productId} 옵션 ${popup.optionId}의 장바구니 바코드를 확인하지 못했습니다.`);
+          deferProduct(productId, { code: row && inventory ? "MISSING_OPTION_BARCODE" : "MISSING_CART_OPTION",
+            optionId: popup.optionId, popupOption: popup.optionText, detailOption: popup.detailOption, cartOption: row?.optionText });
+          continue;
         }
         const latestStock = row.observedMaxStock;
         const stock = latestStock == null ? {} : {
@@ -346,11 +430,15 @@ function createNewProductOptionProbe(config, { listUrl, sourcePage, products, on
         }
         cartInventory.push({ ...inventory, ...stock, barcode: row.barcode, rowSource: "cart" });
       }
-      await cleanup(connection, cart);
+      await cleanup(connection, cart, analysis);
       const merged = mergeCheonyuDetailInventoryItems(popupInventory, cartInventory);
       const observed = new Set(merged.map(optionKey));
-      completed = { inventoryItems: [...merged, ...Array.from(hints.values()).filter(row => !observed.has(optionKey(row)))],
-        popupOptionItems };
+      completed = {
+        inventoryItems: [...merged, ...Array.from(hints.values()).filter(row => !observed.has(optionKey(row)))]
+          .filter(row => !review.has(String(row.productId))),
+        popupOptionItems: popupOptionItems.filter(row => !review.has(String(row.productId))),
+        optionReviewItems: Array.from(review.values()),
+      };
       return completed;
     } catch (error) {
       let failure = error;

@@ -2174,6 +2174,7 @@ async function parseAndPreparePopupOptions(
   config,
   requestedProducts = [],
   submitToCart = true,
+  excludedProductIds = [],
 ) {
   const requests = requestedProducts.map((item) => ({
     productId: String(item.productId || ""),
@@ -2190,7 +2191,8 @@ async function parseAndPreparePopupOptions(
   }));
 
   return page.evaluate(
-    ({ pageNo, requests, defaultOptionQty, lowStockThreshold, submitToCart }) => {
+    ({ pageNo, requests, defaultOptionQty, lowStockThreshold, submitToCart, excludedProductIds }) => {
+      const excluded = new Set(excludedProductIds);
       const normalize = (value) =>
         String(value || "").replace(/\s+/g, " ").trim();
       const normalizeProductLabel = (value) =>
@@ -2345,7 +2347,7 @@ async function parseAndPreparePopupOptions(
             const requestedOptionId = String(request.optionId ?? "0");
             return requestedOptionId === optionId;
           });
-          const selectedForCart = submitToCart
+          const selectedForCart = submitToCart && !excluded.has(requestProduct?.productId)
             ? requestProduct?.hasExplicitCartRequests
               ? selectable && Boolean(matchedRequest)
               : selectable
@@ -2433,6 +2435,7 @@ async function parseAndPreparePopupOptions(
       defaultOptionQty: config.optionCartQty || config.cartQty || 1,
       lowStockThreshold: config.lowStockThreshold,
       submitToCart,
+      excludedProductIds,
     },
   );
 }
@@ -2556,9 +2559,17 @@ async function readCheonyuOptionPopupState(page) {
 }
 
 /** 이전 옵션 팝업이 남아 있으면 안전하게 닫는다. */
-async function closeCheonyuOptionPopup(page) {
+async function closeCheonyuOptionPopup(page, { discardSelection = false } = {}) {
   await page
-    .evaluate(() => {
+    .evaluate((discard) => {
+      if (discard && typeof window.disablePopup === "function") {
+        window.disablePopup();
+        return;
+      }
+      if (discard && typeof window.fnClosePopup === "function") {
+        window.fnClosePopup();
+        return;
+      }
       if (typeof window.closeCartIn === "function") {
         window.closeCartIn();
         return;
@@ -2571,7 +2582,7 @@ async function closeCheonyuOptionPopup(page) {
       if (cancelButton instanceof HTMLElement) {
         cancelButton.click();
       }
-    })
+    }, discardSelection)
     .catch(() => null);
 
   await page.waitForTimeout(500);
@@ -3633,7 +3644,7 @@ async function clickBulkCartAndConfirm(
           }
         }
 
-        const selectedCount = popupOptionRows.filter(
+        let selectedCount = popupOptionRows.filter(
           (item) => item.selectedForCart,
         ).length;
         const selectedProductIds = new Set(
@@ -3641,7 +3652,7 @@ async function clickBulkCartAndConfirm(
             .filter((item) => item.selectedForCart)
             .map((item) => String(item.productId)),
         );
-        const selectableExpectedProductIds = selectableRequestedProducts.map(
+        let selectableExpectedProductIds = selectableRequestedProducts.map(
           (product) => String(product.productId),
         );
         const unselectedProductIds = selectableExpectedProductIds.filter(
@@ -3677,13 +3688,20 @@ async function clickBulkCartAndConfirm(
           throwIfAborted(signal);
           // Record intent before dispatch: the server may commit even if the
           // response is lost when a proxy session disconnects.
-          await config.onCartSubmission?.(
+          const excludedIds = await config.onCartSubmission?.(
             selectableExpectedProductIds,
             popupOptionRows.filter(row => row.selectedForCart),
             popupOptionRows,
           );
+          if (excludedIds?.length) {
+            const excluded = new Set(excludedIds);
+            selectableExpectedProductIds = selectableExpectedProductIds.filter(id => !excluded.has(id));
+            const selection = await parseAndPreparePopupOptions(page, pageNo, config, activeRequestedProducts, true, excludedIds);
+            selectedCount = selection.filter(row => row.selectedForCart).length;
+          }
           throwIfAborted(signal);
-          await page.evaluate(() => window.setOption());
+          if (selectedCount) await page.evaluate(() => window.setOption());
+          else await closeCheonyuOptionPopup(page, { discardSelection: true });
           await page.waitForFunction(
             () => {
               const wrappers = Array.from(

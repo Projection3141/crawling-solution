@@ -60,12 +60,15 @@ function fixture({ rows = [baselineRow], onSubmit, popupRows = options, barcode 
         assert.equal(await post(preflight), false);
         throw new Error("request aborted");
       }
-      await settings.onCartSubmission(["66"], popupRows.filter(row => row.selectedForCart), popupRows);
+      const excluded = await settings.onCartSubmission(["66"], popupRows.filter(row => row.selectedForCart), popupRows);
+      if (excluded.includes("66")) {
+        return { pageResults: [{ bulkResult: { excludedProductIds: [], popupOptionRows: popupRows } }] };
+      }
       if (!await post(`stepCode=6&cartCode=&addStr=group66@@101,${quantity}`)) throw new Error("request aborted");
       submissions++;
       cart.push({ cartCheckId: `added-${submissions}`, productId: "66",
         requestedQty: cartQuantity, optionText: cartOptionText, barcode });
-      await onSubmit?.(submissions);
+      await onSubmit?.(submissions, cart);
       return { pageResults: [{ bulkResult: { excludedProductIds: [], popupOptionRows: popupRows } }] };
     },
   };
@@ -114,10 +117,13 @@ test("matches distinct detail, popup, and cart labels using the detail stock not
   assert.deepEqual(f.cart, [baselineRow]);
 });
 
-test("does not add a product already present in the account's cart", async () => {
+test("defers a product already present in the account's cart", async () => {
   const existing = { ...baselineRow, productId: "66" };
   const f = fixture({ rows: [existing] });
-  await assert.rejects(f.read({}), /이미 장바구니/);
+  const result = await f.read({});
+  assert.equal(result.inventoryItems.length, 0);
+  assert.equal(result.optionReviewItems[0].reasons[0].code, "CART_PRODUCT_ALREADY_PRESENT");
+  assert.equal(result.optionReviewItems[0].cartRowsRemain, true);
   assert.equal(f.submissions, 0);
   assert.deepEqual(f.cart, [existing]);
   assert.deepEqual(f.deletes, []);
@@ -136,6 +142,22 @@ test("a lost tunnel preserves ownership for same-account cleanup before another 
   assert.deepEqual(f.cart, [baselineRow]);
 });
 
+test("a mismatched row left by a lost tunnel is reported without resubmitting it", async () => {
+  const f = fixture({ cartOptionText: "알 수 없는 옵션", onSubmit() {
+    throw new Error("page.goto: net::ERR_TUNNEL_CONNECTION_FAILED");
+  } });
+  await assert.rejects(f.read({}), /ERR_TUNNEL_CONNECTION_FAILED/);
+  assert.equal(f.read.hasPendingCart(), true);
+
+  const result = await f.read({});
+  assert.equal(result.inventoryItems.length, 0);
+  assert.equal(result.optionReviewItems[0].reasons[0].code, "CART_OPTION_LABEL_MISMATCH");
+  assert.equal(result.optionReviewItems[0].cartRowsRemain, true);
+  assert.equal(f.submissions, 1);
+  assert.deepEqual(f.deletes, []);
+  assert.equal(f.read.hasPendingCart(), false);
+});
+
 test("authentication denial does not trigger additional cart requests", async () => {
   const f = fixture({ onSubmit() { throw Object.assign(new Error("HTTP 407"), { statusCode: 407 }); } });
   await assert.rejects(f.read({}), { statusCode: 407 });
@@ -144,14 +166,28 @@ test("authentication denial does not trigger additional cart requests", async ()
   assert.equal(f.submissions, 1);
 });
 
-test("an ambiguous option label aborts before any cart write", async () => {
+test("a change to an existing cart row still stops the probe without deleting anything", async () => {
+  const f = fixture({ onSubmit(_attempt, cart) { cart[0].requestedQty = 4; } });
+  await assert.rejects(f.read({}), error => {
+    assert.equal(error.code, "CART_CLEANUP_INCOMPLETE");
+    assert.equal(error.details.reason, "EXISTING_CART_ROW_CHANGED");
+    return true;
+  });
+  assert.deepEqual(f.deletes, []);
+  assert.equal(f.read.hasPendingCart(), true);
+});
+
+test("an ambiguous option label defers the product before any cart write", async () => {
   const f = fixture({ popupRows: [options[0], { ...options[0], optionId: "102", submitOptionId: "102", optionText: "A/B" }] });
-  await assert.rejects(f.read({}), /고유하게 대조/);
+  const result = await f.read({});
+  assert.equal(result.inventoryItems.length, 0);
+  assert.equal(result.optionReviewItems[0].reasons[0].code, "AMBIGUOUS_OPTION_LABEL");
+  assert.equal(result.optionReviewItems[0].cartRowsRemain, false);
   assert.equal(f.submissions, 0);
   assert.equal(f.read.hasPendingCart(), false);
 });
 
-test("two option IDs sharing a detail label after removing the stock note abort before any cart write", async () => {
+test("two option IDs sharing a detail label after removing the stock note are deferred before any cart write", async () => {
   const f = fixture({
     popupRows: [options[0], { ...options[0], optionId: "102", submitOptionId: "102", optionText: "품절 (3개)" }],
     targets: [{ productId: "66", detailOptions: [
@@ -159,7 +195,9 @@ test("two option IDs sharing a detail label after removing the stock note abort 
       { optionId: "102", optionName: "A/B (현 재고 3개)" },
     ] }],
   });
-  await assert.rejects(f.read({}), /고유하게 대조/);
+  const result = await f.read({});
+  assert.equal(result.optionReviewItems[0].reasons[0].code, "AMBIGUOUS_OPTION_LABEL");
+  assert.equal(result.optionReviewItems[0].reasons[0].expectedOptions[0].optionId, "101");
   assert.equal(f.submissions, 0);
   assert.equal(f.read.hasPendingCart(), false);
   assert.deepEqual(f.cart, [baselineRow]);
@@ -174,22 +212,24 @@ test("an unmatched cart label or quantity is reported without deleting cart rows
     [{ cartQuantity: 2 }, "CART_OPTION_QUANTITY_MISMATCH"],
   ]) {
     const f = fixture({ ...cartFields, popupRows: [{ ...options[0], optionText: "A / B (3개)" }, options[1]] });
-    await assert.rejects(f.read({}), error => {
-      assert.equal(error.code, "CART_CLEANUP_INCOMPLETE");
-      assert.equal(error.details.reason, reason);
-      assert.equal(error.details.productId, "66");
-      return true;
-    });
+    const result = await f.read({});
+    assert.equal(result.inventoryItems.length, 0);
+    assert.equal(result.optionReviewItems[0].productId, "66");
+    assert.equal(result.optionReviewItems[0].reasons[0].code, reason);
+    assert.equal(result.optionReviewItems[0].cartRowsRemain, true);
     assert.equal(f.submissions, 1);
-    assert.equal(f.read.hasPendingCart(), true);
+    assert.equal(f.read.hasPendingCart(), false);
     assert.deepEqual(f.deletes, []);
     assert.deepEqual(f.cart.map(row => row.cartCheckId), ["existing", "added-1"]);
   }
 });
 
-test("a missing barcode fails the collection after removing only the owned row", async () => {
+test("a missing barcode is deferred after removing only the owned row", async () => {
   const f = fixture({ barcode: null });
-  await assert.rejects(f.read({}), /바코드를 확인하지 못했습니다/);
+  const result = await f.read({});
+  assert.equal(result.inventoryItems.length, 0);
+  assert.equal(result.optionReviewItems[0].reasons[0].code, "MISSING_OPTION_BARCODE");
+  assert.equal(result.optionReviewItems[0].cartRowsRemain, false);
   assert.deepEqual(f.deletes, ["added-1"]);
   assert.deepEqual(f.cart, [baselineRow]);
   assert.equal(f.read.hasPendingCart(), false);
